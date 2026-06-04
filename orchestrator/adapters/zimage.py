@@ -1,7 +1,8 @@
-"""zimage adapter (M1) — the P0 smoke target (§8, §12).
+"""zimage adapter — the P0 smoke target (§8, §12).
 
-Minimal contract: build_argv + read-the-saved-manifest. The full hardening
-(capabilities/presence, progress, cancel, manifest-as-truth) is M3.
+Full contract (M3): build_argv + capabilities()/presence + coarse progress() +
+manifest-status-as-truth parse_result. Cancel = subprocess kill, handled by the
+runner (no in-worker signal handling — §15).
 
 CONTRACT FINDING (M1): `run_pipeline.py` uses bare imports
 (`import stage1_load_pipeline`), so it MUST be invoked **by absolute file path**
@@ -22,8 +23,12 @@ from .base import CompletionRecord, JobSpec
 
 PIPELINE = "zimage"
 SUPPORTED_MODES = ("t2i", "img2img", "inpaint")
+SUPPORTED_PARAMS = (
+    "prompt", "mode", "width", "height", "seed", "model_name",
+    "num_steps", "guidance_scale", "negative_prompt", "init_image",
+    "mask_image", "strength",
+)
 
-_IMAGE_RE = re.compile(r"^\s*Image:\s*(.+?)\s*$", re.MULTILINE)
 _MANIFEST_RE = re.compile(r"^\s*Manifest:\s*(.+?)\s*$", re.MULTILINE)
 
 
@@ -42,6 +47,44 @@ def resolve_script(roots: list[Path]) -> Path | None:
 def present(roots: list[Path]) -> bool:
     """Presence check (drives the launch gate, §11 — full version in M7)."""
     return resolve_script(roots) is not None
+
+
+def capabilities(roots: list[Path]) -> dict:
+    """Declared contract for the UI/launch gate (§8): modes, params, presence.
+
+    Honest about the gaps audited in §15: cancel is subprocess-kill (no in-worker
+    signal handling), progress is coarse stage markers (no per-step bar), and no
+    up-front VRAM estimate.
+    """
+    return {
+        "pipeline": PIPELINE,
+        "present": present(roots),
+        "worker": str(resolve_script(roots) or ""),
+        "modes": list(SUPPORTED_MODES),
+        "params": list(SUPPORTED_PARAMS),
+        "cancellable": True,
+        "progress": "coarse",
+        "vram_estimate_gb": None,
+    }
+
+
+def progress(line: str) -> float | None:
+    """Best-effort COARSE progress from the worker's stage prints (§15).
+
+    Deliberately not fine-grained — the worker emits per-stage markers, not
+    per-diffusion-step events, so we map stages to a few checkpoints rather than
+    faking a smooth bar.
+    """
+    s = line.strip()
+    if "[done]" in s:
+        return 1.0
+    if "[stage3]" in s:   # saved
+        return 0.95
+    if "[stage2]" in s:   # generated
+        return 0.8
+    if "[stage1]" in s:   # pipeline loaded
+        return 0.25
+    return None
 
 
 def build_argv(spec: JobSpec, python: str, script: Path) -> list[str]:
@@ -79,41 +122,78 @@ def build_argv(spec: JobSpec, python: str, script: Path) -> list[str]:
     return argv
 
 
+def _find_manifest(output_dir: Path, stdout: str) -> Path | None:
+    """The job's manifest. With per-job output isolation (M3) the dir holds exactly
+    one `*.json`, so it's unambiguous; fall back to the worker's `Manifest:` line."""
+    if output_dir.is_dir():
+        jsons = sorted(output_dir.glob("*.json"), key=lambda f: f.stat().st_mtime)
+        if jsons:
+            return jsons[-1]
+    m = _MANIFEST_RE.search(stdout or "")
+    if m:
+        p = Path(m.group(1))
+        if p.is_file():
+            return p
+    return None
+
+
 def parse_result(
     returncode: int,
     stdout: str,
     stderr: str,
     output_dir: Path,
 ) -> CompletionRecord:
-    """Normalize the worker's output into the common envelope (§8)."""
-    img_match = _IMAGE_RE.search(stdout or "")
-    man_match = _MANIFEST_RE.search(stdout or "")
-    image_path = img_match.group(1) if img_match else None
-    manifest_path = man_match.group(1) if man_match else None
+    """Normalize into the common envelope using **manifest-status-as-truth** (§8/§15,
+    review #4): success is decided by the saved manifest's per-stage status, not by
+    scanning for the newest PNG, cross-checked with the exit code.
+    """
+    manifest_path = _find_manifest(output_dir, stdout)
+    manifest_status: str | None = None
+    error: str | None = None
+    duration_s: float | None = None
+    image_path: str | None = None
 
-    # Fallback: newest PNG in the output dir (if stdout parsing missed it).
-    if image_path is None and output_dir.is_dir():
-        pngs = sorted(output_dir.glob("zimage_*.png"), key=lambda f: f.stat().st_mtime)
+    if manifest_path and manifest_path.is_file():
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            duration_s = data.get("pipeline_duration_s")
+            image_path = data.get("output_path") or None
+            stages = data.get("stages") or []
+            statuses = [s.get("status") for s in stages]
+            if stages and all(st == "completed" for st in statuses):
+                manifest_status = "completed"
+            else:
+                manifest_status = "failed"
+                for s in stages:
+                    if s.get("status") == "failed":
+                        error = f"{s.get('name')}: {s.get('error')}"
+                        break
+        except (json.JSONDecodeError, OSError) as e:
+            error = f"manifest unreadable: {e}"
+
+    # Only if the manifest gave no output_path, fall back to a PNG in the (isolated) dir.
+    if not image_path and output_dir.is_dir():
+        pngs = sorted(output_dir.glob("*.png"), key=lambda f: f.stat().st_mtime)
         if pngs:
             image_path = str(pngs[-1])
-            manifest_path = manifest_path or str(pngs[-1].with_suffix(".json"))
-
-    duration_s = None
-    if manifest_path and Path(manifest_path).is_file():
-        try:
-            data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-            duration_s = data.get("pipeline_duration_s")
-        except (json.JSONDecodeError, OSError):
-            pass  # manifest unreadable — fall back to exit code only
-
     image_exists = bool(image_path and Path(image_path).is_file())
-    ok = returncode == 0 and image_exists
+
+    ok = manifest_status == "completed" and image_exists and returncode == 0
+    if not ok and error is None:
+        if returncode != 0:
+            error = f"worker exited {returncode}"
+        elif manifest_status is None:
+            error = "no manifest produced"
+        elif not image_exists:
+            error = "manifest completed but output image is missing"
 
     return CompletionRecord(
         ok=ok,
         returncode=returncode,
         outputs=[image_path] if image_exists else [],
-        manifest_path=manifest_path if (manifest_path and Path(manifest_path).is_file()) else None,
+        manifest_path=str(manifest_path) if manifest_path else None,
         duration_s=duration_s,
-        stderr_tail=(stderr or "")[-1500:],
+        manifest_status=manifest_status,
+        error=error,
+        stderr_tail=(stdout or stderr or "")[-1500:],
     )

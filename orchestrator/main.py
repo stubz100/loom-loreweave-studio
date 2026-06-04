@@ -166,13 +166,27 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"no such job {job_id!r}")
         return job
 
-    @app.get("/outputs/{name}")
+    @app.post("/jobs/{job_id}/cancel")
+    def cancel_job(job_id: str, _auth: None = Depends(require_token)) -> dict:
+        """Cancel a queued/running job (cancel = subprocess kill, §8/§15). Token-gated."""
+        if not RUNNER.cancel(job_id):
+            raise HTTPException(409, f"job {job_id!r} is unknown or already finished")
+        return {"job_id": job_id, "canceling": True}
+
+    @app.get("/capabilities")
+    def capabilities() -> dict:
+        """Declared adapter contract — modes/params/presence (§8). Drives the UI."""
+        return {"pipelines": {"zimage": zimage_adapter.capabilities(CONFIG.pipeline_roots)}}
+
+    @app.get("/outputs/{name:path}")
     def get_output(name: str) -> FileResponse:
-        """Serve a generated PNG from the dev-out dir (M5: per-project out/)."""
-        if "/" in name or "\\" in name or ".." in name:
+        """Serve a generated PNG from the dev-out dir, incl. per-job subdirs (M3).
+        M5 moves this to the per-project out/."""
+        if ".." in name or "\\" in name:
             raise HTTPException(400, "invalid name")
-        path = (CONFIG.dev_out_dir / name).resolve()
-        if path.parent != CONFIG.dev_out_dir.resolve() or not path.is_file():
+        base = CONFIG.dev_out_dir.resolve()
+        path = (base / name).resolve()
+        if not path.is_relative_to(base) or not path.is_file():
             raise HTTPException(404, f"no such output {name!r}")
         return FileResponse(path)
 

@@ -34,7 +34,11 @@ class CompletionRecord:
     manifest_path: str | None = None                   # sidecar <output>.json
     duration_s: float | None = None
     peak_vram_gb: float | None = None                  # M3+ (not emitted up-front yet)
-    stderr_tail: str = ""                              # last lines of stderr for post-mortem
+    stderr_tail: str = ""                              # last lines of output for post-mortem
+    # M3: success is decided by the manifest's stage status (manifest-as-truth),
+    # cross-checked with the exit code. `error` carries the failing-stage message.
+    manifest_status: str | None = None                 # "completed" | "failed" | None
+    error: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -45,4 +49,6 @@ class CompletionRecord:
             "duration_s": self.duration_s,
             "peak_vram_gb": self.peak_vram_gb,
             "stderr_tail": self.stderr_tail,
+            "manifest_status": self.manifest_status,
+            "error": self.error,
         }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  cancelJob,
   generate,
   getHealth,
   listJobs,
@@ -25,7 +26,7 @@ export default function App() {
   const [jobs, setJobs] = useState<Record<string, Job>>({});
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [counts, setCounts] = useState({ queued: 0, running: 0, done: 0, failed: 0 });
+  const [counts, setCounts] = useState({ queued: 0, running: 0, done: 0, failed: 0, canceled: 0 });
   const pollRef = useRef<number | null>(null);
 
   // Health probe (every 2 s).
@@ -85,6 +86,15 @@ export default function App() {
       })
       .catch(() => {});
   }, []);
+
+  const onCancel = async (id: string) => {
+    try {
+      await cancelJob(id);
+    } catch (e) {
+      setError(String(e));
+    }
+    startPolling(); // observe the transition to canceled
+  };
 
   const onGenerate = async () => {
     setError(null);
@@ -176,6 +186,7 @@ export default function App() {
                 job={jobs[id]}
                 selected={selected === id}
                 onClick={() => setSelected(id)}
+                onCancel={() => onCancel(id)}
               />
             ))}
           </div>
@@ -204,11 +215,28 @@ export default function App() {
   );
 }
 
-function GridCell({ job, selected, onClick }: { job?: Job; selected: boolean; onClick: () => void }) {
+function GridCell({
+  job,
+  selected,
+  onClick,
+  onCancel,
+}: {
+  job?: Job;
+  selected: boolean;
+  onClick: () => void;
+  onCancel: () => void;
+}) {
   const status = job?.status ?? "queued";
   const name = job?.result?.output_name;
+  const prog = job?.progress ?? 0;
+  const active = status === "queued" || status === "running";
   return (
-    <button className={`cell ${selected ? "sel" : ""} st-${status}`} onClick={onClick}>
+    <div
+      className={`cell ${selected ? "sel" : ""} st-${status}`}
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+    >
       {name && status === "done" ? (
         <img src={outputUrl(name)} alt={job?.id} />
       ) : (
@@ -216,10 +244,28 @@ function GridCell({ job, selected, onClick }: { job?: Job; selected: boolean; on
           {status === "queued" && "queued…"}
           {status === "running" && "generating…"}
           {status === "failed" && "✕ failed"}
+          {status === "canceled" && "⊘ canceled"}
           {status === "done" && "—"}
         </span>
       )}
-    </button>
+      {status === "running" && (
+        <div className="progress">
+          <div className="bar" style={{ width: `${Math.round(prog * 100)}%` }} />
+        </div>
+      )}
+      {active && (
+        <button
+          className="cancel"
+          title="cancel"
+          onClick={(e) => {
+            e.stopPropagation();
+            onCancel();
+          }}
+        >
+          ✕
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -236,8 +282,9 @@ function Inspector({ job }: { job: Job }) {
         <dt>pipeline</dt><dd>{r?.duration_s != null ? `${r.duration_s}s` : "—"}</dd>
         <dt>file</dt><dd className="mono">{r?.output_name ?? "—"}</dd>
       </dl>
-      {job.status === "failed" && r?.stderr_tail && (
-        <pre className="stderr">{r.stderr_tail}</pre>
+      {r?.error && <div className="error">⚠ {r.error}</div>}
+      {(job.status === "failed" || job.status === "canceled") && job.log_tail && (
+        <pre className="stderr">{job.log_tail}</pre>
       )}
     </div>
   );

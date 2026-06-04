@@ -45,11 +45,13 @@ export interface JobResult {
   manifest_path: string | null;
   duration_s: number | null;
   stderr_tail: string;
+  manifest_status?: string | null;
+  error?: string | null;
   output_name?: string;
   seed?: number | null;
 }
 
-export type JobStatus = "queued" | "running" | "done" | "failed";
+export type JobStatus = "queued" | "running" | "done" | "failed" | "canceled";
 
 export interface Job {
   id: string;
@@ -57,11 +59,13 @@ export interface Job {
   mode: string;
   params: Record<string, unknown>;
   status: JobStatus;
+  progress: number;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
   wall_s: number | null;
   result: JobResult | null;
+  log_tail: string;
   batch_id: string;
   index: number;
   batch_size: number;
@@ -114,6 +118,17 @@ export async function listJobs(signal?: AbortSignal): Promise<JobsResponse> {
   return (await res.json()) as JobsResponse;
 }
 
+export async function cancelJob(id: string): Promise<void> {
+  const res = await fetch(`${orchestratorUrl()}/jobs/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  // 409 = already finished/unknown — treat as a no-op.
+  if (!res.ok && res.status !== 409) throw new Error(`cancel ${res.status}`);
+}
+
 export function outputUrl(name: string): string {
-  return `${orchestratorUrl()}/outputs/${encodeURIComponent(name)}`;
+  // name may be a per-job subpath (job_id/file.png); encode each segment.
+  const enc = name.split("/").map(encodeURIComponent).join("/");
+  return `${orchestratorUrl()}/outputs/${enc}`;
 }

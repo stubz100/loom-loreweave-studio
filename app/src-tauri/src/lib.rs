@@ -42,9 +42,12 @@ fn resolve_python() -> String {
 /// cwd must be the app-repo root (it holds the `orchestrator/` package).
 fn spawn_orchestrator(app: &tauri::AppHandle) {
     let python = resolve_python();
-    // Dev cwd: the app-repo root. Overridable so packaging can point elsewhere.
+    // cwd must be the app-repo root (it holds the `orchestrator/` package), i.e.
+    // two levels up from src-tauri/ (src-tauri -> app -> <app repo root>). The
+    // built exe should set LOOM_APP_REPO absolutely; ".." alone was wrong (it only
+    // reached app/, where there is no orchestrator package).
     let cwd = std::env::var("LOOM_APP_REPO")
-        .unwrap_or_else(|_| "..".into()); // app/src-tauri -> app ; adjust at runtime as needed
+        .unwrap_or_else(|_| "../..".into());
 
     let child = Command::new(&python)
         .args(["-m", "orchestrator.main"])

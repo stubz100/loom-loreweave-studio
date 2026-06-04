@@ -76,6 +76,13 @@ class Config:
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
+    @property
+    def dev_out_dir(self) -> Path:
+        """M1-only output dir for smoke generations. Replaced by the per-project
+        workspace `out/` at M5 (R72); gitignored. Override via LOOM_DEV_OUT."""
+        env = os.environ.get("LOOM_DEV_OUT")
+        return Path(env).resolve() if env else (self.app_repo_root / ".dev_out")
+
 
 # Singleton config for the process.
 CONFIG = Config()

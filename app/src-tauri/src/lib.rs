@@ -4,17 +4,15 @@
 //   * single-instance: a second launch focuses the existing window (R74).
 //   * spawn the Python orchestrator as a sidecar child process.
 //   * read the orchestrator's READY line (url + token) — the M0 handshake (R101).
-//
-// NOTE: this layer is UNBUILT — the dev box has no Rust toolchain yet. The code
-// is written build-ready for `cargo`/`tauri` once `rustup` is installed. Until
-// then, dev runs the orchestrator + `npm run dev` manually (the React shell
-// probes /health directly).
+//   * kill the sidecar when the app exits, so it never lingers holding the port
+//     (review fix / P0-15 lifecycle): a leaked orchestrator would block the next
+//     launch's spawn from binding 127.0.0.1:8765.
 
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
 
 /// The orchestrator endpoint learned from its READY stdout line.
 #[derive(Default, Clone, serde::Serialize)]
@@ -23,8 +21,11 @@ pub struct OrchestratorEndpoint {
     pub token: String,
 }
 
+/// Shared handle to the spawned sidecar so we can kill it on exit.
+type ChildSlot = Arc<Mutex<Option<Child>>>;
+
 struct AppState {
-    orchestrator: Mutex<OrchestratorEndpoint>,
+    orchestrator: Arc<Mutex<OrchestratorEndpoint>>,
 }
 
 /// Command the UI calls to learn where the orchestrator is + its token.
@@ -40,14 +41,12 @@ fn resolve_python() -> String {
 
 /// Spawn `python -m orchestrator.main` and capture its READY line.
 /// cwd must be the app-repo root (it holds the `orchestrator/` package).
-fn spawn_orchestrator(app: &tauri::AppHandle) {
+fn spawn_orchestrator(app: &tauri::AppHandle, child_slot: ChildSlot, endpoint: Arc<Mutex<OrchestratorEndpoint>>) {
     let python = resolve_python();
     // cwd must be the app-repo root (it holds the `orchestrator/` package), i.e.
     // two levels up from src-tauri/ (src-tauri -> app -> <app repo root>). The
-    // built exe should set LOOM_APP_REPO absolutely; ".." alone was wrong (it only
-    // reached app/, where there is no orchestrator package).
-    let cwd = std::env::var("LOOM_APP_REPO")
-        .unwrap_or_else(|_| "../..".into());
+    // built exe should set LOOM_APP_REPO absolutely.
+    let cwd = std::env::var("LOOM_APP_REPO").unwrap_or_else(|_| "../..".into());
 
     let child = Command::new(&python)
         .args(["-m", "orchestrator.main"])
@@ -65,7 +64,7 @@ fn spawn_orchestrator(app: &tauri::AppHandle) {
     };
 
     if let Some(stdout) = child.stdout.take() {
-        let handle = app.clone();
+        let _ = app; // reserved for future change-event emission
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
@@ -75,38 +74,54 @@ fn spawn_orchestrator(app: &tauri::AppHandle) {
                         if let Some(v) = kv.strip_prefix("url=") { url = v.into(); }
                         if let Some(v) = kv.strip_prefix("token=") { token = v.into(); }
                     }
-                    if let Some(state) = handle.try_state::<AppState>() {
-                        *state.orchestrator.lock().unwrap() =
-                            OrchestratorEndpoint { url: url.clone(), token };
-                    }
+                    *endpoint.lock().unwrap() = OrchestratorEndpoint { url: url.clone(), token };
                     println!("[loom] orchestrator ready at {url}");
                 }
             }
         });
     }
 
-    // Keep the child handle alive for the process lifetime (P0-15: lifecycle/
-    // crash-recovery hardening lands with the queue work).
-    std::mem::forget(child);
+    // Keep the handle so we can kill it on app exit (no more mem::forget leak).
+    *child_slot.lock().unwrap() = Some(child);
+}
+
+fn kill_orchestrator(child_slot: &ChildSlot) {
+    if let Some(mut child) = child_slot.lock().unwrap().take() {
+        let _ = child.kill();
+        let _ = child.wait();
+        println!("[loom] orchestrator sidecar terminated");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let child_slot: ChildSlot = Arc::new(Mutex::new(None));
+    let endpoint: Arc<Mutex<OrchestratorEndpoint>> = Arc::new(Mutex::new(OrchestratorEndpoint::default()));
+
+    let setup_child = child_slot.clone();
+    let setup_endpoint = endpoint.clone();
+
+    let app = tauri::Builder::default()
         // Single instance: focus the existing window on a second launch (R74).
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.set_focus();
             }
         }))
-        .manage(AppState {
-            orchestrator: Mutex::new(OrchestratorEndpoint::default()),
-        })
+        .manage(AppState { orchestrator: endpoint.clone() })
         .invoke_handler(tauri::generate_handler![orchestrator_endpoint])
-        .setup(|app| {
-            spawn_orchestrator(&app.handle());
+        .setup(move |app| {
+            spawn_orchestrator(&app.handle(), setup_child.clone(), setup_endpoint.clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Loreweave Studio");
+        .build(tauri::generate_context!())
+        .expect("error while building Loreweave Studio");
+
+    // Kill the sidecar when the app exits so it doesn't linger on the port.
+    let exit_child = child_slot.clone();
+    app.run(move |_app_handle, event| {
+        if let RunEvent::Exit = event {
+            kill_orchestrator(&exit_child);
+        }
+    });
 }

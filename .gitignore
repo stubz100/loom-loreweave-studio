@@ -7,10 +7,14 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+# NOTE: dir patterns here are anchored to repo root (/build/, /dist/, /lib/) so they
+# only match Python packaging output at the top level — NOT nested app subdirs like
+# app/src/lib or a future app/.../build (an unanchored `lib/` silently un-tracked the
+# UI's app/src/lib once). App build output is ignored explicitly in the loom section.
 .Python
-build/
+/build/
 develop-eggs/
-dist/
+/dist/
 downloads/
 eggs/
 .eggs/

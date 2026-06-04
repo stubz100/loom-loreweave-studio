@@ -91,9 +91,9 @@ def create_app() -> FastAPI:
             "schema_version": SCHEMA_VERSION,
             "python": sys.version.split()[0],
             "venv_python": CONFIG.venv_python,
-            "pipelines_root": str(CONFIG.pipelines_root),
+            "pipeline_roots": [str(r) for r in CONFIG.pipeline_roots],
+            "zimage_worker": str(zimage_adapter.resolve_script(CONFIG.pipeline_roots) or ""),
             "models_dir": str(CONFIG.models_dir),
-            "pipelines_root_exists": CONFIG.pipelines_root.is_dir(),
         }
 
     @app.post("/generate")
@@ -101,17 +101,19 @@ def create_app() -> FastAPI:
         """Enqueue an N-image batch onto the single-worker runner (M2)."""
         if req.pipeline != "zimage":
             raise HTTPException(400, f"only the 'zimage' adapter is wired (got {req.pipeline!r})")
-        if not zimage_adapter.present(CONFIG.pipelines_root):
-            raise HTTPException(503, f"zimage worker not found under {CONFIG.pipelines_root}")
+        script = zimage_adapter.resolve_script(CONFIG.pipeline_roots)
+        if script is None:
+            raise HTTPException(503, "zimage worker not found in any pipeline root "
+                                     f"({[str(r) for r in CONFIG.pipeline_roots]})")
 
         base = req.model_dump(exclude={"pipeline", "mode", "dry_run", "count"})
 
         if req.dry_run:
             spec = JobSpec(pipeline=req.pipeline, mode=req.mode, params=base,
                            output_dir=CONFIG.dev_out_dir)
-            argv = zimage_adapter.build_argv(spec, CONFIG.venv_python, CONFIG.pipelines_root)
+            argv = zimage_adapter.build_argv(spec, CONFIG.venv_python, script)
             return {"dry_run": True, "count": req.count, "argv": argv,
-                    "cwd": str(CONFIG.monorepo_root), "output_dir": str(CONFIG.dev_out_dir)}
+                    "cwd": str(script.parents[2]), "output_dir": str(CONFIG.dev_out_dir)}
 
         batch_id = "bat_" + uuid.uuid4().hex[:8]
         job_ids: list[str] = []

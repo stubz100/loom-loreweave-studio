@@ -27,22 +27,32 @@ _IMAGE_RE = re.compile(r"^\s*Image:\s*(.+?)\s*$", re.MULTILINE)
 _MANIFEST_RE = re.compile(r"^\s*Manifest:\s*(.+?)\s*$", re.MULTILINE)
 
 
-def script_path(pipelines_root: Path) -> Path:
-    """Absolute path to the worker script (invoked by path, see module docstring)."""
-    return pipelines_root / "pipeline" / "zimage" / "run_pipeline.py"
+def resolve_script(roots: list[Path]) -> Path | None:
+    """First existing worker across the ordered pipeline roots (vendored-first).
+
+    Each root directly contains `zimage/run_pipeline.py`; see config.pipeline_roots.
+    """
+    for r in roots:
+        p = r / "zimage" / "run_pipeline.py"
+        if p.is_file():
+            return p
+    return None
 
 
-def present(pipelines_root: Path) -> bool:
+def present(roots: list[Path]) -> bool:
     """Presence check (drives the launch gate, §11 — full version in M7)."""
-    return script_path(pipelines_root).is_file()
+    return resolve_script(roots) is not None
 
 
-def build_argv(spec: JobSpec, python: str, pipelines_root: Path) -> list[str]:
-    """Typed params → the real CLI. width/height must be divisible by 16."""
+def build_argv(spec: JobSpec, python: str, script: Path) -> list[str]:
+    """Typed params → the real CLI. width/height must be divisible by 16.
+
+    `script` is the resolved absolute worker path (see resolve_script) — zimage
+    must be invoked by file path, not `-m` (module docstring)."""
     p = spec.params
     argv: list[str] = [
         python,
-        str(script_path(pipelines_root)),
+        str(script),
         "--prompt", str(p["prompt"]),
         "--mode", spec.mode,
         "--width", str(p.get("width", 1280)),

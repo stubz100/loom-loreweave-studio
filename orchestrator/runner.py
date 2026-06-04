@@ -114,13 +114,18 @@ class JobRunner:
             pipeline, mode, params = job["pipeline"], job["mode"], dict(job["params"])
 
         adapter = ADAPTERS[pipeline]
+        script = adapter.resolve_script(CONFIG.pipeline_roots)
+        if script is None:
+            raise RuntimeError(f"{pipeline} worker not found in any pipeline root")
         out_dir = CONFIG.dev_out_dir
         out_dir.mkdir(parents=True, exist_ok=True)
         spec = JobSpec(pipeline=pipeline, mode=mode, params=params, output_dir=out_dir)
-        argv = adapter.build_argv(spec, CONFIG.venv_python, CONFIG.pipelines_root)
+        argv = adapter.build_argv(spec, CONFIG.venv_python, script)
 
         t0 = time.time()
-        proc = subprocess.run(argv, cwd=str(CONFIG.monorepo_root), capture_output=True, text=True)
+        # cwd = the root that holds the pipeline packages (script.parents[2]); paths
+        # passed to the worker are absolute, so cwd only affects incidental writes.
+        proc = subprocess.run(argv, cwd=str(script.parents[2]), capture_output=True, text=True)
         rec = adapter.parse_result(proc.returncode, proc.stdout, proc.stderr, out_dir)
         result = rec.to_dict()
         # Enrich for the UI: a servable basename + the resolved seed (from manifest).

@@ -53,7 +53,9 @@ body {
 .generate-bar select, .generate-bar input { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; }
 .generate-bar .prompt { flex: 1; min-width: 160px; }
 .generate-bar .n input { width: 48px; }
-.generate-bar button { background: var(--amber); color: #1a1a1a; border: 0; border-radius: 4px; padding: 5px 12px; font-weight: 600; cursor: not-allowed; opacity: 0.7; }
+.generate-bar button { background: var(--amber); color: #1a1a1a; border: 0; border-radius: 4px; padding: 5px 12px; font-weight: 600; cursor: pointer; }
+.generate-bar button:hover:not(:disabled) { filter: brightness(1.08); }
+.generate-bar button:disabled { cursor: not-allowed; opacity: 0.5; }
 
 .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; align-content: start; }
 .cell {

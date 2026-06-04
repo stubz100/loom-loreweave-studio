@@ -1,24 +1,25 @@
-"""Orchestrator app factory + the M0 health handshake (R101).
+"""Orchestrator app factory + handshake (M0) + generate/queue + grid (M1/M2).
 
 Run (dev):
-    python -m uvicorn orchestrator.main:app --host 127.0.0.1 --port 8765
-or:
     python -m orchestrator.main        # prints its bound URL + token, then serves
 
-M0 scope: only the handshake endpoints. The sidecar (Tauri, later) spawns this
-process, reads the READY line from stdout to learn the URL, and probes /health.
+M2: POST /generate enqueues an N-image batch onto the single-worker in-memory
+runner; the UI polls /jobs and streams results into a grid; /outputs/<name>
+serves the PNGs. Durable queue + cancel + VRAM admission is M4.
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import time
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 # Support both `python -m orchestrator.main` (package) and a direct run.
 try:
@@ -26,45 +27,54 @@ try:
     from . import __version__, SCHEMA_VERSION
     from .adapters import JobSpec
     from .adapters import zimage as zimage_adapter
+    from .runner import RUNNER
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from adapters import JobSpec  # type: ignore
     from adapters import zimage as zimage_adapter  # type: ignore
+    from runner import RUNNER  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
 
 
 _STARTED_AT = time.time()
-
-# M1: in-memory job registry (naive — replaced by the durable queue.json at M4).
-JOBS: dict[str, dict] = {}
+MAX_BATCH = 8  # batch cap for the smoke grid (≤ R38's cap)
 
 
 class GenerateRequest(BaseModel):
-    """M1 generate payload. One image, synchronous (the N-image grid is M2)."""
+    """M2 generate payload — an N-image batch (count) fired into the grid."""
 
     pipeline: str = "zimage"
     mode: str = "t2i"
     prompt: str
-    seed: int | None = None
+    count: int = Field(default=3, ge=1, le=MAX_BATCH)
+    seed: int | None = None         # if set, image i uses seed+i; else random per image
     width: int = 1280
     height: int = 720
     model_name: str | None = None
     num_steps: int | None = None
     guidance_scale: float | None = None
     negative_prompt: str | None = None
-    dry_run: bool = False  # return the argv without running the GPU job (testing)
+    dry_run: bool = False           # return the argv without running the GPU job (testing)
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Loreweave Studio orchestrator", version=__version__)
 
+    # Loopback-only service; allow the dev UI (localhost:1420) + Tauri webview to
+    # fetch /jobs etc. cross-origin. (Token enforcement is P0-16.)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    RUNNER.start()
+
     @app.get("/health")
     def health() -> dict:
-        """Liveness + identity. Unauthenticated so the sidecar can probe boot.
-
-        Mutating endpoints (M1+) will require the X-Loom-Token header (R101, P0-16).
-        """
+        """Liveness + identity. Unauthenticated so the sidecar can probe boot."""
         return {
             "status": "ok",
             "app_version": __version__,
@@ -88,46 +98,52 @@ def create_app() -> FastAPI:
 
     @app.post("/generate")
     def generate(req: GenerateRequest) -> dict:
-        """M1 smoke path: typed params → zimage adapter → subprocess → envelope.
-
-        Synchronous + in-memory (naive). The persistent, resume-paused queue with
-        a single GPU worker is M4; the N-image batch grid is M2.
-        """
+        """Enqueue an N-image batch onto the single-worker runner (M2)."""
         if req.pipeline != "zimage":
-            raise HTTPException(400, f"M1 supports only the 'zimage' adapter (got {req.pipeline!r})")
+            raise HTTPException(400, f"only the 'zimage' adapter is wired (got {req.pipeline!r})")
         if not zimage_adapter.present(CONFIG.pipelines_root):
             raise HTTPException(503, f"zimage worker not found under {CONFIG.pipelines_root}")
 
-        out_dir = CONFIG.dev_out_dir
-        out_dir.mkdir(parents=True, exist_ok=True)
-        params = req.model_dump(exclude={"pipeline", "mode", "dry_run"})
-        spec = JobSpec(pipeline=req.pipeline, mode=req.mode, params=params, output_dir=out_dir)
-        argv = zimage_adapter.build_argv(spec, CONFIG.venv_python, CONFIG.pipelines_root)
+        base = req.model_dump(exclude={"pipeline", "mode", "dry_run", "count"})
 
         if req.dry_run:
-            return {"dry_run": True, "argv": argv, "cwd": str(CONFIG.monorepo_root), "output_dir": str(out_dir)}
+            spec = JobSpec(pipeline=req.pipeline, mode=req.mode, params=base,
+                           output_dir=CONFIG.dev_out_dir)
+            argv = zimage_adapter.build_argv(spec, CONFIG.venv_python, CONFIG.pipelines_root)
+            return {"dry_run": True, "count": req.count, "argv": argv,
+                    "cwd": str(CONFIG.monorepo_root), "output_dir": str(CONFIG.dev_out_dir)}
 
-        job_id = "job_" + uuid.uuid4().hex[:8]
-        JOBS[job_id] = {"status": "running", "pipeline": req.pipeline, "mode": req.mode, "params": params}
-        t0 = time.time()
-        proc = subprocess.run(argv, cwd=str(CONFIG.monorepo_root), capture_output=True, text=True)
-        rec = zimage_adapter.parse_result(proc.returncode, proc.stdout, proc.stderr, out_dir)
-        JOBS[job_id].update({
-            "status": "done" if rec.ok else "failed",
-            "result": rec.to_dict(),
-            "wall_s": round(time.time() - t0, 2),
-        })
-        return {"job_id": job_id, "wall_s": JOBS[job_id]["wall_s"], **rec.to_dict()}
+        batch_id = "bat_" + uuid.uuid4().hex[:8]
+        job_ids: list[str] = []
+        for i in range(req.count):
+            params = dict(base)
+            if req.seed is not None:
+                params["seed"] = req.seed + i      # distinct but reproducible
+            jid = RUNNER.submit(pipeline=req.pipeline, mode=req.mode, params=params,
+                                batch_id=batch_id, index=i, batch_size=req.count)
+            job_ids.append(jid)
+        return {"batch_id": batch_id, "count": req.count, "job_ids": job_ids}
 
     @app.get("/jobs")
     def list_jobs() -> dict:
-        return {"jobs": JOBS}
+        return {"jobs": RUNNER.snapshot(), "counts": RUNNER.counts()}
 
     @app.get("/jobs/{job_id}")
     def get_job(job_id: str) -> dict:
-        if job_id not in JOBS:
+        job = RUNNER.get(job_id)
+        if job is None:
             raise HTTPException(404, f"no such job {job_id!r}")
-        return JOBS[job_id]
+        return job
+
+    @app.get("/outputs/{name}")
+    def get_output(name: str) -> FileResponse:
+        """Serve a generated PNG from the dev-out dir (M5: per-project out/)."""
+        if "/" in name or "\\" in name or ".." in name:
+            raise HTTPException(400, "invalid name")
+        path = (CONFIG.dev_out_dir / name).resolve()
+        if path.parent != CONFIG.dev_out_dir.resolve() or not path.is_file():
+            raise HTTPException(404, f"no such output {name!r}")
+        return FileResponse(path)
 
     return app
 

@@ -1,0 +1,96 @@
+// Thin client for the local orchestrator (FastAPI on 127.0.0.1, R101).
+//
+// In dev (`npm run dev`) the orchestrator runs separately; URL from
+// VITE_LOOM_ORCH_URL or the default. In the packaged app the Tauri shell spawns
+// the sidecar and (P0-16) will inject the URL + token; for now the fixed
+// loopback URL is used and the token is not yet enforced.
+
+const DEFAULT_URL = "http://127.0.0.1:8765";
+
+export function orchestratorUrl(): string {
+  // @ts-expect-error - import.meta.env is provided by Vite
+  const fromEnv = import.meta.env?.VITE_LOOM_ORCH_URL as string | undefined;
+  return fromEnv || DEFAULT_URL;
+}
+
+export interface Health {
+  status: string;
+  app_version: string;
+  schema_version: number;
+  pid: number;
+  uptime_s: number;
+}
+
+export interface JobResult {
+  ok: boolean;
+  returncode: number;
+  outputs: string[];
+  manifest_path: string | null;
+  duration_s: number | null;
+  stderr_tail: string;
+  output_name?: string;
+  seed?: number | null;
+}
+
+export type JobStatus = "queued" | "running" | "done" | "failed";
+
+export interface Job {
+  id: string;
+  pipeline: string;
+  mode: string;
+  params: Record<string, unknown>;
+  status: JobStatus;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  wall_s: number | null;
+  result: JobResult | null;
+  batch_id: string;
+  index: number;
+  batch_size: number;
+}
+
+export interface JobsResponse {
+  jobs: Record<string, Job>;
+  counts: Record<JobStatus, number>;
+}
+
+export interface GenerateRequest {
+  prompt: string;
+  count?: number;
+  seed?: number | null;
+  width?: number;
+  height?: number;
+}
+
+export interface GenerateResponse {
+  batch_id: string;
+  count: number;
+  job_ids: string[];
+}
+
+export async function getHealth(signal?: AbortSignal): Promise<Health> {
+  const res = await fetch(`${orchestratorUrl()}/health`, { signal });
+  if (!res.ok) throw new Error(`health ${res.status}`);
+  return (await res.json()) as Health;
+}
+
+export async function generate(req: GenerateRequest): Promise<GenerateResponse> {
+  const res = await fetch(`${orchestratorUrl()}/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) throw new Error(`generate ${res.status}: ${await res.text()}`);
+  return (await res.json()) as GenerateResponse;
+}
+
+export async function listJobs(signal?: AbortSignal): Promise<JobsResponse> {
+  const res = await fetch(`${orchestratorUrl()}/jobs`, { signal });
+  if (!res.ok) throw new Error(`jobs ${res.status}`);
+  return (await res.json()) as JobsResponse;
+}
+
+export function outputUrl(name: string): string {
+  return `${orchestratorUrl()}/outputs/${encodeURIComponent(name)}`;
+}

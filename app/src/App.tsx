@@ -1,11 +1,17 @@
-import { useEffect, useState } from "react";
-import { getHealth, type Health } from "./lib/orchestrator";
+import { useEffect, useRef, useState } from "react";
+import {
+  generate,
+  getHealth,
+  listJobs,
+  outputUrl,
+  type Health,
+  type Job,
+} from "./lib/orchestrator";
 
-// M0 shell — the three-pane layout + Job Queue dock from kb-loom-p0.md §10,
-// rendered as a static skeleton. The only live behaviour at M0 is the
-// orchestrator health probe (proves the shell <-> orchestrator handshake from
-// the UI side). Generate bar, grid, queue, inspector are non-functional mockups
-// until M1+.
+// M2 shell — three-pane layout + Job Queue dock (kb-loom-p0.md §10). The stage is
+// a generate bar + a simple selectable result grid (the smoke target / casting-grid
+// embryo, §12). Batches are fired at the orchestrator, which serializes them through
+// one GPU worker; the UI polls /jobs and streams each result into the grid.
 
 type Conn = "connecting" | "online" | "offline";
 
@@ -13,6 +19,15 @@ export default function App() {
   const [conn, setConn] = useState<Conn>("connecting");
   const [health, setHealth] = useState<Health | null>(null);
 
+  const [prompt, setPrompt] = useState("");
+  const [count, setCount] = useState(3);
+  const [batchIds, setBatchIds] = useState<string[]>([]);
+  const [jobs, setJobs] = useState<Record<string, Job>>({});
+  const [selected, setSelected] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const pollRef = useRef<number | null>(null);
+
+  // Health probe (every 2 s).
   useEffect(() => {
     let alive = true;
     const probe = async () => {
@@ -22,19 +37,62 @@ export default function App() {
         setHealth(h);
         setConn("online");
       } catch {
-        if (!alive) return;
-        setConn("offline");
+        if (alive) setConn("offline");
       }
     };
     probe();
-    const id = setInterval(probe, 2000);
+    const id = window.setInterval(probe, 2000);
     return () => {
       alive = false;
-      clearInterval(id);
+      window.clearInterval(id);
     };
   }, []);
 
+  // Poll /jobs while anything in the current batch is still pending.
+  const startPolling = () => {
+    if (pollRef.current != null) return;
+    const tick = async () => {
+      try {
+        const { jobs: all } = await listJobs();
+        setJobs(all);
+        const pending = Object.values(all).some(
+          (j) => j.status === "queued" || j.status === "running"
+        );
+        if (!pending && pollRef.current != null) {
+          window.clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+      } catch {
+        /* transient — keep polling */
+      }
+    };
+    tick();
+    pollRef.current = window.setInterval(tick, 1200);
+  };
+  useEffect(() => () => {
+    if (pollRef.current != null) window.clearInterval(pollRef.current);
+  }, []);
+
+  const onGenerate = async () => {
+    setError(null);
+    if (!prompt.trim()) {
+      setError("enter a prompt");
+      return;
+    }
+    try {
+      const res = await generate({ prompt: prompt.trim(), count });
+      setBatchIds(res.job_ids);
+      setSelected(null);
+      startPolling();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const dot = conn === "online" ? "ok" : conn === "offline" ? "err" : "warn";
+  const counts = countByStatus(jobs, batchIds);
+  const pending = counts.queued + counts.running;
+  const selJob = selected ? jobs[selected] : null;
 
   return (
     <div className="app">
@@ -45,7 +103,7 @@ export default function App() {
         <span className="spacer" />
         <span className={`status dot-${dot}`}>
           <i className="dot" /> orchestrator: {conn}
-          {health ? ` · v${health.app_version} · pid ${health.pid}` : ""}
+          {health ? ` · v${health.app_version}` : ""}
         </span>
       </header>
 
@@ -69,34 +127,120 @@ export default function App() {
                 <option>t2i</option>
               </select>
             </label>
-            <input className="prompt" placeholder="prompt (wired in M1)" disabled />
+            <input
+              className="prompt"
+              placeholder="prompt…"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onGenerate();
+              }}
+            />
             <label className="n">
-              N<input type="number" defaultValue={3} disabled />
+              N
+              <input
+                type="number"
+                min={1}
+                max={8}
+                value={count}
+                onChange={(e) => setCount(clamp(parseInt(e.target.value || "1", 10), 1, 8))}
+              />
             </label>
-            <button disabled>Generate ▶</button>
+            <button onClick={onGenerate} disabled={conn !== "online"}>
+              Generate ▶
+            </button>
           </div>
+          {error && <div className="error">⚠ {error}</div>}
+
           <div className="grid">
-            <div className="cell ph" />
-            <div className="cell ph" />
-            <div className="cell ph" />
+            {batchIds.length === 0 && (
+              <p className="muted center span">
+                Fire a batch — results stream in here (the casting-grid embryo).
+              </p>
+            )}
+            {batchIds.map((id) => (
+              <GridCell
+                key={id}
+                job={jobs[id]}
+                selected={selected === id}
+                onClick={() => setSelected(id)}
+              />
+            ))}
           </div>
-          <p className="muted center">Result grid — the casting-grid embryo (M2).</p>
         </main>
 
         <aside className="inspector">
           <div className="rail-head">INSPECTOR</div>
-          <div className="muted">Select an image to see job details + lineage (M2/M5).</div>
+          {!selJob && <div className="muted">Select an image to see job details + lineage.</div>}
+          {selJob && <Inspector job={selJob} />}
         </aside>
       </div>
 
       <footer className="dock">
-        <span className={`status dot-${dot}`}>
-          <i className="dot" /> JOB QUEUE ⏸ paused (0)
+        <span className={`status dot-${pending > 0 ? "warn" : dot}`}>
+          <i className="dot" /> JOB QUEUE{" "}
+          {pending > 0 ? `▶ running (${pending})` : `· idle`}
+        </span>
+        <span className="meter">
+          done {counts.done}
+          {counts.failed ? ` · failed ${counts.failed}` : ""}
         </span>
         <span className="meter">VRAM 0.0/16.0G</span>
         <span className="meter">disk —/250G</span>
-        <button disabled>unpause</button>
       </footer>
     </div>
   );
+}
+
+function GridCell({ job, selected, onClick }: { job?: Job; selected: boolean; onClick: () => void }) {
+  const status = job?.status ?? "queued";
+  const name = job?.result?.output_name;
+  return (
+    <button className={`cell ${selected ? "sel" : ""} st-${status}`} onClick={onClick}>
+      {name && status === "done" ? (
+        <img src={outputUrl(name)} alt={job?.id} />
+      ) : (
+        <span className="cell-status">
+          {status === "queued" && "queued…"}
+          {status === "running" && "generating…"}
+          {status === "failed" && "✕ failed"}
+          {status === "done" && "—"}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function Inspector({ job }: { job: Job }) {
+  const r = job.result;
+  return (
+    <div className="insp">
+      {r?.output_name && r.ok && <img className="preview" src={outputUrl(r.output_name)} alt={job.id} />}
+      <dl>
+        <dt>job</dt><dd>{job.id}</dd>
+        <dt>status</dt><dd>{job.status}</dd>
+        <dt>seed</dt><dd>{r?.seed ?? "—"}</dd>
+        <dt>wall</dt><dd>{job.wall_s != null ? `${job.wall_s}s` : "—"}</dd>
+        <dt>pipeline</dt><dd>{r?.duration_s != null ? `${r.duration_s}s` : "—"}</dd>
+        <dt>file</dt><dd className="mono">{r?.output_name ?? "—"}</dd>
+      </dl>
+      {job.status === "failed" && r?.stderr_tail && (
+        <pre className="stderr">{r.stderr_tail}</pre>
+      )}
+    </div>
+  );
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  if (Number.isNaN(n)) return lo;
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function countByStatus(jobs: Record<string, Job>, ids: string[]) {
+  const c = { queued: 0, running: 0, done: 0, failed: 0 };
+  for (const id of ids) {
+    const s = jobs[id]?.status;
+    if (s) c[s] += 1;
+  }
+  return c;
 }

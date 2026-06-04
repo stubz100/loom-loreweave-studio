@@ -14,8 +14,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored to repo root — the bare `lib/`/`lib64/` patterns also matched the UI's
+# `app/src/lib/` and silently un-tracked it. These are Python packaging dirs only.
+/lib/
+/lib64/
 parts/
 sdist/
 var/

@@ -14,12 +14,13 @@ import os
 import sys
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Support both `python -m orchestrator.main` (package) and a direct run.
 try:
@@ -49,28 +50,54 @@ class GenerateRequest(BaseModel):
     prompt: str
     count: int = Field(default=3, ge=1, le=MAX_BATCH)
     seed: int | None = None         # if set, image i uses seed+i; else random per image
-    width: int = 1280
-    height: int = 720
+    # Validated at the API boundary (review #2) so bad dims fail BEFORE a model load:
+    # zimage requires width/height divisible by 16.
+    width: int = Field(default=1280, ge=256, le=2048, multiple_of=16)
+    height: int = Field(default=720, ge=256, le=2048, multiple_of=16)
     model_name: str | None = None
-    num_steps: int | None = None
-    guidance_scale: float | None = None
+    num_steps: int | None = Field(default=None, ge=1, le=200)
+    guidance_scale: float | None = Field(default=None, ge=0.0, le=30.0)
     negative_prompt: str | None = None
     dry_run: bool = False           # return the argv without running the GPU job (testing)
 
+    @field_validator("prompt")
+    @classmethod
+    def _prompt_nonempty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("prompt must not be empty")
+        return v
+
+
+def require_token(x_loom_token: str | None = Header(default=None)) -> None:
+    """Auth gate for mutating/expensive endpoints (review #1, R101 transport).
+
+    The loopback bind already blocks off-machine callers; the token blocks *local*
+    cross-site requests from spending GPU (the no-surprise-GPU posture, R141–143).
+    """
+    if x_loom_token != CONFIG.token:
+        raise HTTPException(status_code=401, detail="missing or invalid X-Loom-Token")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start the worker, then emit READY — lifespan startup runs AFTER uvicorn binds
+    # the socket (review #3), so a port conflict fails before any false READY line.
+    RUNNER.start()
+    print(f"LOOM_ORCH_READY url={CONFIG.base_url} token={CONFIG.token}", flush=True)
+    yield
+
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Loreweave Studio orchestrator", version=__version__)
+    app = FastAPI(title="Loreweave Studio orchestrator", version=__version__, lifespan=lifespan)
 
-    # Loopback-only service; allow the dev UI (localhost:1420) + Tauri webview to
-    # fetch /jobs etc. cross-origin. (Token enforcement is P0-16.)
+    # Restrict to known dev/Tauri origins (review #1) — was `*`. Defense-in-depth;
+    # the token on /generate is the real gate.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=CONFIG.cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    RUNNER.start()
 
     @app.get("/health")
     def health() -> dict:
@@ -94,11 +121,13 @@ def create_app() -> FastAPI:
             "pipeline_roots": [str(r) for r in CONFIG.pipeline_roots],
             "zimage_worker": str(zimage_adapter.resolve_script(CONFIG.pipeline_roots) or ""),
             "models_dir": str(CONFIG.models_dir),
+            "cors_origins": CONFIG.cors_origins,
+            "token_required": ["/generate"],
         }
 
     @app.post("/generate")
-    def generate(req: GenerateRequest) -> dict:
-        """Enqueue an N-image batch onto the single-worker runner (M2)."""
+    def generate(req: GenerateRequest, _auth: None = Depends(require_token)) -> dict:
+        """Enqueue an N-image batch onto the single-worker runner (M2). Token-gated."""
         if req.pipeline != "zimage":
             raise HTTPException(400, f"only the 'zimage' adapter is wired (got {req.pipeline!r})")
         script = zimage_adapter.resolve_script(CONFIG.pipeline_roots)
@@ -156,9 +185,8 @@ app = create_app()
 def main() -> None:
     import uvicorn
 
-    # The READY line is the sidecar handshake contract: a single parseable stdout
-    # line carrying the base URL + token. Keep the prefix stable.
-    print(f"LOOM_ORCH_READY url={CONFIG.base_url} token={CONFIG.token}", flush=True)
+    # READY is emitted from the lifespan startup (after the socket binds) so it is
+    # the sidecar handshake contract only once the service is actually listening.
     uvicorn.run(app, host=CONFIG.host, port=CONFIG.port, log_level="info")
 
 

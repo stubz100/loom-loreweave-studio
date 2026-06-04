@@ -7,10 +7,27 @@
 
 const DEFAULT_URL = "http://127.0.0.1:8765";
 
+// The Tauri shell injects these into the webview on READY (window.__LOOM_*); in
+// `npm run dev` they come from .env / .env.local (VITE_*). See lib.rs + config.py.
+declare global {
+  interface Window {
+    __LOOM_TOKEN__?: string;
+    __LOOM_ORCH_URL__?: string;
+  }
+}
+
 export function orchestratorUrl(): string {
+  if (typeof window !== "undefined" && window.__LOOM_ORCH_URL__) return window.__LOOM_ORCH_URL__;
   // @ts-expect-error - import.meta.env is provided by Vite
   const fromEnv = import.meta.env?.VITE_LOOM_ORCH_URL as string | undefined;
   return fromEnv || DEFAULT_URL;
+}
+
+export function orchestratorToken(): string {
+  if (typeof window !== "undefined" && window.__LOOM_TOKEN__) return window.__LOOM_TOKEN__;
+  // @ts-expect-error - import.meta.env is provided by Vite
+  const fromEnv = import.meta.env?.VITE_LOOM_ORCH_TOKEN as string | undefined;
+  return fromEnv || "";
 }
 
 export interface Health {
@@ -78,9 +95,15 @@ export async function getHealth(signal?: AbortSignal): Promise<Health> {
 export async function generate(req: GenerateRequest): Promise<GenerateResponse> {
   const res = await fetch(`${orchestratorUrl()}/generate`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Loom-Token": orchestratorToken(),
+    },
     body: JSON.stringify(req),
   });
+  if (res.status === 401) {
+    throw new Error("401 unauthorized — orchestrator token missing/mismatched (set .env.local)");
+  }
   if (!res.ok) throw new Error(`generate ${res.status}: ${await res.text()}`);
   return (await res.json()) as GenerateResponse;
 }

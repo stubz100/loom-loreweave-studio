@@ -25,6 +25,7 @@ export default function App() {
   const [jobs, setJobs] = useState<Record<string, Job>>({});
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [counts, setCounts] = useState({ queued: 0, running: 0, done: 0, failed: 0 });
   const pollRef = useRef<number | null>(null);
 
   // Health probe (every 2 s).
@@ -53,8 +54,9 @@ export default function App() {
     if (pollRef.current != null) return;
     const tick = async () => {
       try {
-        const { jobs: all } = await listJobs();
+        const { jobs: all, counts: c } = await listJobs();
         setJobs(all);
+        setCounts(c);
         const pending = Object.values(all).some(
           (j) => j.status === "queued" || j.status === "running"
         );
@@ -71,6 +73,17 @@ export default function App() {
   };
   useEffect(() => () => {
     if (pollRef.current != null) window.clearInterval(pollRef.current);
+  }, []);
+
+  // Seed the queue counts on mount so the dock reflects the runner's full state
+  // (not just the current batch) even before/after a batch (review #5).
+  useEffect(() => {
+    listJobs()
+      .then((r) => {
+        setJobs(r.jobs);
+        setCounts(r.counts);
+      })
+      .catch(() => {});
   }, []);
 
   const onGenerate = async () => {
@@ -90,7 +103,6 @@ export default function App() {
   };
 
   const dot = conn === "online" ? "ok" : conn === "offline" ? "err" : "warn";
-  const counts = countByStatus(jobs, batchIds);
   const pending = counts.queued + counts.running;
   const selJob = selected ? jobs[selected] : null;
 
@@ -234,13 +246,4 @@ function Inspector({ job }: { job: Job }) {
 function clamp(n: number, lo: number, hi: number): number {
   if (Number.isNaN(n)) return lo;
   return Math.max(lo, Math.min(hi, n));
-}
-
-function countByStatus(jobs: Record<string, Job>, ids: string[]) {
-  const c = { queued: 0, running: 0, done: 0, failed: 0 };
-  for (const id of ids) {
-    const s = jobs[id]?.status;
-    if (s) c[s] += 1;
-  }
-  return c;
 }

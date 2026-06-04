@@ -65,13 +65,26 @@ the orchestrator as a sidecar, and kills it on exit. (Requires the Rust toolchai
   the HF companion repo is published.
 - App icon is **placeholder art**.
 
-## Configuration (env)
+## Configuration
+
+A central **`.env`** at the repo root is the master config, read by both the
+orchestrator (`config.py`) and the Vite UI (`envDir: ".."`). **`.env` is committed
+(non-secret only).** Secrets — the orchestrator **token** — go in a gitignored
+**`.env.local`** (`LOOM_ORCH_TOKEN` + `VITE_LOOM_ORCH_TOKEN`); copy the template at the
+bottom of `.env`. In the packaged Tauri app the token is generated at runtime and
+injected into the webview, so no `.env.local` is needed there. Precedence: real env var
+> `.env.local` > `.env` > built-in default.
+
+**Security:** `POST /generate` requires the `X-Loom-Token` header (the no-surprise-GPU
+gate, R141–143); CORS is restricted to the dev + Tauri origins. `npm run dev` sends the
+token from `.env.local`.
 
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `LOOM_ORCH_HOST` | `127.0.0.1` | orchestrator bind host (R101) |
 | `LOOM_ORCH_PORT` | `8765` | orchestrator bind port |
-| `LOOM_ORCH_TOKEN` | random | loopback handshake token (R101) |
+| `LOOM_ORCH_TOKEN` | random (dev: `.env.local`) | loopback token, enforced on `/generate` (R101) |
+| `LOOM_CORS_ORIGINS` | localhost:1420 + tauri.localhost | allowed browser origins (comma-sep) |
 | `LOOM_PIPELINES_DIR` | in-repo `pipelines/`, then parent `../../src/pipeline` | pipeline-code roots (vendored-first) |
 | `LOOM_SRC_ROOT` | parent `../../src` | monorepo `src/` (holds `village_ai/models`, R160) |
 | `LOOM_VENV_PYTHON` | current interpreter | python used to shell out to pipeline CLIs (R103) |

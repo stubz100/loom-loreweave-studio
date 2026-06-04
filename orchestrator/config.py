@@ -31,9 +31,43 @@ APP_REPO_ROOT = _THIS.parents[1]
 _MONOREPO_ROOT_GUESS = _THIS.parents[3]
 
 
+def _load_env_file(path: Path) -> dict[str, str]:
+    """Minimal .env parser (KEY=VALUE; # comments; optional quotes/`export`).
+
+    Dependency-free so the orchestrator needs no python-dotenv.
+    """
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        if "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        out[key.strip()] = val.strip().strip('"').strip("'")
+    return out
+
+
+# Central config (the user-chosen master config): committed `.env` for non-secret
+# settings + gitignored `.env.local` for the dev token. Precedence: real env var >
+# .env.local > .env > default. The Tauri shell still injects the token at runtime
+# for the packaged app (this file path is for the orchestrator + dev).
+_FILE_ENV: dict[str, str] = {}
+for _name in (".env", ".env.local"):
+    _FILE_ENV.update(_load_env_file(APP_REPO_ROOT / _name))
+
+
+def _get(key: str, default: str | None = None) -> str | None:
+    return os.environ.get(key, _FILE_ENV.get(key, default))
+
+
 def _resolve_src_root() -> Path:
     """The parent monorepo `src/` (holds village_ai/models — weights live here, R160)."""
-    env = os.environ.get("LOOM_SRC_ROOT")
+    env = _get("LOOM_SRC_ROOT")
     return Path(env).resolve() if env else (_MONOREPO_ROOT_GUESS / "src")
 
 
@@ -44,7 +78,7 @@ def _resolve_pipeline_roots() -> list[Path]:
     Prepend an explicit root via LOOM_PIPELINES_DIR.
     """
     roots: list[Path] = []
-    env = os.environ.get("LOOM_PIPELINES_DIR")
+    env = _get("LOOM_PIPELINES_DIR")
     if env:
         roots.append(Path(env).resolve())
     roots.append(APP_REPO_ROOT / "pipelines")            # vendored (preferred)
@@ -58,19 +92,40 @@ def _resolve_venv_python() -> str:
     Configurable via LOOM_VENV_PYTHON; defaults to the interpreter currently
     running this orchestrator (so dev "just works" inside the shared .venv).
     """
-    env = os.environ.get("LOOM_VENV_PYTHON")
+    env = _get("LOOM_VENV_PYTHON")
     if env:
         return env
     return sys.executable
 
 
+def _resolve_cors_origins() -> list[str]:
+    """Allowed browser origins for the loopback API (was `*` — review finding #1).
+
+    Defaults to the dev UI + the Tauri webview origins; override comma-separated
+    via LOOM_CORS_ORIGINS. The token is the real auth gate on /generate; this is
+    defense-in-depth so a random web page can't read /jobs etc.
+    """
+    env = _get("LOOM_CORS_ORIGINS")
+    if env:
+        return [o.strip() for o in env.split(",") if o.strip()]
+    return [
+        "http://localhost:1420",
+        "http://127.0.0.1:1420",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+    ]
+
+
 @dataclass(frozen=True)
 class Config:
-    host: str = field(default_factory=lambda: os.environ.get("LOOM_ORCH_HOST", "127.0.0.1"))
-    port: int = field(default_factory=lambda: int(os.environ.get("LOOM_ORCH_PORT", "8765")))
-    # Loopback handshake token (R101). The Tauri shell generates this and passes it
-    # to both the sidecar (env) and the UI; mutating endpoints will require it (M1+).
-    token: str = field(default_factory=lambda: os.environ.get("LOOM_ORCH_TOKEN") or secrets.token_urlsafe(24))
+    host: str = field(default_factory=lambda: _get("LOOM_ORCH_HOST", "127.0.0.1"))
+    port: int = field(default_factory=lambda: int(_get("LOOM_ORCH_PORT", "8765")))
+    # Loopback handshake token (R101). Enforced on mutating endpoints (/generate).
+    # In the packaged app the Tauri shell reads it from the READY line and injects
+    # it into the webview; in dev it comes from `.env.local` (LOOM_ORCH_TOKEN +
+    # VITE_LOOM_ORCH_TOKEN). Falls back to a per-process random if unset.
+    token: str = field(default_factory=lambda: _get("LOOM_ORCH_TOKEN") or secrets.token_urlsafe(24))
+    cors_origins: list[str] = field(default_factory=_resolve_cors_origins)
     pipeline_roots: list[Path] = field(default_factory=_resolve_pipeline_roots)
     src_root: Path = field(default_factory=_resolve_src_root)
     venv_python: str = field(default_factory=_resolve_venv_python)
@@ -90,7 +145,7 @@ class Config:
     def dev_out_dir(self) -> Path:
         """M1/M2 output dir for smoke generations. Replaced by the per-project
         workspace `out/` at M5 (R72); gitignored. Override via LOOM_DEV_OUT."""
-        env = os.environ.get("LOOM_DEV_OUT")
+        env = _get("LOOM_DEV_OUT")
         return Path(env).resolve() if env else (self.app_repo_root / ".dev_out")
 
 

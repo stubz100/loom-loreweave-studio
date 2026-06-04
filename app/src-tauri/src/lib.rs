@@ -64,7 +64,7 @@ fn spawn_orchestrator(app: &tauri::AppHandle, child_slot: ChildSlot, endpoint: A
     };
 
     if let Some(stdout) = child.stdout.take() {
-        let _ = app; // reserved for future change-event emission
+        let app = app.clone();
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
@@ -74,7 +74,18 @@ fn spawn_orchestrator(app: &tauri::AppHandle, child_slot: ChildSlot, endpoint: A
                         if let Some(v) = kv.strip_prefix("url=") { url = v.into(); }
                         if let Some(v) = kv.strip_prefix("token=") { token = v.into(); }
                     }
-                    *endpoint.lock().unwrap() = OrchestratorEndpoint { url: url.clone(), token };
+                    *endpoint.lock().unwrap() =
+                        OrchestratorEndpoint { url: url.clone(), token: token.clone() };
+                    // Inject the loopback URL + token into the webview so the UI can send
+                    // X-Loom-Token on /generate (review #1). serde_json-encoded for safety.
+                    if let Some(win) = app.get_webview_window("main") {
+                        let script = format!(
+                            "window.__LOOM_ORCH_URL__={};window.__LOOM_TOKEN__={};",
+                            serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".into()),
+                            serde_json::to_string(&token).unwrap_or_else(|_| "\"\"".into()),
+                        );
+                        let _ = win.eval(&script);
+                    }
                     println!("[loom] orchestrator ready at {url}");
                 }
             }

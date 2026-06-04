@@ -1,0 +1,6 @@
+# Orchestrator deps — kept SEPARATE from the heavy pipeline deps (R103).
+# During dev these install into the shared parent .venv; a dedicated venv is a
+# post-v1 packaging concern (P0-17). Pin loosely for now (presence-only, R97).
+fastapi>=0.115
+uvicorn[standard]>=0.30
+huggingface_hub>=0.25   # models.json presence-check + on-demand fetch (R160/R163)

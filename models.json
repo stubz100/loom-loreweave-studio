@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "_doc": "Weight manifest (R160). The single list of 'what the app expects on disk and where to get it'. Weights NEVER live in git; bulk weights sit in the parent monorepo's src/village_ai/models/ (outside this repo). Entry types: 'hf_diffusers' = pulled via diffusers from_pretrained into the HF hub cache; 'file' = a single weight fetched from the companion HF repo, checksum-verified. Presence-check -> offer fetch -> fail only if that fails (R163). Only models needed by the ACTIVE phase are fetched.",
+  "companion_repo": "https://huggingface.co/stubz100/loom-loreweave-weights",
+  "_companion_repo_status": "PLACEHOLDER — companion HF repo not yet created. Update URL on creation; 'file' entry urls below resolve against it.",
+  "models": [
+    {
+      "id": "zimage-turbo",
+      "phase": "P0",
+      "type": "hf_diffusers",
+      "repo_id": "Tongyi-MAI/Z-Image-Turbo",
+      "target": "hf_cache",
+      "sha256": null,
+      "size_gb_est": 12,
+      "essential_for": ["P0 smoke target — zimage t2i batch (§12)"],
+      "note": "Public, Apache-2.0 diffusers repo pulled by stage1_load_pipeline.from_pretrained; integrity via hub etags. NOT mirrored in the companion repo."
+    },
+    {
+      "id": "qwen3-vl-4b-instruct-q8",
+      "phase": "P3",
+      "type": "file",
+      "filename": "Qwen3-VL-4B-Instruct-UD-Q8_K_XL.gguf",
+      "target": "src/village_ai/models/Qwen3-VL-4B-Instruct-UD-Q8_K_XL.gguf",
+      "url": "{companion_repo}/resolve/main/Qwen3-VL-4B-Instruct-UD-Q8_K_XL.gguf",
+      "sha256": null,
+      "size_gb_est": 4.7,
+      "essential_for": ["Muse generative SLM/VLM — all generative roles (R144)"],
+      "note": "Already present locally. sha256 TODO: fill at companion-repo publish."
+    },
+    {
+      "id": "qwen3-vl-embedding-8b-q8",
+      "phase": "P4",
+      "type": "file",
+      "filename": "Qwen3-VL-Embedding-8B-Q8_0.gguf",
+      "target": "src/village_ai/models/Qwen3-VL-Embedding-8B-Q8_0.gguf",
+      "url": "{companion_repo}/resolve/main/Qwen3-VL-Embedding-8B-Q8_0.gguf",
+      "sha256": null,
+      "size_gb_est": 8.1,
+      "essential_for": ["Muse retrieval / embedding (R144)"],
+      "note": "Already present locally. sha256 TODO: fill at companion-repo publish."
+    }
+  ]
+}

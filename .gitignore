@@ -216,3 +216,32 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Loreweave Studio (loom) — app-repo additions
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Model weights NEVER live in git (R160). Belt-and-suspenders: the bulk weights
+# live in the parent monorepo outside this repo, but exclude any local cache too.
+*.safetensors
+*.gguf
+*.ckpt
+*.pt
+*.bin
+/models/            # any in-repo weight cache (the manifest is models.json, NOT the weights)
+hf_cache/
+
+# Node / Vite (app/)
+node_modules/
+app/dist/
+app/.vite/
+*.tsbuildinfo
+
+# Tauri / Rust build output (app/src-tauri/)
+app/src-tauri/target/
+app/src-tauri/gen/
+
+# Project workspaces are NOT part of the app repo (they live on the work disk,
+# e.g. F:\_tmp\<project>\) — never commit one if it lands here.
+/workspace/
+*.loomproject

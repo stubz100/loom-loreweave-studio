@@ -80,19 +80,39 @@ class JobRunner:
         return job_id
 
     def cancel(self, job_id: str) -> bool:
-        """Cancel a queued or running job (review/contract: cancel = subprocess kill)."""
+        """Cancel a queued/running job. Cancel = **terminate then kill** (grace).
+
+        Only honored while the subprocess is still alive: if it has already exited,
+        finalization is in flight and cancel is a no-op (review #3 race).
+        """
         with self._lock:
             job = self.jobs.get(job_id)
             if job is None or job["status"] in ("done", "failed", "canceled"):
                 return False
-            self._canceled.add(job_id)
             proc = self._procs.get(job_id)
+            if job["status"] == "running" and proc is not None and proc.poll() is not None:
+                return False  # subprocess already exited -> too late to cancel
+            self._canceled.add(job_id)
             if job["status"] == "queued":
                 job["status"] = "canceled"
                 job["finished_at"] = _now()
-        if proc is not None:
-            proc.terminate()  # running -> the worker loop finalizes it as canceled
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            threading.Thread(target=self._grace_kill, args=(proc,), daemon=True).start()
         return True
+
+    @staticmethod
+    def _grace_kill(proc: subprocess.Popen, grace_s: float = 5.0) -> None:
+        """`terminate()` was sent; if the worker hasn't exited within the grace,
+        `kill()` it so the worker thread (blocked reading stdout) can't stall the
+        single GPU queue (review #2)."""
+        try:
+            proc.wait(timeout=grace_s)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -180,7 +200,12 @@ class JobRunner:
             self._procs.pop(job_id, None)
             canceled = job_id in self._canceled
 
-        if canceled:
+        rec = adapter.parse_result(rc, log_text, "", out_dir)
+
+        # Cancel wins ONLY if the run didn't actually complete (review #3): a cancel
+        # that lost the race to a successful finish keeps the finished image (-> done),
+        # rather than deleting a good output.
+        if canceled and not rec.ok:
             shutil.rmtree(out_dir, ignore_errors=True)   # drop partial output
             with self._lock:
                 j = self.jobs[job_id]
@@ -190,7 +215,6 @@ class JobRunner:
                 j["log_tail"] = log_text
             return
 
-        rec = adapter.parse_result(rc, log_text, "", out_dir)
         result = rec.to_dict()
         if rec.outputs:
             # served via /outputs/<job_id>/<file> (per-job dir)

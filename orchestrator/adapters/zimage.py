@@ -22,11 +22,15 @@ from pathlib import Path
 from .base import CompletionRecord, JobSpec
 
 PIPELINE = "zimage"
+# What the worker CLI can do (build_argv supports all three — ready for P1).
 SUPPORTED_MODES = ("t2i", "img2img", "inpaint")
-SUPPORTED_PARAMS = (
+# What the orchestrator API actually accepts TODAY (review #1): capabilities must
+# advertise only this, so it never claims a mode/param GenerateRequest will reject.
+# img2img/inpaint (+ init_image/mask_image/strength) get wired in P1 (asset studio).
+WIRED_MODES = ("t2i",)
+WIRED_PARAMS = (
     "prompt", "mode", "width", "height", "seed", "model_name",
-    "num_steps", "guidance_scale", "negative_prompt", "init_image",
-    "mask_image", "strength",
+    "num_steps", "guidance_scale", "negative_prompt",
 )
 
 _MANIFEST_RE = re.compile(r"^\s*Manifest:\s*(.+?)\s*$", re.MULTILINE)
@@ -60,8 +64,9 @@ def capabilities(roots: list[Path]) -> dict:
         "pipeline": PIPELINE,
         "present": present(roots),
         "worker": str(resolve_script(roots) or ""),
-        "modes": list(SUPPORTED_MODES),
-        "params": list(SUPPORTED_PARAMS),
+        "modes": list(WIRED_MODES),            # honest: only what the API accepts (review #1)
+        "params": list(WIRED_PARAMS),
+        "worker_modes": list(SUPPORTED_MODES),  # informational: full CLI capability (P1)
         "cancellable": True,
         "progress": "coarse",
         "vram_estimate_gb": None,

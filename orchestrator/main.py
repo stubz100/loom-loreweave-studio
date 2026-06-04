@@ -16,11 +16,12 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Support both `python -m orchestrator.main` (package) and a direct run.
 try:
@@ -43,10 +44,17 @@ MAX_BATCH = 8  # batch cap for the smoke grid (≤ R38's cap)
 
 
 class GenerateRequest(BaseModel):
-    """M2 generate payload — an N-image batch (count) fired into the grid."""
+    """M2 generate payload — an N-image batch (count) fired into the grid.
+
+    `extra="forbid"` so unknown/unsupported params 422 instead of being silently
+    dropped (review #1). Only **t2i** is wired at P0; img2img/inpaint (with
+    init_image/mask_image/strength + mode-specific validation) arrive in **P1**.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     pipeline: str = "zimage"
-    mode: str = "t2i"
+    mode: Literal["t2i"] = "t2i"
     prompt: str
     count: int = Field(default=3, ge=1, le=MAX_BATCH)
     seed: int | None = None         # if set, image i uses seed+i; else random per image

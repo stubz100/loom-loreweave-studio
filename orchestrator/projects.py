@@ -12,7 +12,6 @@ the one piece of state that legitimately stays in the cross-project app-state di
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,18 +20,21 @@ try:
     from .runner import RUNNER
     from . import workspace as ws_mod
     from .workspace import Workspace
+    from .logsetup import get_logger
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from runner import RUNNER  # type: ignore
     import workspace as ws_mod  # type: ignore
     from workspace import Workspace  # type: ignore
+    from logsetup import get_logger  # type: ignore
 
 POINTER_SCHEMA_VERSION = 1
-_MAX_RECENT = 8
+_MAX_RECENT = 20
+LOG = get_logger()
 
 
 def _warn(msg: str) -> None:
-    print(f"[loom] WARNING: {msg}", file=sys.stderr, flush=True)
+    LOG.warning(msg)
 
 
 def _now() -> str:
@@ -63,13 +65,51 @@ def write_pointer(active_path: Path) -> None:
     })
 
 
+def list_projects() -> dict:
+    """The project **registry** for the picker (app-level, machine-local — NOT in git):
+    the most-recent project paths enriched from each `project.json` (name/id/cap), with a
+    liveness check so a moved/deleted project shows `exists:false` (and can be forgotten).
+    Ordered most-recent-first."""
+    data = read_pointer()
+    active = data.get("active_project")
+    projects: list[dict] = []
+    for p in data.get("recent", []):
+        entry = {"path": p, "active": p == active, "exists": False,
+                 "name": None, "id": None, "size_cap_gb": None}
+        try:
+            ws = Workspace(Path(p))
+            if ws.project_json.is_file():
+                pj = ws.load_project()
+                entry.update(exists=True, name=pj["name"], id=pj["id"],
+                             size_cap_gb=pj["size_cap_gb"])
+        except Exception:  # noqa: BLE001 - a corrupt/odd entry just shows exists:false
+            pass
+        projects.append(entry)
+    return {"active": active, "projects": projects}
+
+
+def forget_project(path: Path) -> dict:
+    """Drop a project from the registry's recent list (e.g. a moved/deleted one). Does
+    NOT touch the files or unbind the active project — purely a list cleanup."""
+    p = str(Path(path).resolve())
+    data = read_pointer()
+    ws_mod.atomic_write_json(CONFIG.app_pointer_path, {
+        "schema_version": POINTER_SCHEMA_VERSION,
+        "active_project": data.get("active_project"),
+        "recent": [r for r in data.get("recent", []) if r != p],
+    })
+    return list_projects()
+
+
 # --- lifecycle ------------------------------------------------------------------
 
 def _bind(ws: Workspace) -> dict:
     """Bind the runner to `ws`, record the pointer, return the project info."""
     RUNNER.bind(ws)
     write_pointer(ws.path)
-    return ws.info()
+    info = ws.info()
+    LOG.info("project open: %s (%s) at %s", info.get("name"), info.get("id"), ws.path)
+    return info
 
 
 def create_project(dest: Path, *, name: str, fmt: dict | None = None,

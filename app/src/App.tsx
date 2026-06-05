@@ -5,12 +5,14 @@ import {
   deleteJob,
   estimateFootprint,
   fetchComponents,
+  forgetProject,
   generate,
   getComponents,
   getDisk,
   getHealth,
   getProject,
   listJobs,
+  listProjects,
   openProject,
   outputUrl,
   unpauseQueue,
@@ -19,7 +21,9 @@ import {
   type Job,
   type LaunchReport,
   type ProjectInfo,
+  type ProjectListEntry,
 } from "./lib/orchestrator";
+import { log } from "./lib/log";
 
 // M2 shell — three-pane layout + Job Queue dock (kb-loom-p0.md §10). The stage is
 // a generate bar + a simple selectable result grid (the smoke target / casting-grid
@@ -45,7 +49,13 @@ export default function App() {
   const [disk, setDisk] = useState<DiskStatus | null>(null);
   const [launch, setLaunch] = useState<LaunchReport | null>(null);
   const [fetching, setFetching] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
+  const [projectList, setProjectList] = useState<ProjectListEntry[]>([]);
   const pollRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    log.info("Loreweave Studio UI started (log level:", log.level + ")");
+  }, []);
 
   // Health probe (every 2 s).
   useEffect(() => {
@@ -153,9 +163,11 @@ export default function App() {
     if (!window.confirm("Delete this generation and all its files? This cannot be undone.")) return;
     try {
       await deleteJob(id);
+      log.info("deleted generation:", id);
       setBatchIds((prev) => prev.filter((b) => b !== id));
       if (selected === id) setSelected(null);
     } catch (e) {
+      log.error("delete failed:", e);
       setError(String(e));
     }
     startPolling();
@@ -173,10 +185,12 @@ export default function App() {
     }
     try {
       const res = await generate({ prompt: prompt.trim(), count });
+      log.info("generate: batch", res.batch_id, `(${count} image${count > 1 ? "s" : ""})`);
       setBatchIds(res.job_ids);
       setSelected(null);
       startPolling();
     } catch (e) {
+      log.error("generate failed:", e);
       setError(String(e));
     }
   };
@@ -199,25 +213,59 @@ export default function App() {
       );
       if (cap === null) return;
       const p = await createProject(dest, name, Math.max(50, parseInt(cap, 10) || 250));
+      log.info("created project:", p.name, "at", p.path);
       setProject(p);
       setBatchIds([]);
       setSelected(null);
       startPolling();
     } catch (e) {
+      log.error("create project failed:", e);
       setError(String(e));
     }
   };
 
-  const onOpenProject = async () => {
+  const openByPath = async (path: string) => {
     setError(null);
-    const path = window.prompt("Open project folder (contains project.json):");
-    if (!path) return;
+    setShowPicker(false);
     try {
       const p = await openProject(path);
+      log.info("opened project:", p.name, "at", p.path);
       setProject(p);
       setBatchIds([]);
       setSelected(null);
       startPolling();
+    } catch (e) {
+      log.error("open project failed:", e);
+      setError(String(e));
+    }
+  };
+
+  // Project picker: show the registry of known projects (from .loom_state, machine-local)
+  // so you choose from a list instead of typing a path. "Browse…" keeps the manual entry.
+  const onTogglePicker = async () => {
+    if (showPicker) {
+      setShowPicker(false);
+      return;
+    }
+    try {
+      const r = await listProjects();
+      setProjectList(r.projects);
+    } catch (e) {
+      setError(String(e));
+    }
+    setShowPicker(true);
+  };
+
+  const onBrowseProject = () => {
+    setShowPicker(false);
+    const path = window.prompt("Open project folder (contains project.json):");
+    if (path) void openByPath(path);
+  };
+
+  const onForgetProject = async (path: string) => {
+    try {
+      await forgetProject(path);
+      setProjectList((prev) => prev.filter((p) => p.path !== path));
     } catch (e) {
       setError(String(e));
     }
@@ -253,9 +301,40 @@ export default function App() {
         <button className="proj-btn" onClick={onNewProject} disabled={conn !== "online"}>
           + New
         </button>
-        <button className="proj-btn" onClick={onOpenProject} disabled={conn !== "online"}>
-          Open
-        </button>
+        <div className="picker-wrap">
+          <button className="proj-btn" onClick={onTogglePicker} disabled={conn !== "online"}>
+            Open ▾
+          </button>
+          {showPicker && (
+            <div className="picker">
+              {projectList.length === 0 && (
+                <div className="picker-empty">no recent projects</div>
+              )}
+              {projectList.map((p) => (
+                <div key={p.path} className={`picker-row ${p.exists ? "" : "missing"}`}>
+                  <button
+                    className="picker-open"
+                    disabled={!p.exists}
+                    title={p.path}
+                    onClick={() => openByPath(p.path)}
+                  >
+                    <span className="picker-name">
+                      {p.name || "(unknown)"} {p.active && <span className="picker-active">● open</span>}
+                    </span>
+                    <span className="picker-path">
+                      {p.path}
+                      {!p.exists && " — missing"}
+                      {p.size_cap_gb ? ` · ${p.size_cap_gb}G cap` : ""}
+                    </span>
+                  </button>
+                  <button className="picker-forget" title="forget (remove from list)"
+                          onClick={() => onForgetProject(p.path)}>✕</button>
+                </div>
+              ))}
+              <button className="picker-browse" onClick={onBrowseProject}>Browse folder…</button>
+            </div>
+          )}
+        </div>
         <span className="spacer" />
         <span className={`status dot-${dot}`}>
           <i className="dot" /> orchestrator: {conn}
@@ -326,7 +405,7 @@ export default function App() {
           {conn === "online" && !project?.open && (
             <div className="banner">
               No project open. <button className="link" onClick={onNewProject}>Create</button> or{" "}
-              <button className="link" onClick={onOpenProject}>open</button> a project to generate.
+              <button className="link" onClick={onTogglePicker}>open</button> a project to generate.
             </div>
           )}
           {disk?.blocked && (

@@ -202,6 +202,30 @@ export async function createProject(
   return (await res.json()) as ProjectInfo;
 }
 
+export interface ProjectListEntry {
+  path: string;
+  active: boolean;
+  exists: boolean;
+  name: string | null;
+  id: string | null;
+  size_cap_gb: number | null;
+}
+
+export async function listProjects(signal?: AbortSignal): Promise<{ active: string | null; projects: ProjectListEntry[] }> {
+  const res = await fetch(`${orchestratorUrl()}/projects`, { signal });
+  if (!res.ok) throw new Error(`projects ${res.status}`);
+  return await res.json();
+}
+
+export async function forgetProject(path: string): Promise<void> {
+  const res = await fetch(`${orchestratorUrl()}/project/forget`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw new Error(`forget ${res.status}`);
+}
+
 export async function openProject(path: string): Promise<ProjectInfo> {
   const res = await fetch(`${orchestratorUrl()}/project/open`, {
     method: "POST",

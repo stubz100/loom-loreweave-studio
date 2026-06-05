@@ -151,6 +151,17 @@ class Config:
         return Path(env).resolve() if env else (self.app_repo_root / ".loom_state")
 
     @property
+    def log_level(self) -> str:
+        """Logging verbosity (`brief`|`verbose`, or a standard level name). Override
+        LOOM_LOG_LEVEL. `brief` = INFO lifecycle; `verbose` = DEBUG detail."""
+        return _get("LOOM_LOG_LEVEL", "brief") or "brief"
+
+    @property
+    def log_dir(self) -> Path:
+        """App-level log dir (gitignored): `.loom_state/logs/`."""
+        return self.state_dir / "logs"
+
+    @property
     def app_pointer_path(self) -> Path:
         """Cross-project pointer to the last-opened project, so a relaunch re-opens it
         (resume-paused). Lives outside any project (it records *which* project)."""

@@ -40,6 +40,36 @@ body {
 .proj-btn:disabled { opacity: 0.4; cursor: default; }
 .spacer { flex: 1; }
 
+.picker-wrap { position: relative; }
+.picker {
+  position: absolute; top: 26px; left: 0; z-index: 20; min-width: 320px; max-width: 520px;
+  max-height: 60vh; overflow: auto; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 4px;
+}
+.picker-empty { color: var(--muted); font-size: 12px; padding: 8px; }
+.picker-row { display: flex; align-items: stretch; gap: 2px; }
+.picker-open {
+  flex: 1; display: flex; flex-direction: column; gap: 2px; text-align: left;
+  background: transparent; border: 0; color: var(--text); padding: 6px 8px; border-radius: 4px;
+  cursor: pointer;
+}
+.picker-open:hover:not(:disabled) { background: rgba(255,255,255,0.06); }
+.picker-open:disabled { cursor: default; opacity: 0.5; }
+.picker-name { font-size: 13px; font-weight: 500; }
+.picker-active { color: var(--ok); font-weight: 400; font-size: 11px; }
+.picker-path { font-size: 10px; color: var(--muted); font-family: ui-monospace, monospace; word-break: break-all; }
+.picker-row.missing .picker-name { color: var(--muted); }
+.picker-forget {
+  background: transparent; border: 0; color: var(--muted); cursor: pointer; padding: 0 8px;
+  border-radius: 4px; font-size: 11px;
+}
+.picker-forget:hover { color: var(--err); background: rgba(255,255,255,0.06); }
+.picker-browse {
+  width: 100%; text-align: left; background: transparent; border: 0; border-top: 1px solid var(--line);
+  color: var(--amber); cursor: pointer; padding: 7px 8px; font-size: 12px; margin-top: 2px;
+}
+.picker-browse:hover { background: rgba(255,255,255,0.06); }
+
 .banner {
   font-size: 12px; color: var(--warn); background: #2a2410;
   border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px; margin-top: 8px;

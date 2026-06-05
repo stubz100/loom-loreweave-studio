@@ -42,6 +42,7 @@ try:
     from . import lineage
     from . import workspace as ws_mod
     from .workspace import Workspace, new_id
+    from .logsetup import get_logger
 except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import JobSpec  # type: ignore
     from adapters import zimage as zimage_adapter  # type: ignore
@@ -49,13 +50,15 @@ except ImportError:  # pragma: no cover - direct-run convenience
     import lineage  # type: ignore
     import workspace as ws_mod  # type: ignore
     from workspace import Workspace, new_id  # type: ignore
+    from logsetup import get_logger  # type: ignore
 
 ADAPTERS = {"zimage": zimage_adapter}
 SCHEMA_VERSION = 1
+LOG = get_logger()
 
 
 def _warn(msg: str) -> None:
-    print(f"[loom] WARNING: {msg}", file=sys.stderr, flush=True)
+    LOG.warning(msg)
 
 
 def _make_kill_on_close_job():
@@ -338,6 +341,7 @@ class JobRunner:
         in-flight job (R159 graceful branch). Leaves the job `running` in the file; the
         reload's clean-shutdown branch re-queues it (and the worker, if it reaches
         finalize first, re-queues it via the `_shutting_down` guard)."""
+        LOG.info("graceful shutdown — re-queue in-flight + clean stop")
         with self._lock:
             self._shutting_down = True
             for proc in list(self._procs.values()):
@@ -394,6 +398,8 @@ class JobRunner:
             }
             self._persist_locked()
             self._cv.notify()
+        LOG.info("queued %s (%s/%s, batch=%s %d/%d)", job_id, pipeline, mode,
+                 batch_id, index + 1, batch_size)
         return job_id
 
     def cancel(self, job_id: str) -> bool:
@@ -442,6 +448,7 @@ class JobRunner:
                 lineage.remove_edge(ws, job_id)
             except Exception as e:  # noqa: BLE001 - lineage is rebuildable, never block delete
                 _warn(f"lineage edge cleanup failed for {job_id}: {e}")
+        LOG.info("deleted %s + all artifacts", job_id)
         return True
 
     @staticmethod
@@ -503,6 +510,7 @@ class JobRunner:
                 job["progress"] = 0.0
                 pipeline, mode, params = job["pipeline"], job["mode"], dict(job["params"])
                 self._persist_locked()
+            LOG.info("running %s (%s/%s)", job_id, pipeline, mode)
             try:
                 self._execute(job_id, pipeline, mode, params)
             except Exception as e:  # never let the worker die
@@ -642,6 +650,11 @@ class JobRunner:
             j["log_tail"] = log_text
             self._persist_locked()
             job_snapshot = dict(j) if rec.ok else None
+        if rec.ok:
+            LOG.info("done %s in %.1fs -> %s", job_id, round(time.time() - t0, 1),
+                     result.get("output_name"))
+        else:
+            LOG.warning("failed %s (rc=%s): %s", job_id, rc, (rec.error or "")[:160])
 
         # Lineage edge per successful output (R98) — written after the job is durable so
         # the index only ever references a persisted result. Best-effort: a lineage write

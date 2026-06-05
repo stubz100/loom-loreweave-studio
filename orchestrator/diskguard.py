@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import sys
 import threading
 from pathlib import Path
 from typing import Callable
@@ -30,19 +29,22 @@ from typing import Callable
 try:
     from .config import CONFIG
     from .workspace import Workspace
+    from .logsetup import get_logger
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from workspace import Workspace  # type: ignore
+    from logsetup import get_logger  # type: ignore
 
 _GB = 1024 ** 3
 
 WARN_PCT = 5.0   # <5% headroom/free → warn
 HARD_PCT = 2.0   # <2% headroom/free → hard stop (block admission + dispatch)
 DEFAULT_POLL_S = 5.0
+LOG = get_logger()
 
 
 def _warn(msg: str) -> None:
-    print(f"[loom] WARNING: {msg}", file=sys.stderr, flush=True)
+    LOG.warning(msg)
 
 
 def _dir_size_bytes(root: Path) -> int:
@@ -157,7 +159,19 @@ class DiskGuard:
         status["blocked"] = worst == "hard"
         status["reason"] = "; ".join(reasons) if reasons else None
         with self._lock:
+            prev = self._status.get("state")
             self._status = status
+        if worst != prev:   # log only transitions at INFO (avoid per-poll spam)
+            if worst == "hard":
+                LOG.warning("disk HARD-STOP — %s", status["reason"])
+            elif worst == "warn":
+                LOG.info("disk warning — %s", status["reason"])
+            else:
+                LOG.info("disk OK (recovered from %s)", prev)
+        else:
+            LOG.debug("disk %s (free=%s%%, proj_headroom=%s%%)", worst,
+                      (status["disk"] or {}).get("free_pct"),
+                      (status["project"] or {}).get("headroom_pct"))
         return status
 
     # --- read views -------------------------------------------------------

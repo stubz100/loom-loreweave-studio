@@ -39,6 +39,7 @@ loom-loreweave-studio/
     ├── projects.py    #   project lifecycle (create/open/resume) + app-level last-project pointer (M5)
     ├── diskguard.py   #   two-measure/two-threshold space guard, continuously polled (M6, §9/R96)
     ├── components.py  #   phase-scoped 3-state launch gate + model-weight presence/fetch (M7, §11/R163)
+    ├── logsetup.py    #   central logger → stderr + rotating file (.env LOOM_LOG_LEVEL brief|verbose)
     ├── lineage.py     #   per-output lineage edge → rebuildable lineage/index.json (M5, R98)
     ├── schemas/       #   JSON Schemas for the P0 records (project/job/manifest/lineage)
     ├── config.py      #   port/token + pipeline roots + interpreter + work disk (R101/R103/R72)
@@ -90,8 +91,10 @@ the orchestrator as a sidecar, and kills it on exit. (Requires the Rust toolchai
 - Job queue is **durable + resume-paused** (M4, `queue.json`); cancel works (M3); VRAM
   admission is enforced. Since **M5** the queue + outputs + per-job logs live in a real
   per-project `<project>/` workspace; `/generate` needs an **open project** (the last one
-  re-opens on launch). **File-watch** (read-side change events) isn't wired yet, and the
-  `loom init` UI is **prompt-based** (native folder picker + format/cap wizard come later).
+  re-opens on launch). **Opening** a project uses a **registry picker** ("Open ▾" — a list of
+  recent projects from `.loom_state`, machine-local, not in git). **File-watch** (read-side change
+  events) isn't wired yet, and **creating** a project is still prompt-based (native folder picker +
+  format/cap wizard come later).
 - The **disk guard** (M6) polls project-cap headroom + work-disk free continuously; a
   **hard-stop (<2%) returns 507** on `/generate` and holds queued jobs (running jobs
   finish). Project size is an `os.walk` sum each poll — fine for P0; an incremental
@@ -150,6 +153,9 @@ token from `.env.local`.
 | `LOOM_VRAM_BUDGET_GB` | `16` | VRAM admission budget (RX 9070 XT) |
 | `LOOM_DISK_POLL_S` | `5` | disk-guard poll cadence (M6, §9) |
 | `LOOM_ACTIVE_PHASES` | `P0` | phases the launch gate hard-requires (comma-sep, M7, §11) |
+| `LOOM_LOG_LEVEL` | `brief` | backend log verbosity: `brief`(INFO) / `verbose`(DEBUG) / level name |
+| `VITE_LOOM_ORCH_TOKEN` | `.env.local` | dev UI token (sent as `X-Loom-Token`) |
+| `VITE_LOOM_LOG_LEVEL` | `brief` | frontend (webview console) log verbosity |
 | `LOOM_DEV_OUT` | `<repo>/.dev_out` | **legacy** scratch (dry-run only; real output → `<project>/out/`) |
 | `LOOM_APP_REPO` | `../..` (from `src-tauri/`) | app-repo cwd the Tauri shell spawns the orchestrator from |
 | `VITE_LOOM_ORCH_URL` | `http://127.0.0.1:8765` | orchestrator URL the dev UI probes |

@@ -39,6 +39,7 @@ try:
     from . import workspace as ws_mod
     from . import components
     from .diskguard import DiskGuard
+    from . import logsetup
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from adapters import JobSpec  # type: ignore
@@ -48,6 +49,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     import workspace as ws_mod  # type: ignore
     import components  # type: ignore
     from diskguard import DiskGuard  # type: ignore
+    import logsetup  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
 
@@ -64,6 +66,7 @@ MAX_BATCH = 8  # batch cap for the smoke grid (≤ R38's cap)
 # clears so dispatch-held jobs resume.
 GUARD = DiskGuard(get_workspace=lambda: RUNNER.workspace, on_change=RUNNER.wake,
                   poll_s=CONFIG.disk_poll_s)
+LOG = logsetup.get_logger()
 
 
 class GenerateRequest(BaseModel):
@@ -142,6 +145,10 @@ async def lifespan(app: FastAPI):
     # the worker idles until a project is bound — resolve_startup binds the last one,
     # resume-paused). Then emit READY — lifespan startup runs AFTER uvicorn binds the
     # socket (review #3), so a port conflict fails before any false READY line.
+    # Configure logging first (level from .env LOOM_LOG_LEVEL) so everything below logs.
+    log = logsetup.configure(CONFIG.log_level, CONFIG.log_dir)
+    log.info("starting orchestrator v%s (python %s)", __version__, sys.version.split()[0])
+
     # Launch gate (M7, §11): refuse to start on a missing P0-essential CODE component
     # (clear error, no degraded mode). A missing P0-essential WEIGHT does not abort —
     # it's reported so the UI can offer an explicit HF fetch (R163).
@@ -149,22 +156,27 @@ async def lifespan(app: FastAPI):
     try:
         _LAUNCH = components.gate()
     except components.LaunchError as e:
+        log.error("LAUNCH REFUSED — %s", e)
         print(f"LOOM_ORCH_LAUNCH_REFUSED {e}", file=sys.stderr, flush=True)
         raise
+    log.info("launch gate OK (active=%s, weights_ok=%s)",
+             _LAUNCH["active_phases"], _LAUNCH["weights_ok"])
     if not _LAUNCH.get("weights_ok", True):
-        print(f"[loom] launch: P0 weights missing {_LAUNCH['weights_missing']} — "
-              "fetch via POST /components/fetch before generating", file=sys.stderr, flush=True)
+        log.warning("P0 weights missing %s — fetch via POST /components/fetch before generating",
+                    _LAUNCH["weights_missing"])
 
     RUNNER.start()
     projects.resolve_startup()
     # Disk guard (M6): gate the worker's dispatch on the hard-stop, then start polling.
     RUNNER.set_disk_gate(GUARD.is_hard_blocked)
     GUARD.start()
+    log.info("ready at %s", CONFIG.base_url)
     print(f"LOOM_ORCH_READY url={CONFIG.base_url} token={CONFIG.token}", flush=True)
     yield
     # Graceful shutdown: stop the guard, then re-queue any running job + mark a clean stop
     # so a reload re-queues (not fails) it (R159 graceful branch). Runs on a clean uvicorn
     # stop; a hard kill skips this -> reload treats running jobs as a crash (-> failed).
+    log.info("orchestrator stopping (clean)")
     GUARD.stop()
     RUNNER.graceful_shutdown()
 
@@ -209,10 +221,13 @@ def create_app() -> FastAPI:
             "token_required": ["POST /generate", "POST /jobs/{id}/cancel",
                                "DELETE /jobs/{id}", "POST /queue/pause",
                                "POST /queue/unpause", "POST /project", "POST /project/open",
-                               "POST /components/fetch", "POST /shutdown"],
+                               "POST /project/forget", "POST /components/fetch",
+                               "POST /shutdown"],
             "worker_reap": WORKER_REAP,
             "work_disk_root": str(CONFIG.work_disk_root),
             "active_project": (str(RUNNER.workspace.path) if RUNNER.workspace else None),
+            "log_level": CONFIG.log_level,
+            "log_file": str(CONFIG.log_dir / "orchestrator.log"),
         }
 
     @app.post("/generate")
@@ -272,12 +287,26 @@ def create_app() -> FastAPI:
                                 batch_id=batch_id, index=i, batch_size=req.count,
                                 requester_id=project["id"])   # lineage edge → project (R98)
             job_ids.append(jid)
+        LOG.info("generate: batch %s of %d (%s) for project %s",
+                 batch_id, req.count, req.pipeline, project["id"])
         return {"batch_id": batch_id, "count": req.count, "job_ids": job_ids}
 
     @app.get("/project")
     def get_project() -> dict:
         """Active project info (or {open:false}). Unauthenticated read."""
         return projects.active_info()
+
+    @app.get("/projects")
+    def list_projects() -> dict:
+        """Project registry for the picker — recent projects (name/path/cap/exists),
+        most-recent-first. App-level machine state (not in git). Unauthenticated read."""
+        return projects.list_projects()
+
+    @app.post("/project/forget")
+    def forget_project(req: OpenProjectRequest, _auth: None = Depends(require_token)) -> dict:
+        """Remove a project from the registry's recent list (a moved/deleted one). Does
+        not touch files or the active project. Token-gated."""
+        return projects.forget_project(Path(req.path))
 
     @app.post("/project")
     def create_project(req: CreateProjectRequest, _auth: None = Depends(require_token)) -> dict:

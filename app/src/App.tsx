@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import {
   cancelJob,
+  createProject,
+  estimateFootprint,
   generate,
   getHealth,
+  getProject,
   listJobs,
+  openProject,
   outputUrl,
   unpauseQueue,
   type Health,
   type Job,
+  type ProjectInfo,
 } from "./lib/orchestrator";
 
 // M2 shell — three-pane layout + Job Queue dock (kb-loom-p0.md §10). The stage is
@@ -20,6 +25,7 @@ type Conn = "connecting" | "online" | "offline";
 export default function App() {
   const [conn, setConn] = useState<Conn>("connecting");
   const [health, setHealth] = useState<Health | null>(null);
+  const [project, setProject] = useState<ProjectInfo | null>(null);
 
   const [prompt, setPrompt] = useState("");
   const [count, setCount] = useState(3);
@@ -41,6 +47,12 @@ export default function App() {
         if (!alive) return;
         setHealth(h);
         setConn("online");
+        try {
+          const p = await getProject();
+          if (alive) setProject(p);
+        } catch {
+          /* project fetch transient */
+        }
       } catch {
         if (alive) setConn("offline");
       }
@@ -122,6 +134,10 @@ export default function App() {
 
   const onGenerate = async () => {
     setError(null);
+    if (!project?.open) {
+      setError("no project open — create or open one first");
+      return;
+    }
     if (!prompt.trim()) {
       setError("enter a prompt");
       return;
@@ -129,6 +145,48 @@ export default function App() {
     try {
       const res = await generate({ prompt: prompt.trim(), count });
       setBatchIds(res.job_ids);
+      setSelected(null);
+      startPolling();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  // Minimal `loom init` flow (prompt-based; a native folder picker + format/cap wizard
+  // is a later UI pass). Shows the footprint estimate so the size cap is an informed
+  // choice (R164), then creates + opens the project (which resume-pauses its queue).
+  const onNewProject = async () => {
+    setError(null);
+    const dest = window.prompt("New project folder (must be empty):");
+    if (!dest) return;
+    const name = window.prompt("Project name:", dest.split(/[\\/]/).pop() || "story");
+    if (!name) return;
+    try {
+      const est = await estimateFootprint(1800, 1280, 720, 24);
+      const cap = window.prompt(
+        `Size cap (GB). A 30-min 720p master is ~${est.projected_master_gb} GB; ` +
+          `suggested ${est.suggested_cap_gb} GB (min 50).`,
+        String(est.suggested_cap_gb),
+      );
+      if (cap === null) return;
+      const p = await createProject(dest, name, Math.max(50, parseInt(cap, 10) || 250));
+      setProject(p);
+      setBatchIds([]);
+      setSelected(null);
+      startPolling();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const onOpenProject = async () => {
+    setError(null);
+    const path = window.prompt("Open project folder (contains project.json):");
+    if (!path) return;
+    try {
+      const p = await openProject(path);
+      setProject(p);
+      setBatchIds([]);
       setSelected(null);
       startPolling();
     } catch (e) {
@@ -145,7 +203,15 @@ export default function App() {
       <header className="titlebar">
         <span className="title">Loreweave Studio</span>
         <span className="sep">—</span>
-        <span className="project">Sandbox</span>
+        <span className="project">
+          {project?.open ? project.name : <span className="muted">no project</span>}
+        </span>
+        <button className="proj-btn" onClick={onNewProject} disabled={conn !== "online"}>
+          + New
+        </button>
+        <button className="proj-btn" onClick={onOpenProject} disabled={conn !== "online"}>
+          Open
+        </button>
         <span className="spacer" />
         <span className={`status dot-${dot}`}>
           <i className="dot" /> orchestrator: {conn}
@@ -192,10 +258,16 @@ export default function App() {
                 onChange={(e) => setCount(clamp(parseInt(e.target.value || "1", 10), 1, 8))}
               />
             </label>
-            <button onClick={onGenerate} disabled={conn !== "online"}>
+            <button onClick={onGenerate} disabled={conn !== "online" || !project?.open}>
               Generate ▶
             </button>
           </div>
+          {conn === "online" && !project?.open && (
+            <div className="banner">
+              No project open. <button className="link" onClick={onNewProject}>Create</button> or{" "}
+              <button className="link" onClick={onOpenProject}>open</button> a project to generate.
+            </div>
+          )}
           {error && <div className="error">⚠ {error}</div>}
 
           <div className="grid">
@@ -238,7 +310,7 @@ export default function App() {
           {counts.canceled ? ` · canceled ${counts.canceled}` : ""}
         </span>
         <span className="meter">VRAM 0.0/{vramBudget.toFixed(1)}G</span>
-        <span className="meter">disk —/250G</span>
+        <span className="meter">disk —/{project?.size_cap_gb ?? 250}G</span>
         {paused && (
           <button className="unpause" onClick={onUnpause}>
             unpause ▶

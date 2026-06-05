@@ -3,9 +3,14 @@
 Run (dev):
     python -m orchestrator.main        # prints its bound URL + token, then serves
 
-M2: POST /generate enqueues an N-image batch onto the single-worker in-memory
-runner; the UI polls /jobs and streams results into a grid; /outputs/<name>
-serves the PNGs. Durable queue + cancel + VRAM admission is M4.
+M2: POST /generate enqueues an N-image batch onto the single-worker runner; the UI
+polls /jobs and streams results into a grid; /outputs/<name> serves the PNGs.
+
+M5: generation is **project-scoped**. `POST /project` (loom init) creates a workspace
+on the work disk (empty-folder + free-space validated); the durable queue + outputs +
+per-job logs live inside `<project>/`. `/generate` 409s until a project is open; the
+last project re-opens on launch (queue resume-paused). `/project/estimate` projects the
+PNG-master footprint to suggest a size cap.
 """
 
 from __future__ import annotations
@@ -30,11 +35,15 @@ try:
     from .adapters import JobSpec
     from .adapters import zimage as zimage_adapter
     from .runner import RUNNER, WORKER_REAP, estimate_vram
+    from . import projects
+    from . import workspace as ws_mod
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from adapters import JobSpec  # type: ignore
     from adapters import zimage as zimage_adapter  # type: ignore
     from runner import RUNNER, WORKER_REAP, estimate_vram  # type: ignore
+    import projects  # type: ignore
+    import workspace as ws_mod  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
 
@@ -76,6 +85,33 @@ class GenerateRequest(BaseModel):
         return v
 
 
+class CreateProjectRequest(BaseModel):
+    """`loom init` payload (M5/P0-9). `dest` is the (empty) project folder; `format`
+    defaults to Wan 1280×720 (R56) and `size_cap_gb` to 250 (R164) when omitted."""
+
+    model_config = ConfigDict(extra="forbid")
+    dest: str
+    name: str
+    format: dict | None = None
+    size_cap_gb: float = Field(default=ws_mod.DEFAULT_SIZE_CAP_GB, ge=ws_mod.MIN_SIZE_CAP_GB)
+
+
+class OpenProjectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+
+
+class EstimateRequest(BaseModel):
+    """Footprint estimator inputs (R161/R164): episode length × resolution × fps."""
+
+    model_config = ConfigDict(extra="forbid")
+    length_s: float = Field(ge=0)
+    width: int = Field(default=1280, ge=16)
+    height: int = Field(default=720, ge=16)
+    fps: int = Field(default=24, ge=1)
+    size_cap_gb: float | None = None
+
+
 def require_token(x_loom_token: str | None = Header(default=None)) -> None:
     """Auth gate for mutating/expensive endpoints (review #1, R101 transport).
 
@@ -88,9 +124,12 @@ def require_token(x_loom_token: str | None = Header(default=None)) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start the worker, then emit READY — lifespan startup runs AFTER uvicorn binds
-    # the socket (review #3), so a port conflict fails before any false READY line.
+    # Start the worker, then re-open the last project (M5: the queue is per-project, so
+    # the worker idles until a project is bound — resolve_startup binds the last one,
+    # resume-paused). Then emit READY — lifespan startup runs AFTER uvicorn binds the
+    # socket (review #3), so a port conflict fails before any false READY line.
     RUNNER.start()
+    projects.resolve_startup()
     print(f"LOOM_ORCH_READY url={CONFIG.base_url} token={CONFIG.token}", flush=True)
     yield
     # Graceful shutdown: re-queue any running job + mark a clean stop so a reload
@@ -135,13 +174,17 @@ def create_app() -> FastAPI:
             "models_dir": str(CONFIG.models_dir),
             "cors_origins": CONFIG.cors_origins,
             "token_required": ["POST /generate", "POST /jobs/{id}/cancel",
-                               "POST /queue/pause", "POST /queue/unpause"],
+                               "POST /queue/pause", "POST /queue/unpause",
+                               "POST /project", "POST /project/open"],
             "worker_reap": WORKER_REAP,
+            "work_disk_root": str(CONFIG.work_disk_root),
+            "active_project": (str(RUNNER.workspace.path) if RUNNER.workspace else None),
         }
 
     @app.post("/generate")
     def generate(req: GenerateRequest, _auth: None = Depends(require_token)) -> dict:
-        """Enqueue an N-image batch onto the single-worker runner (M2). Token-gated."""
+        """Enqueue an N-image batch onto the single-worker runner (M2). Token-gated.
+        Requires an **open project** (M5): outputs + queue are per-project."""
         if req.pipeline != "zimage":
             raise HTTPException(400, f"only the 'zimage' adapter is wired (got {req.pipeline!r})")
         script = zimage_adapter.resolve_script(CONFIG.pipeline_roots)
@@ -149,14 +192,20 @@ def create_app() -> FastAPI:
             raise HTTPException(503, "zimage worker not found in any pipeline root "
                                      f"({[str(r) for r in CONFIG.pipeline_roots]})")
 
+        ws = RUNNER.workspace
+        if ws is None:
+            raise HTTPException(409, "no project open — create or open a project first "
+                                     "(POST /project or /project/open)")
+        project = ws.load_project()
+
         base = req.model_dump(exclude={"pipeline", "mode", "dry_run", "count"})
 
         if req.dry_run:
             spec = JobSpec(pipeline=req.pipeline, mode=req.mode, params=base,
-                           output_dir=CONFIG.dev_out_dir)
+                           output_dir=ws.out_dir)
             argv = zimage_adapter.build_argv(spec, CONFIG.venv_python, script)
             return {"dry_run": True, "count": req.count, "argv": argv,
-                    "cwd": str(script.parents[2]), "output_dir": str(CONFIG.dev_out_dir)}
+                    "cwd": str(script.parents[2]), "output_dir": str(ws.out_dir)}
 
         # VRAM admission (§7) — enforce, don't just record (review #2): refuse a job
         # whose estimate exceeds the budget rather than queueing a guaranteed OOM.
@@ -173,9 +222,45 @@ def create_app() -> FastAPI:
             if req.seed is not None:
                 params["seed"] = req.seed + i      # distinct but reproducible
             jid = RUNNER.submit(pipeline=req.pipeline, mode=req.mode, params=params,
-                                batch_id=batch_id, index=i, batch_size=req.count)
+                                batch_id=batch_id, index=i, batch_size=req.count,
+                                requester_id=project["id"])   # lineage edge → project (R98)
             job_ids.append(jid)
         return {"batch_id": batch_id, "count": req.count, "job_ids": job_ids}
+
+    @app.get("/project")
+    def get_project() -> dict:
+        """Active project info (or {open:false}). Unauthenticated read."""
+        return projects.active_info()
+
+    @app.post("/project")
+    def create_project(req: CreateProjectRequest, _auth: None = Depends(require_token)) -> dict:
+        """`loom init` — create a project workspace (empty-folder + free-space validated,
+        R80) and open it. Token-gated."""
+        try:
+            return projects.create_project(Path(req.dest), name=req.name, fmt=req.format,
+                                            size_cap_gb=req.size_cap_gb)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+
+    @app.post("/project/open")
+    def open_project(req: OpenProjectRequest, _auth: None = Depends(require_token)) -> dict:
+        """Open an existing project; its queue resumes **paused** (R88). Token-gated."""
+        try:
+            return projects.open_project(Path(req.path))
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+
+    @app.post("/project/estimate")
+    def estimate_project(req: EstimateRequest) -> dict:
+        """Footprint estimator (R161/R164): projected PNG-master size + suggested cap.
+        Pure calculation — unauthenticated."""
+        return ws_mod.footprint_report(length_s=req.length_s, width=req.width,
+                                       height=req.height, fps=req.fps,
+                                       size_cap_gb=req.size_cap_gb)
 
     @app.get("/jobs")
     def list_jobs() -> dict:
@@ -215,11 +300,14 @@ def create_app() -> FastAPI:
 
     @app.get("/outputs/{name:path}")
     def get_output(name: str) -> FileResponse:
-        """Serve a generated PNG from the dev-out dir, incl. per-job subdirs (M3).
-        M5 moves this to the per-project out/."""
+        """Serve a generated PNG from the **active project's** out/ dir, incl. per-job
+        subdirs (M5). Traversal-guarded."""
         if ".." in name or "\\" in name:
             raise HTTPException(400, "invalid name")
-        base = CONFIG.dev_out_dir.resolve()
+        ws = RUNNER.workspace
+        if ws is None:
+            raise HTTPException(409, "no project open")
+        base = ws.out_dir.resolve()
         path = (base / name).resolve()
         if not path.is_relative_to(base) or not path.is_file():
             raise HTTPException(404, f"no such output {name!r}")

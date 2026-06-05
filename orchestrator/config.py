@@ -141,15 +141,37 @@ class Config:
 
     @property
     def state_dir(self) -> Path:
-        """Durable orchestrator state (the M4 queue lives here). Interim until M5's
-        per-project workspace (`<project>/jobs/`, R72); gitignored. Override LOOM_STATE_DIR."""
+        """**App-level** (cross-project) state — gitignored. Since M5 the durable queue
+        + outputs live in the per-project workspace (`<project>/jobs/`, `<project>/out/`,
+        R72); this dir now holds only app-wide state (the last-opened-project pointer,
+        `app.json`). Override LOOM_STATE_DIR."""
         env = _get("LOOM_STATE_DIR")
         return Path(env).resolve() if env else (self.app_repo_root / ".loom_state")
 
     @property
-    def queue_path(self) -> Path:
-        """Durable job queue (R69/R88). M5 relocates to `<project>/jobs/queue.json`."""
-        return self.state_dir / "queue.json"
+    def app_pointer_path(self) -> Path:
+        """Cross-project pointer to the last-opened project, so a relaunch re-opens it
+        (resume-paused). Lives outside any project (it records *which* project)."""
+        return self.state_dir / "app.json"
+
+    @property
+    def work_disk_root(self) -> Path:
+        """Default parent for new project workspaces — the **work disk** (R72). Projects
+        are `<work_disk_root>/<name>/`. Override LOOM_WORK_DISK. `loom init` may target
+        any folder; this is only the default the UI proposes."""
+        env = _get("LOOM_WORK_DISK")
+        if env:
+            return Path(env).resolve()
+        if sys.platform == "win32":
+            return Path(r"F:\_tmp")
+        return Path.home() / "LoreweaveProjects"
+
+    @property
+    def project_dir_override(self) -> Path | None:
+        """Optional forced project path (tests/CI/GPU verify): open (or create with
+        defaults) this project at startup. Set LOOM_PROJECT_DIR."""
+        env = _get("LOOM_PROJECT_DIR")
+        return Path(env).resolve() if env else None
 
     @property
     def base_url(self) -> str:
@@ -157,8 +179,9 @@ class Config:
 
     @property
     def dev_out_dir(self) -> Path:
-        """M1/M2 output dir for smoke generations. Replaced by the per-project
-        workspace `out/` at M5 (R72); gitignored. Override via LOOM_DEV_OUT."""
+        """LEGACY scratch dir (pre-M5). No longer the runtime output root — generations
+        land in the per-project `<project>/out/`. Kept only as a fallback for `dry_run`
+        argv display when no project is open. Override via LOOM_DEV_OUT."""
         env = _get("LOOM_DEV_OUT")
         return Path(env).resolve() if env else (self.app_repo_root / ".dev_out")
 

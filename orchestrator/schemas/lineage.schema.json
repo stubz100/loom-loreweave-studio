@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "loom:lineage.schema.json",
+  "title": "Rebuildable lineage index (R98, P0 subset)",
+  "type": "object",
+  "required": ["schema_version", "edges"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["job_id", "requester_id", "output_file", "created_at"],
+        "properties": {
+          "job_id": { "type": "string" },
+          "requester_id": { "type": "string" },
+          "output_file": { "type": "string" },
+          "manifest": { "type": ["string", "null"] },
+          "asset_version": { "type": ["string", "null"] },
+          "lora_version": { "type": ["string", "null"] },
+          "created_at": { "type": "string" }
+        }
+      }
+    }
+  }
+}

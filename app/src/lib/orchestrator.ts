@@ -101,10 +101,81 @@ export interface GenerateResponse {
   job_ids: string[];
 }
 
+export interface ProjectFormat {
+  aspect: [number, number];
+  resolution: [number, number];
+  fps: number;
+  audio_master: { container: string; rate_hz: number; bits: number; channels: number };
+}
+
+export interface ProjectInfo {
+  open: boolean;
+  path?: string;
+  id?: string;
+  name?: string;
+  format?: ProjectFormat;
+  size_cap_gb?: number;
+  free_space_gb?: number;
+}
+
+export interface FootprintReport {
+  projected_master_gb: number;
+  suggested_cap_gb: number;
+  frames: number;
+  cap_sufficient?: boolean;
+  warning?: string;
+}
+
 export async function getHealth(signal?: AbortSignal): Promise<Health> {
   const res = await fetch(`${orchestratorUrl()}/health`, { signal });
   if (!res.ok) throw new Error(`health ${res.status}`);
   return (await res.json()) as Health;
+}
+
+export async function getProject(signal?: AbortSignal): Promise<ProjectInfo> {
+  const res = await fetch(`${orchestratorUrl()}/project`, { signal });
+  if (!res.ok) throw new Error(`project ${res.status}`);
+  return (await res.json()) as ProjectInfo;
+}
+
+export async function createProject(
+  dest: string,
+  name: string,
+  size_cap_gb?: number,
+): Promise<ProjectInfo> {
+  const res = await fetch(`${orchestratorUrl()}/project`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ dest, name, ...(size_cap_gb ? { size_cap_gb } : {}) }),
+  });
+  if (!res.ok) throw new Error(`create project ${res.status}: ${await res.text()}`);
+  return (await res.json()) as ProjectInfo;
+}
+
+export async function openProject(path: string): Promise<ProjectInfo> {
+  const res = await fetch(`${orchestratorUrl()}/project/open`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw new Error(`open project ${res.status}: ${await res.text()}`);
+  return (await res.json()) as ProjectInfo;
+}
+
+export async function estimateFootprint(
+  length_s: number,
+  width: number,
+  height: number,
+  fps: number,
+  size_cap_gb?: number,
+): Promise<FootprintReport> {
+  const res = await fetch(`${orchestratorUrl()}/project/estimate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ length_s, width, height, fps, size_cap_gb }),
+  });
+  if (!res.ok) throw new Error(`estimate ${res.status}`);
+  return (await res.json()) as FootprintReport;
 }
 
 export async function generate(req: GenerateRequest): Promise<GenerateResponse> {
@@ -118,6 +189,9 @@ export async function generate(req: GenerateRequest): Promise<GenerateResponse> 
   });
   if (res.status === 401) {
     throw new Error("401 unauthorized — orchestrator token missing/mismatched (set .env.local)");
+  }
+  if (res.status === 409) {
+    throw new Error("no project open — create or open a project first");
   }
   if (!res.ok) throw new Error(`generate ${res.status}: ${await res.text()}`);
   return (await res.json()) as GenerateResponse;

@@ -13,7 +13,13 @@ What M4 adds (kb-loom-p0.md §7, R69/R78/R88/R159):
 - **Capped auto-retry on OOM** with a visible note.
 
 Invariant unchanged: **one job at a time** on the single 16 GB GPU (§7). Cancel
-(M3) is preserved. Disk-guard gating is M6; per-project relocation is M5.
+(M3) is preserved. Disk-guard gating is M6.
+
+What M5 adds (P0-8): the runner is now **workspace-bound** — `queue.json`, per-job
+logs, and outputs live in the active project (`<project>/jobs/queue.json`,
+`<project>/jobs/logs/<id>.log`, `<project>/out/<id>/`), not the interim `.loom_state/`
++ `.dev_out/`. `bind()` points the runner at a project (loads its queue, resume-paused);
+the worker idles until a project is bound. Each successful output writes a lineage edge.
 """
 
 from __future__ import annotations
@@ -25,7 +31,6 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,10 +39,16 @@ try:
     from .adapters import JobSpec
     from .adapters import zimage as zimage_adapter
     from .config import CONFIG
+    from . import lineage
+    from . import workspace as ws_mod
+    from .workspace import Workspace, new_id
 except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import JobSpec  # type: ignore
     from adapters import zimage as zimage_adapter  # type: ignore
     from config import CONFIG  # type: ignore
+    import lineage  # type: ignore
+    import workspace as ws_mod  # type: ignore
+    from workspace import Workspace, new_id  # type: ignore
 
 ADAPTERS = {"zimage": zimage_adapter}
 SCHEMA_VERSION = 1
@@ -153,6 +164,7 @@ class JobRunner:
 
     def __init__(self) -> None:
         self.jobs: dict[str, dict] = {}
+        self._ws: Workspace | None = None    # active project workspace (M5); None = no project open
         self._lock = threading.RLock()
         self._cv = threading.Condition(self._lock)
         self._procs: dict[str, subprocess.Popen] = {}
@@ -163,66 +175,92 @@ class JobRunner:
         self._started = False
 
     def start(self) -> None:
+        """Start the worker thread. It idles until a project is `bind()`-ed (M5) — the
+        queue + outputs are per-project, so there's nothing to run with no project open."""
         if self._started:
             return
         self._started = True
-        self._load()
         self._worker.start()
+
+    # --- workspace binding (M5) ------------------------------------------
+    @property
+    def workspace(self) -> Workspace | None:
+        with self._lock:
+            return self._ws
+
+    def has_running(self) -> bool:
+        with self._lock:
+            return any(j["status"] == "running" for j in self.jobs.values())
+
+    def bind(self, ws: Workspace) -> None:
+        """Make `ws` the active project: load its `queue.json` (reconciling in-flight
+        jobs, R159) and resume **paused** (R88). Refuses while a job is running so we
+        never strand a live GPU worker on the previous project."""
+        with self._cv:
+            if self._ws is not None and any(j["status"] == "running" for j in self.jobs.values()):
+                raise RuntimeError("cannot switch project while a job is running")
+            self._ws = ws
+            self.jobs = {}
+            self._canceled.clear()
+            self._load_locked()
+            self._cv.notify()
 
     # --- persistence ------------------------------------------------------
     def _persist_locked(self, clean_shutdown: bool = False) -> None:
+        if self._ws is None:   # nothing to persist with no project open (M5)
+            return
         data = {
             "schema_version": SCHEMA_VERSION,
             "paused": self._paused,
             "clean_shutdown": clean_shutdown,
             "jobs": self.jobs,
         }
-        path = CONFIG.queue_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, default=str)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)  # atomic
+        ws_mod.atomic_write_json(self._ws.queue_path, data)   # temp + fsync + replace (§6)
 
     def _discard_partial(self, job_id: str) -> None:
-        shutil.rmtree(CONFIG.dev_out_dir / job_id, ignore_errors=True)
+        if self._ws is not None:
+            shutil.rmtree(self._ws.out_dir / job_id, ignore_errors=True)
 
-    def _load(self) -> None:
-        path = CONFIG.queue_path
+    def _load_locked(self) -> None:
+        """Load the active project's queue, reconcile in-flight jobs (R159), resume
+        paused (R88). Called under the lock from `bind()`. A corrupt/partial queue is
+        refused and treated as empty (a fresh queue), never a silent half-state."""
+        path = self._ws.queue_path
         if not path.is_file():
+            self._paused = False
             return
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            data = ws_mod.read_json(path)
+        except ws_mod.WorkspaceError:
+            _warn(f"queue.json unreadable/partial ({path}); starting with an empty queue")
+            self.jobs = {}
+            self._paused = False
             return
         jobs = data.get("jobs") or {}
         clean = bool(data.get("clean_shutdown"))
-        with self._lock:
-            self.jobs = jobs
-            # Reconcile in-flight jobs per the one-job lifecycle (R159).
-            for j in self.jobs.values():
-                if j.get("status") != "running":
-                    continue
-                if j.get("resumable"):
-                    j["status"] = "queued"
-                    j["note"] = "recovered (resumable) — resumes on unpause"
-                elif clean:
-                    j["status"] = "queued"
-                    j["progress"] = 0.0
-                    j["note"] = "re-queued after graceful shutdown (partial discarded)"
-                    self._discard_partial(j["id"])
-                else:
-                    j["status"] = "failed"
-                    j["finished_at"] = _now()
-                    j["note"] = "orchestrator crashed mid-job"
-                    j["result"] = {"ok": False, "returncode": -1, "outputs": [],
-                                   "error": "orchestrator crashed mid-job", "stderr_tail": ""}
-                    self._discard_partial(j["id"])
-            # Resume PAUSED whenever there is pending work (R88).
-            self._paused = any(j["status"] == "queued" for j in self.jobs.values())
-            self._persist_locked()
+        self.jobs = jobs
+        # Reconcile in-flight jobs per the one-job lifecycle (R159).
+        for j in self.jobs.values():
+            if j.get("status") != "running":
+                continue
+            if j.get("resumable"):
+                j["status"] = "queued"
+                j["note"] = "recovered (resumable) — resumes on unpause"
+            elif clean:
+                j["status"] = "queued"
+                j["progress"] = 0.0
+                j["note"] = "re-queued after graceful shutdown (partial discarded)"
+                self._discard_partial(j["id"])
+            else:
+                j["status"] = "failed"
+                j["finished_at"] = _now()
+                j["note"] = "orchestrator crashed mid-job"
+                j["result"] = {"ok": False, "returncode": -1, "outputs": [],
+                               "error": "orchestrator crashed mid-job", "stderr_tail": ""}
+                self._discard_partial(j["id"])
+        # Resume PAUSED whenever there is pending work (R88).
+        self._paused = any(j["status"] == "queued" for j in self.jobs.values())
+        self._persist_locked()
 
     def graceful_shutdown(self) -> None:
         """From the lifespan shutdown (clean stop): **terminate the live worker** (so it
@@ -259,7 +297,7 @@ class JobRunner:
     def submit(self, *, pipeline: str, mode: str, params: dict,
                batch_id: str, index: int, batch_size: int,
                requester_id: str = "sandbox") -> str:
-        job_id = "job_" + uuid.uuid4().hex[:8]
+        job_id = new_id("job", 8)
         with self._cv:
             self.jobs[job_id] = {
                 "id": job_id,
@@ -351,7 +389,7 @@ class JobRunner:
     def _run_loop(self) -> None:
         while True:
             with self._cv:
-                while self._paused or self._next_queued_id_locked() is None:
+                while self._ws is None or self._paused or self._next_queued_id_locked() is None:
                     self._cv.wait()
                 job_id = self._next_queued_id_locked()
                 job = self.jobs[job_id]
@@ -382,8 +420,11 @@ class JobRunner:
         script = adapter.resolve_script(CONFIG.pipeline_roots)
         if script is None:
             raise RuntimeError(f"{pipeline} worker not found in any pipeline root")
+        ws = self._ws                              # stable: bind() refuses while running (M5)
+        if ws is None:
+            raise RuntimeError("no project workspace bound")
 
-        out_dir = CONFIG.dev_out_dir / job_id   # per-job isolation (M3)
+        out_dir = ws.out_dir / job_id              # per-job isolation, in <project>/out/ (M5)
         out_dir.mkdir(parents=True, exist_ok=True)
         spec = JobSpec(pipeline=pipeline, mode=mode, params=params, output_dir=out_dir)
         argv = adapter.build_argv(spec, CONFIG.venv_python, script)
@@ -397,18 +438,32 @@ class JobRunner:
         with self._lock:
             self._procs[job_id] = proc
 
+        # Full subprocess stdout/stderr → a persisted per-job log (P0-14); the in-memory
+        # tail still drives the live UI pane. The log survives the process for post-mortem.
         tail: deque[str] = deque(maxlen=60)
-        if proc.stdout is not None:
-            for line in proc.stdout:
-                line = line.rstrip("\n")
-                tail.append(line)
-                pr = adapter.progress(line)
-                if pr is not None:
-                    with self._lock:
-                        j = self.jobs.get(job_id)
-                        if j:
-                            j["progress"] = pr
-                            j["log_tail"] = "\n".join(tail)
+        log_fp = None
+        try:
+            ws.logs_dir.mkdir(parents=True, exist_ok=True)
+            log_fp = open(ws.log_path(job_id), "w", encoding="utf-8")
+        except OSError as e:
+            _warn(f"could not open job log for {job_id}: {e}")
+        try:
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    line = line.rstrip("\n")
+                    tail.append(line)
+                    if log_fp is not None:
+                        log_fp.write(line + "\n")
+                    pr = adapter.progress(line)
+                    if pr is not None:
+                        with self._lock:
+                            j = self.jobs.get(job_id)
+                            if j:
+                                j["progress"] = pr
+                                j["log_tail"] = "\n".join(tail)
+        finally:
+            if log_fp is not None:
+                log_fp.close()
         proc.wait()
         rc = proc.returncode
         log_text = "\n".join(tail)
@@ -483,6 +538,16 @@ class JobRunner:
             j["progress"] = 1.0 if rec.ok else j.get("progress", 0.0)
             j["log_tail"] = log_text
             self._persist_locked()
+            job_snapshot = dict(j) if rec.ok else None
+
+        # Lineage edge per successful output (R98) — written after the job is durable so
+        # the index only ever references a persisted result. Best-effort: a lineage write
+        # failure must not fail an otherwise-good generation (the index is rebuildable).
+        if job_snapshot is not None:
+            try:
+                lineage.record_output(ws, job_snapshot)
+            except Exception as e:  # noqa: BLE001 - lineage is non-critical, never block output
+                _warn(f"lineage write failed for {job_id}: {e}")
 
 
 # Process-wide singleton.

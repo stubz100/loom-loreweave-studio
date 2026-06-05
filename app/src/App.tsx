@@ -63,6 +63,16 @@ export default function App() {
         setCounts(r.counts);
         setPaused(r.paused);
         setVramBudget(r.vram_budget_gb);
+        // After a relaunch the grid is empty but the queue may hold persisted pending
+        // jobs — seed the grid from them so they're reviewable + cancelable before
+        // unpause (R88 "Review/Unpause"; review #3).
+        setBatchIds((prev) => {
+          if (prev.length > 0) return prev;
+          return Object.values(r.jobs)
+            .filter((j) => j.status === "queued" || j.status === "running")
+            .sort((a, b) => a.created_at.localeCompare(b.created_at))
+            .map((j) => j.id);
+        });
         const pending = Object.values(r.jobs).some(
           (j) => j.status === "queued" || j.status === "running"
         );

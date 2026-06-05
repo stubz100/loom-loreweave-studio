@@ -29,12 +29,12 @@ try:
     from . import __version__, SCHEMA_VERSION
     from .adapters import JobSpec
     from .adapters import zimage as zimage_adapter
-    from .runner import RUNNER
+    from .runner import RUNNER, estimate_vram
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from adapters import JobSpec  # type: ignore
     from adapters import zimage as zimage_adapter  # type: ignore
-    from runner import RUNNER  # type: ignore
+    from runner import RUNNER, estimate_vram  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
 
@@ -155,6 +155,14 @@ def create_app() -> FastAPI:
             argv = zimage_adapter.build_argv(spec, CONFIG.venv_python, script)
             return {"dry_run": True, "count": req.count, "argv": argv,
                     "cwd": str(script.parents[2]), "output_dir": str(CONFIG.dev_out_dir)}
+
+        # VRAM admission (§7) — enforce, don't just record (review #2): refuse a job
+        # whose estimate exceeds the budget rather than queueing a guaranteed OOM.
+        est = estimate_vram(req.pipeline)
+        if est > CONFIG.vram_budget_gb:
+            raise HTTPException(
+                422, f"{req.pipeline} needs ~{est} GB VRAM > budget {CONFIG.vram_budget_gb} GB — "
+                     f"reduce size/steps or raise LOOM_VRAM_BUDGET_GB")
 
         batch_id = "bat_" + uuid.uuid4().hex[:8]
         job_ids: list[str] = []

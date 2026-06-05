@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -41,6 +42,69 @@ except ImportError:  # pragma: no cover - direct-run convenience
 ADAPTERS = {"zimage": zimage_adapter}
 SCHEMA_VERSION = 1
 
+
+def _make_kill_on_close_job():
+    """Windows Job Object with KILL_ON_JOB_CLOSE: worker subprocesses assigned to it
+    die when the orchestrator process dies — for ANY reason, incl. a hard kill by the
+    Tauri shell on app exit (review #1: no orphaned GPU process). No-op off Windows.
+    The handle is held for the process lifetime; on death it closes → job closes → kill.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+
+        class _BASIC(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class _IO(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint64) for n in
+                        ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                         "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class _EXT(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", _BASIC), ("IoInfo", _IO),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        info = _EXT()
+        info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        # 9 = JobObjectExtendedLimitInformation
+        if not k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            return None
+        return job
+    except Exception:
+        return None
+
+
+_KILL_JOB = _make_kill_on_close_job()
+
+
+def _assign_to_kill_job(proc: subprocess.Popen) -> None:
+    """Assign a spawned worker to the kill-on-close job so it can't outlive us."""
+    if _KILL_JOB is None or sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.WinDLL("kernel32").AssignProcessToJobObject(_KILL_JOB, int(proc._handle))
+    except Exception:
+        pass
+
 # Static per-pipeline VRAM estimate (GB) for admission (§7); refined by observed
 # peaks later. zimage-turbo @720p with cpu_offload peaks ~10–12 GB on the 16 GB rig.
 VRAM_ESTIMATES = {"zimage": 11.0}
@@ -50,6 +114,11 @@ _OOM_MARKERS = (
     "out of memory", "hip out of memory", "cuda out of memory",
     "outofmemoryerror", "hiperror: out of memory",
 )
+
+
+def estimate_vram(pipeline: str) -> float:
+    """Static per-pipeline VRAM estimate (GB) for admission (§7)."""
+    return VRAM_ESTIMATES.get(pipeline, DEFAULT_VRAM_GB)
 
 
 def _now() -> str:
@@ -71,6 +140,7 @@ class JobRunner:
         self._procs: dict[str, subprocess.Popen] = {}
         self._canceled: set[str] = set()
         self._paused = False
+        self._shutting_down = False
         self._worker = threading.Thread(target=self._run_loop, name="loom-gpu-worker", daemon=True)
         self._started = False
 
@@ -137,14 +207,19 @@ class JobRunner:
             self._persist_locked()
 
     def graceful_shutdown(self) -> None:
-        """From the lifespan shutdown: re-queue running jobs + mark a clean stop so a
-        reload re-queues (not fails) them (R159 graceful branch)."""
+        """From the lifespan shutdown (clean stop): **terminate the live worker** (so it
+        never outlives us — review #1) and mark a clean stop so the reload re-queues the
+        in-flight job (R159 graceful branch). Leaves the job `running` in the file; the
+        reload's clean-shutdown branch re-queues it (and the worker, if it reaches
+        finalize first, re-queues it via the `_shutting_down` guard)."""
         with self._lock:
-            for j in self.jobs.values():
-                if j.get("status") == "running" and not j.get("resumable"):
-                    j["status"] = "queued"
-                    j["progress"] = 0.0
-                    j["note"] = "re-queued at graceful shutdown"
+            self._shutting_down = True
+            for proc in list(self._procs.values()):
+                if proc.poll() is None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
             self._persist_locked(clean_shutdown=True)
 
     # --- queue control ----------------------------------------------------
@@ -300,6 +375,7 @@ class JobRunner:
             argv, cwd=str(script.parents[2]),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
         )
+        _assign_to_kill_job(proc)   # die with the orchestrator — never orphan the GPU (review #1)
         with self._lock:
             self._procs[job_id] = proc
 
@@ -322,6 +398,18 @@ class JobRunner:
             self._procs.pop(job_id, None)
             canceled = job_id in self._canceled
             retry_count = self.jobs[job_id].get("retry_count", 0)
+            shutting = self._shutting_down
+
+        # Shutdown wins over everything: re-queue the in-flight job (don't mark it
+        # failed because we killed its worker) so it survives the restart (review #1).
+        if shutting:
+            with self._cv:
+                j = self.jobs[job_id]
+                j["status"] = "queued"
+                j["progress"] = 0.0
+                j["note"] = "re-queued at shutdown"
+                self._persist_locked(clean_shutdown=True)
+            return
 
         rec = adapter.parse_result(rc, log_text, "", out_dir)
 
@@ -337,14 +425,20 @@ class JobRunner:
                 self._persist_locked()
             return
 
-        # Capped auto-retry on OOM (§7) — visible via the note.
+        # Capped auto-retry on OOM (§7). retry-WITH-offload: ask the adapter to escalate
+        # its offload mode for the retry. zimage has no heavier offload (cpu_offload is
+        # already default) so it's a plain retry; the video pipelines that DO have
+        # group/sequential offload (P3) implement `escalate_offload` for real escalation.
         if (not rec.ok and not canceled and retry_count < MAX_OOM_RETRIES
                 and _is_oom((rec.error or "") + " " + (rec.stderr_tail or ""))):
             self._discard_partial(job_id)
+            escalate = getattr(adapter, "escalate_offload", None)
+            new_params = escalate(dict(params), retry_count + 1) if escalate else params
             with self._cv:
                 j = self.jobs[job_id]
                 j["status"] = "queued"
                 j["retry_count"] = retry_count + 1
+                j["params"] = new_params
                 j["progress"] = 0.0
                 j["log_tail"] = log_text
                 j["note"] = f"OOM — auto-retry {retry_count + 1}/{MAX_OOM_RETRIES}"

@@ -4,12 +4,13 @@ A non-linear storyboard / story-generation desktop app. Tauri (Rust shell) +
 React/TypeScript UI + a Python FastAPI orchestrator that wraps the
 `run_pipeline.py` generation CLIs behind a single VRAM-aware job queue.
 
-> **Status: Phase 0 (foundation) — M0–M3 done (Phase B underway).**
+> **Status: Phase 0 (foundation) — M0–M4 done (Phase B underway).**
 > App shell + orchestrator handshake (M0), one real generation (M1), an N-image batch
-> streaming into a selectable grid (M2), and the hardened adapter contract — token-gated
-> `/generate`, `capabilities()`, coarse progress, **cancel = subprocess kill**, and
-> manifest-status-as-truth (M3). Next: the durable resume-paused queue / bundle I/O /
-> disk guard / launch gate (M4–M8). Spec:
+> streaming into a selectable grid (M2), the hardened adapter contract — token-gated
+> `/generate`, `capabilities()`, coarse progress, **cancel = subprocess kill**,
+> manifest-status-as-truth (M3) — and a **durable, resume-paused `queue.json`** with VRAM
+> admission + OOM retry (M4). Next: bundle I/O + `loom init` project / disk guard /
+> launch gate (M5–M8). Spec:
 > [`kb-loom-p0.md`](../../.github/copilot/kb-loom-p0.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:
 > [`kb-loom-p0-imp.md`](../../.github/copilot/kb-loom-p0-imp.md).
@@ -61,8 +62,12 @@ the orchestrator as a sidecar, and kills it on exit. (Requires the Rust toolchai
 
 ## Known gaps (P0, by milestone)
 
-- Job state is **in-memory** (no persistence/resume/VRAM admission) until M4 — cancel
-  works (M3), but the queue doesn't survive a restart yet.
+- Job queue is **durable + resume-paused** (M4, `queue.json`); cancel works (M3); VRAM
+  admission is enforced. The workspace is still the interim `.loom_state/` + `.dev_out/`
+  — **M5** moves it into a real `<project>/`.
+- On the *packaged* app, exit hard-kills the orchestrator: the worker is reaped (Job
+  Object — no orphaned GPU), but the in-flight job becomes `failed` rather than re-queued
+  (a clean-stop **P0-15** refinement is still owed).
 - Only **t2i** is wired; img2img/inpaint (+ image inputs) arrive in **P1**.
 - `models.json` companion-repo URL + sha256 are **placeholders** (R160) — filled when
   the HF companion repo is published; the on-demand HF **fetch** flow isn't built yet.

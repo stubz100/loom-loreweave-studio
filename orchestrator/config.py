@@ -133,6 +133,8 @@ class Config:
     app_repo_root: Path = field(default_factory=lambda: APP_REPO_ROOT)
     # VRAM budget for admission (16 GB target rig — RX 9070 XT). Override LOOM_VRAM_BUDGET_GB.
     vram_budget_gb: float = field(default_factory=lambda: float(_get("LOOM_VRAM_BUDGET_GB", "16")))
+    # Disk-guard poll cadence (M6, §9). Override LOOM_DISK_POLL_S.
+    disk_poll_s: float = field(default_factory=lambda: float(_get("LOOM_DISK_POLL_S", "5")))
 
     @property
     def models_dir(self) -> Path:

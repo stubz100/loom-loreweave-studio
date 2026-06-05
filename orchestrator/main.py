@@ -37,6 +37,7 @@ try:
     from .runner import RUNNER, WORKER_REAP, estimate_vram
     from . import projects
     from . import workspace as ws_mod
+    from .diskguard import DiskGuard
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from adapters import JobSpec  # type: ignore
@@ -44,12 +45,18 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from runner import RUNNER, WORKER_REAP, estimate_vram  # type: ignore
     import projects  # type: ignore
     import workspace as ws_mod  # type: ignore
+    from diskguard import DiskGuard  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
 
 
 _STARTED_AT = time.time()
 MAX_BATCH = 8  # batch cap for the smoke grid (≤ R38's cap)
+
+# Disk guard (M6, §9): reads the active workspace, wakes the runner when a hard-stop
+# clears so dispatch-held jobs resume.
+GUARD = DiskGuard(get_workspace=lambda: RUNNER.workspace, on_change=RUNNER.wake,
+                  poll_s=CONFIG.disk_poll_s)
 
 
 class GenerateRequest(BaseModel):
@@ -130,11 +137,15 @@ async def lifespan(app: FastAPI):
     # socket (review #3), so a port conflict fails before any false READY line.
     RUNNER.start()
     projects.resolve_startup()
+    # Disk guard (M6): gate the worker's dispatch on the hard-stop, then start polling.
+    RUNNER.set_disk_gate(GUARD.is_hard_blocked)
+    GUARD.start()
     print(f"LOOM_ORCH_READY url={CONFIG.base_url} token={CONFIG.token}", flush=True)
     yield
-    # Graceful shutdown: re-queue any running job + mark a clean stop so a reload
-    # re-queues (not fails) it (R159 graceful branch). Runs on a clean uvicorn stop;
-    # a hard kill skips this -> reload treats running jobs as a crash (-> failed).
+    # Graceful shutdown: stop the guard, then re-queue any running job + mark a clean stop
+    # so a reload re-queues (not fails) it (R159 graceful branch). Runs on a clean uvicorn
+    # stop; a hard kill skips this -> reload treats running jobs as a crash (-> failed).
+    GUARD.stop()
     RUNNER.graceful_shutdown()
 
 
@@ -215,6 +226,12 @@ def create_app() -> FastAPI:
                 422, f"{req.pipeline} needs ~{est} GB VRAM > budget {CONFIG.vram_budget_gb} GB — "
                      f"reduce size/steps or raise LOOM_VRAM_BUDGET_GB")
 
+        # Disk-guard admission (§9/R96): refuse to admit a space-consuming job under a
+        # hard stop (running jobs finish). Resolve by raising the cap or freeing space.
+        if GUARD.is_hard_blocked():
+            raise HTTPException(507, f"disk hard-stop — {GUARD.block_reason()}; "
+                                     "free space or raise the project size cap")
+
         batch_id = "bat_" + uuid.uuid4().hex[:8]
         job_ids: list[str] = []
         for i in range(req.count):
@@ -237,8 +254,10 @@ def create_app() -> FastAPI:
         """`loom init` — create a project workspace (empty-folder + free-space validated,
         R80) and open it. Token-gated."""
         try:
-            return projects.create_project(Path(req.dest), name=req.name, fmt=req.format,
-                                            size_cap_gb=req.size_cap_gb)
+            info = projects.create_project(Path(req.dest), name=req.name, fmt=req.format,
+                                           size_cap_gb=req.size_cap_gb)
+            GUARD.refresh()   # re-measure now that a new project is active (don't wait for the poll)
+            return info
         except ws_mod.WorkspaceError as e:
             raise HTTPException(400, str(e))
         except RuntimeError as e:
@@ -248,7 +267,9 @@ def create_app() -> FastAPI:
     def open_project(req: OpenProjectRequest, _auth: None = Depends(require_token)) -> dict:
         """Open an existing project; its queue resumes **paused** (R88). Token-gated."""
         try:
-            return projects.open_project(Path(req.path))
+            info = projects.open_project(Path(req.path))
+            GUARD.refresh()   # re-measure now that a different project is active
+            return info
         except ws_mod.WorkspaceError as e:
             raise HTTPException(400, str(e))
         except RuntimeError as e:
@@ -266,7 +287,13 @@ def create_app() -> FastAPI:
     def list_jobs() -> dict:
         st = RUNNER.state()
         return {"jobs": RUNNER.snapshot(), "counts": st["counts"],
-                "paused": st["paused"], "vram_budget_gb": st["vram_budget_gb"]}
+                "paused": st["paused"], "vram_budget_gb": st["vram_budget_gb"],
+                "disk": GUARD.status()}     # live usage + warn/hard for the dock (M6)
+
+    @app.get("/disk")
+    def disk() -> dict:
+        """Live disk-guard status (two measures × two thresholds, §9). Unauthenticated read."""
+        return GUARD.status()
 
     @app.post("/queue/pause")
     def queue_pause(_auth: None = Depends(require_token)) -> dict:

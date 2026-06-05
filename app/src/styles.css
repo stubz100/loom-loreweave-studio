@@ -48,6 +48,10 @@ body {
   background: none; border: 0; color: var(--amber); cursor: pointer;
   padding: 0; font-size: 12px; text-decoration: underline;
 }
+.banner-err { color: var(--err); background: #2a1414; }
+
+.meter.disk-warn { color: var(--warn); }
+.meter.disk-hard { color: var(--err); }
 
 .status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
 .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }

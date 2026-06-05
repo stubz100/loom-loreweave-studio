@@ -170,6 +170,7 @@ class JobRunner:
         self._procs: dict[str, subprocess.Popen] = {}
         self._canceled: set[str] = set()
         self._paused = False
+        self._disk_gate: "callable | None" = None   # () -> bool: True = disk hard-stop (M6)
         self._shutting_down = False
         self._worker = threading.Thread(target=self._run_loop, name="loom-gpu-worker", daemon=True)
         self._started = False
@@ -191,6 +192,21 @@ class JobRunner:
     def has_running(self) -> bool:
         with self._lock:
             return any(j["status"] == "running" for j in self.jobs.values())
+
+    # --- disk guard hook (M6) --------------------------------------------
+    def set_disk_gate(self, fn) -> None:
+        """Inject the disk-guard predicate (`() -> bool`, True = hard-stop). The worker
+        won't START a queued job while it returns True (running jobs finish, §9)."""
+        self._disk_gate = fn
+
+    def _disk_blocked(self) -> bool:
+        return bool(self._disk_gate()) if self._disk_gate is not None else False
+
+    def wake(self) -> None:
+        """Re-evaluate the dispatch condition (called by the disk guard when a hard-stop
+        clears, so jobs held at dispatch resume the instant space frees)."""
+        with self._cv:
+            self._cv.notify()
 
     def bind(self, ws: Workspace) -> None:
         """Make `ws` the active project: load its `queue.json` (reconciling in-flight
@@ -441,7 +457,8 @@ class JobRunner:
     def _run_loop(self) -> None:
         while True:
             with self._cv:
-                while self._ws is None or self._paused or self._next_queued_id_locked() is None:
+                while (self._ws is None or self._paused or self._disk_blocked()
+                       or self._next_queued_id_locked() is None):
                     self._cv.wait()
                 job_id = self._next_queued_id_locked()
                 job = self.jobs[job_id]

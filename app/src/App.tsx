@@ -4,12 +4,14 @@ import {
   createProject,
   estimateFootprint,
   generate,
+  getDisk,
   getHealth,
   getProject,
   listJobs,
   openProject,
   outputUrl,
   unpauseQueue,
+  type DiskStatus,
   type Health,
   type Job,
   type ProjectInfo,
@@ -36,6 +38,7 @@ export default function App() {
   const [counts, setCounts] = useState({ queued: 0, running: 0, done: 0, failed: 0, canceled: 0 });
   const [paused, setPaused] = useState(false);
   const [vramBudget, setVramBudget] = useState(16);
+  const [disk, setDisk] = useState<DiskStatus | null>(null);
   const pollRef = useRef<number | null>(null);
 
   // Health probe (every 2 s).
@@ -48,10 +51,13 @@ export default function App() {
         setHealth(h);
         setConn("online");
         try {
-          const p = await getProject();
-          if (alive) setProject(p);
+          const [p, d] = await Promise.all([getProject(), getDisk()]);
+          if (alive) {
+            setProject(p);
+            setDisk(d);
+          }
         } catch {
-          /* project fetch transient */
+          /* project/disk fetch transient */
         }
       } catch {
         if (alive) setConn("offline");
@@ -75,6 +81,7 @@ export default function App() {
         setCounts(r.counts);
         setPaused(r.paused);
         setVramBudget(r.vram_budget_gb);
+        if (r.disk) setDisk(r.disk);
         // After a relaunch the grid is empty but the queue may hold persisted pending
         // jobs — seed the grid from them so they're reviewable + cancelable before
         // unpause (R88 "Review/Unpause"; review #3).
@@ -258,7 +265,10 @@ export default function App() {
                 onChange={(e) => setCount(clamp(parseInt(e.target.value || "1", 10), 1, 8))}
               />
             </label>
-            <button onClick={onGenerate} disabled={conn !== "online" || !project?.open}>
+            <button
+              onClick={onGenerate}
+              disabled={conn !== "online" || !project?.open || disk?.blocked === true}
+            >
               Generate ▶
             </button>
           </div>
@@ -266,6 +276,12 @@ export default function App() {
             <div className="banner">
               No project open. <button className="link" onClick={onNewProject}>Create</button> or{" "}
               <button className="link" onClick={onOpenProject}>open</button> a project to generate.
+            </div>
+          )}
+          {disk?.blocked && (
+            <div className="banner banner-err">
+              ⛔ Disk hard-stop — {disk.reason}. Free space or raise the project size cap; new jobs
+              are blocked (running jobs finish).
             </div>
           )}
           {error && <div className="error">⚠ {error}</div>}
@@ -310,7 +326,13 @@ export default function App() {
           {counts.canceled ? ` · canceled ${counts.canceled}` : ""}
         </span>
         <span className="meter">VRAM 0.0/{vramBudget.toFixed(1)}G</span>
-        <span className="meter">disk —/{project?.size_cap_gb ?? 250}G</span>
+        <span className={`meter disk-${disk?.state ?? "ok"}`} title={disk?.reason ?? "disk OK"}>
+          {disk?.project
+            ? `proj ${disk.project.used_gb.toFixed(1)}/${disk.project.cap_gb}G`
+            : `proj —/${project?.size_cap_gb ?? 250}G`}
+          {disk?.disk ? ` · disk ${disk.disk.free_pct.toFixed(0)}% free` : ""}
+          {disk?.state === "warn" ? " ⚠" : disk?.state === "hard" ? " ⛔" : ""}
+        </span>
         {paused && (
           <button className="unpause" onClick={onUnpause}>
             unpause ▶

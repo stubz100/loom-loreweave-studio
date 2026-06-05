@@ -74,11 +74,21 @@ export interface Job {
   batch_size: number;
 }
 
+export interface DiskStatus {
+  state: "ok" | "warn" | "hard";
+  blocked: boolean;
+  reason: string | null;
+  project: { used_gb: number; cap_gb: number; headroom_pct: number } | null;
+  disk: { free_gb: number; total_gb: number; free_pct: number } | null;
+  thresholds: { warn_pct: number; hard_pct: number };
+}
+
 export interface JobsResponse {
   jobs: Record<string, Job>;
   counts: Record<JobStatus, number>;
   paused: boolean;
   vram_budget_gb: number;
+  disk?: DiskStatus;
 }
 
 export interface QueueState {
@@ -138,6 +148,12 @@ export async function getProject(signal?: AbortSignal): Promise<ProjectInfo> {
   return (await res.json()) as ProjectInfo;
 }
 
+export async function getDisk(signal?: AbortSignal): Promise<DiskStatus> {
+  const res = await fetch(`${orchestratorUrl()}/disk`, { signal });
+  if (!res.ok) throw new Error(`disk ${res.status}`);
+  return (await res.json()) as DiskStatus;
+}
+
 export async function createProject(
   dest: string,
   name: string,
@@ -192,6 +208,9 @@ export async function generate(req: GenerateRequest): Promise<GenerateResponse> 
   }
   if (res.status === 409) {
     throw new Error("no project open — create or open a project first");
+  }
+  if (res.status === 507) {
+    throw new Error(`disk hard-stop — ${await res.text()}`);
   }
   if (!res.ok) throw new Error(`generate ${res.status}: ${await res.text()}`);
   return (await res.json()) as GenerateResponse;

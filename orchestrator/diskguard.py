@@ -74,14 +74,23 @@ class DiskGuard:
 
     # --- lifecycle --------------------------------------------------------
     def start(self) -> None:
-        if self._thread is not None:
-            return
+        """Seed the status and (re)start the poll thread. Restartable in-process: if a
+        previous `stop()` ended the thread, this clears the stop event and spins up a
+        fresh one (review: a second lifespan must not leave the poller dead)."""
         self.refresh()  # seed before serving the first request
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="loom-disk-guard", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
+        """Signal the poll thread to exit and join it, so a later `start()` begins clean."""
         self._stop.set()
+        t = self._thread
+        if t is not None and t.is_alive():
+            t.join(timeout=self._poll_s + 1.0)
+        self._thread = None
 
     def _loop(self) -> None:
         while not self._stop.wait(self._poll_s):

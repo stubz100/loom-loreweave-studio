@@ -141,6 +141,26 @@ def test_default_active_phases_include_p1():
         assert components.active_phases() == {"P0", "P1"}
 
 
+def test_active_phases_routed_through_config_loader(monkeypatch):
+    """The launch gate must read LOOM_ACTIVE_PHASES through the central config loader
+    (real env > .env.local > .env), not the process env only (review) — so editing the
+    committed `.env` takes effect. Guard: the indirection delegates to CONFIG."""
+    from orchestrator import config
+    # config loader is the source: stub it and confirm the gate reflects it without any
+    # process-env var set.
+    monkeypatch.delenv("LOOM_ACTIVE_PHASES", raising=False)
+    monkeypatch.setattr(type(config.CONFIG), "active_phases_raw",
+                        property(lambda self: "P0,P1,P2"))
+    assert components.CONFIG_active_phases_env() == "P0,P1,P2"
+    assert components.active_phases() == {"P0", "P1", "P2"}
+
+
+def test_real_env_var_overrides_config_file(monkeypatch):
+    """Precedence holds: a real LOOM_ACTIVE_PHASES env var wins over the file value."""
+    monkeypatch.setenv("LOOM_ACTIVE_PHASES", "P0")
+    assert components.active_phases() == {"P0"}
+
+
 def test_broken_p1_schema_blocks_only_when_p1_active(monkeypatch):
     """A broken P1 record check must block launch once P1 is active, and be a non-blocking
     report when only P0 is active (phase-scoping holds)."""

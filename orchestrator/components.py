@@ -58,7 +58,10 @@ def active_phases() -> set[str]:
 
 
 def CONFIG_active_phases_env() -> str | None:  # tiny indirection so tests can monkeypatch
-    return os.environ.get("LOOM_ACTIVE_PHASES")
+    # Route through the central config loader (real env > .env.local > .env) so the
+    # committed `.env` is honored like every other setting (review), not just the
+    # process environment.
+    return CONFIG.active_phases_raw
 
 
 @dataclass

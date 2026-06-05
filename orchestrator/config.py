@@ -180,6 +180,15 @@ class Config:
         return Path.home() / "LoreweaveProjects"
 
     @property
+    def active_phases_raw(self) -> str | None:
+        """Raw `LOOM_ACTIVE_PHASES` (comma-separated phases the launch gate hard-requires),
+        read through the **central loader** (real env > `.env.local` > `.env`) like every
+        other setting — so editing the committed `.env` actually takes effect (review: this
+        var previously bypassed the loader and only honored the process env). `None` ⇒ the
+        launch gate falls back to its built-in default (`{P0, P1}`)."""
+        return _get("LOOM_ACTIVE_PHASES")
+
+    @property
     def project_dir_override(self) -> Path | None:
         """Optional forced project path (tests/CI/GPU verify): open (or create with
         defaults) this project at startup. Set LOOM_PROJECT_DIR."""

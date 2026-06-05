@@ -105,8 +105,11 @@ the orchestrator as a sidecar, and kills it on exit. (Requires the Rust toolchai
   Object — no orphaned GPU), but the in-flight job becomes `failed` rather than re-queued
   (a clean-stop **P0-15** refinement is still owed).
 - Only **t2i** is wired; img2img/inpaint (+ image inputs) arrive in **P1**.
-- `models.json` companion-repo URL + sha256 are **placeholders** (R160) — filled when
-  the HF companion repo is published; the on-demand HF **fetch** flow isn't built yet.
+- The on-demand HF **fetch** flow is built (M7: `POST /components/fetch` + the UI's
+  [Fetch now]); what's still pending is **publishing** the artifacts — `models.json`'s
+  companion-repo URL + sha256s are **placeholders** (R160), so `file`-type fetches and
+  **checksum verification** can't be exercised until that repo exists. (`hf_diffusers`
+  weights like `zimage` already fetch via diffusers/the hub cache.)
 - App icon is **placeholder art**.
 
 ## Configuration

@@ -29,12 +29,12 @@ try:
     from . import __version__, SCHEMA_VERSION
     from .adapters import JobSpec
     from .adapters import zimage as zimage_adapter
-    from .runner import RUNNER, estimate_vram
+    from .runner import RUNNER, WORKER_REAP, estimate_vram
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from adapters import JobSpec  # type: ignore
     from adapters import zimage as zimage_adapter  # type: ignore
-    from runner import RUNNER, estimate_vram  # type: ignore
+    from runner import RUNNER, WORKER_REAP, estimate_vram  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
 
@@ -134,7 +134,9 @@ def create_app() -> FastAPI:
             "zimage_worker": str(zimage_adapter.resolve_script(CONFIG.pipeline_roots) or ""),
             "models_dir": str(CONFIG.models_dir),
             "cors_origins": CONFIG.cors_origins,
-            "token_required": ["/generate"],
+            "token_required": ["POST /generate", "POST /jobs/{id}/cancel",
+                               "POST /queue/pause", "POST /queue/unpause"],
+            "worker_reap": WORKER_REAP,
         }
 
     @app.post("/generate")

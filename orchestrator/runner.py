@@ -43,20 +43,29 @@ ADAPTERS = {"zimage": zimage_adapter}
 SCHEMA_VERSION = 1
 
 
+def _warn(msg: str) -> None:
+    print(f"[loom] WARNING: {msg}", file=sys.stderr, flush=True)
+
+
 def _make_kill_on_close_job():
     """Windows Job Object with KILL_ON_JOB_CLOSE: worker subprocesses assigned to it
     die when the orchestrator process dies — for ANY reason, incl. a hard kill by the
     Tauri shell on app exit (review #1: no orphaned GPU process). No-op off Windows.
     The handle is held for the process lifetime; on death it closes → job closes → kill.
+
+    Failures are LOUD (a silent failure here would silently re-expose orphaned GPU);
+    the active mode is surfaced as `WORKER_REAP` / /version `worker_reap`.
     """
     if sys.platform != "win32":
-        return None
+        return None  # not a failure — POSIX reaping (PDEATHSIG/process-group) is a later add
     try:
         import ctypes
         from ctypes import wintypes
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         job = k32.CreateJobObjectW(None, None)
         if not job:
+            _warn(f"CreateJobObjectW failed (err={ctypes.get_last_error()}); "
+                  "GPU workers will NOT be auto-reaped on a hard kill")
             return None
 
         class _BASIC(ctypes.Structure):
@@ -86,13 +95,18 @@ def _make_kill_on_close_job():
         info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         # 9 = JobObjectExtendedLimitInformation
         if not k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            _warn(f"SetInformationJobObject failed (err={ctypes.get_last_error()}); "
+                  "GPU workers will NOT be auto-reaped on a hard kill")
             return None
         return job
-    except Exception:
+    except Exception as e:
+        _warn(f"Job Object setup failed ({e}); GPU workers will NOT be auto-reaped on a hard kill")
         return None
 
 
 _KILL_JOB = _make_kill_on_close_job()
+# How worker subprocesses are reaped if the orchestrator dies — surfaced in /version.
+WORKER_REAP = "job_object" if _KILL_JOB is not None else "none"
 
 
 def _assign_to_kill_job(proc: subprocess.Popen) -> None:
@@ -101,9 +115,13 @@ def _assign_to_kill_job(proc: subprocess.Popen) -> None:
         return
     try:
         import ctypes
-        ctypes.WinDLL("kernel32").AssignProcessToJobObject(_KILL_JOB, int(proc._handle))
-    except Exception:
-        pass
+        if not ctypes.WinDLL("kernel32", use_last_error=True).AssignProcessToJobObject(
+                _KILL_JOB, int(proc._handle)):
+            _warn(f"AssignProcessToJobObject failed (err={ctypes.get_last_error()}) "
+                  f"for worker pid={proc.pid}; this worker may orphan on a hard kill")
+    except Exception as e:
+        _warn(f"AssignProcessToJobObject raised ({e}) for worker pid={proc.pid}; "
+              "this worker may orphan on a hard kill")
 
 # Static per-pipeline VRAM estimate (GB) for admission (§7); refined by observed
 # peaks later. zimage-turbo @720p with cpu_offload peaks ~10–12 GB on the 16 GB rig.

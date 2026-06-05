@@ -27,8 +27,8 @@ loom-loreweave-studio/
 │   ├── src/           #   React UI (three-pane shell + job-queue dock + batch grid)
 │   └── src-tauri/     #   Rust: single-instance, orchestrator sidecar spawn + kill, READY handshake
 └── orchestrator/      # Python FastAPI service (127.0.0.1)
-    ├── main.py        #   app factory + /health /version /generate /jobs /outputs
-    ├── runner.py      #   in-memory single-worker job runner (M4 → durable queue)
+    ├── main.py        #   app factory + /health /version /generate /jobs /queue /outputs
+    ├── runner.py      #   durable, resume-paused single-worker queue (queue.json, M4)
     ├── config.py      #   port/token + pipeline roots + interpreter (R101/R103)
     ├── adapters/      #   one module per pipeline (zimage) → JobSpec/CompletionRecord
     └── requirements.txt

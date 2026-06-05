@@ -15,8 +15,12 @@ React/TypeScript UI + a Python FastAPI orchestrator that wraps the
 > a **continuously-polled disk guard** (two measures × two thresholds; hard-stop blocks
 > new jobs, M6), a **phase-scoped launch gate** (3-state component manifest; refuse to
 > start on a missing P0 code component; missing P0 weight → explicit HF fetch, M7), and
-> the **§1 seven-step acceptance test green on real hardware** (M8). Next: **P1**
-> (img2img/inpaint + multi-ref/SD3.5 adapters, World/Asset Studio embryo). Spec:
+> the **§1 seven-step acceptance test green on real hardware** (M8).
+>
+> **Phase 1 (MVP creative layer) — underway.** **M1 done:** L2 Asset Studio scaffold — StoryBible
+> style fragment (auto-prepended, R104), AssetProfile + `v1_base` records, a library rail, and the
+> P0 grid promoted to **asset-scoped casting (Stage A)** reusing `zimage`. Next: M2 `multi` casting →
+> M3 Stage B+C (the MVP done-line). Spec:
 > [`kb-loom-p0.md`](../../.github/copilot/kb-loom-p0.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:
 > [`kb-loom-p0-imp.md`](../../.github/copilot/kb-loom-p0-imp.md).
@@ -37,6 +41,8 @@ loom-loreweave-studio/
     ├── runner.py      #   durable, resume-paused single-worker queue, workspace-bound + disk-gated (M4/M5/M6)
     ├── workspace.py   #   bundle I/O: IDs, atomic writes, schema validation, footprint estimator (M5)
     ├── projects.py    #   project lifecycle (create/open/resume) + app-level last-project pointer (M5)
+    ├── bible.py       #   L1 StoryBible — minimal style fragment (P1/M1, R104)
+    ├── assets.py      #   L2 AssetProfile + ProfileVersion records (P1/M1, §3.4)
     ├── diskguard.py   #   two-measure/two-threshold space guard, continuously polled (M6, §9/R96)
     ├── components.py  #   phase-scoped 3-state launch gate + model-weight presence/fetch (M7, §11/R163)
     ├── logsetup.py    #   central logger → stderr + rotating file (.env LOOM_LOG_LEVEL brief|verbose)

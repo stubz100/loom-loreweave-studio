@@ -58,6 +58,9 @@ export interface Job {
   pipeline: string;
   mode: string;
   params: Record<string, unknown>;
+  requester_id?: string;
+  profile_version_id?: string | null;
+  stage?: string | null;
   status: JobStatus;
   progress: number;
   created_at: string;
@@ -103,6 +106,25 @@ export interface GenerateRequest {
   seed?: number | null;
   width?: number;
   height?: number;
+  asset_id?: string;
+  version_id?: string;
+  stage?: "A" | "B" | "C";
+  apply_style?: boolean;
+}
+
+export interface StyleInfo {
+  id: string;
+  fragment: string;
+  enabled_default: boolean;
+}
+
+export interface AssetSummary {
+  id: string;
+  name: string;
+  asset_class: string;
+  slug?: string;
+  active_version: string;
+  version_count: number;
 }
 
 export interface GenerateResponse {
@@ -152,6 +174,39 @@ export async function getDisk(signal?: AbortSignal): Promise<DiskStatus> {
   const res = await fetch(`${orchestratorUrl()}/disk`, { signal });
   if (!res.ok) throw new Error(`disk ${res.status}`);
   return (await res.json()) as DiskStatus;
+}
+
+// --- P1: L1 style + L2 assets ---
+export async function getStyle(signal?: AbortSignal): Promise<StyleInfo> {
+  const res = await fetch(`${orchestratorUrl()}/bible/style`, { signal });
+  if (!res.ok) throw new Error(`style ${res.status}`);
+  return (await res.json()) as StyleInfo;
+}
+
+export async function setStyle(fragment?: string, enabled_default?: boolean): Promise<StyleInfo> {
+  const res = await fetch(`${orchestratorUrl()}/bible/style`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ fragment, enabled_default }),
+  });
+  if (!res.ok) throw new Error(`set style ${res.status}: ${await res.text()}`);
+  return (await res.json()) as StyleInfo;
+}
+
+export async function listAssets(signal?: AbortSignal): Promise<{ assets: AssetSummary[] }> {
+  const res = await fetch(`${orchestratorUrl()}/assets`, { signal });
+  if (!res.ok) throw new Error(`assets ${res.status}`);
+  return await res.json();
+}
+
+export async function createAsset(name: string, asset_class = "characters"): Promise<{ profile: AssetSummary }> {
+  const res = await fetch(`${orchestratorUrl()}/assets`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ name, asset_class }),
+  });
+  if (!res.ok) throw new Error(`create asset ${res.status}: ${await res.text()}`);
+  return await res.json();
 }
 
 export interface ComponentInfo {

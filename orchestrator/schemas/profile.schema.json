@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "loom:profile.schema.json",
+  "title": "AssetProfile (P1 §3.4)",
+  "type": "object",
+  "required": ["schema_version", "id", "name", "asset_class", "created_at", "active_version", "versions"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "type": "string", "pattern": "^chr_[0-9a-f]{6}$" },
+    "name": { "type": "string", "minLength": 1 },
+    "asset_class": { "enum": ["characters", "props", "scenes"] },
+    "slug": { "type": "string" },
+    "created_at": { "type": "string" },
+    "active_version": { "type": "string", "pattern": "^ver_[0-9a-f]{6}$" },
+    "versions": { "type": "array", "items": { "type": "string", "pattern": "^ver_[0-9a-f]{6}$" }, "minItems": 1 }
+  }
+}

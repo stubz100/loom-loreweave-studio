@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "loom:story.schema.json",
+  "title": "StoryBible (P1 minimal — world/style; M1 seeds style only)",
+  "type": "object",
+  "required": ["schema_version", "id", "style"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "type": "string", "pattern": "^sto_[0-9a-f]{6}$" },
+    "style": {
+      "type": "object",
+      "required": ["id", "fragment", "enabled_default"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^sty_[0-9a-f]{6}$" },
+        "fragment": { "type": "string" },
+        "enabled_default": { "type": "boolean" }
+      }
+    }
+  }
+}

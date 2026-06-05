@@ -56,6 +56,10 @@ def make_edge(job: dict, *, asset_version: str | None = None,
         "manifest": result.get("manifest_path"),
         "asset_version": asset_version,
         "lora_version": lora_version,
+        # P1: which AssetProfile version + bootstrap stage (A casting / B expansion / C curation)
+        # produced this image (§4 lineage), read off the job record when set.
+        "profile_version_id": job.get("profile_version_id"),
+        "stage": job.get("stage"),
         "created_at": _now(),
     }
 

@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "loom:version.schema.json",
+  "title": "ProfileVersion (P1 §3.4 — three-state lifecycle; M1 = Saved, not Finalized)",
+  "type": "object",
+  "required": ["schema_version", "id", "name", "finalized", "saved_at", "prompt_template", "ref_set", "casting"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "type": "string", "pattern": "^ver_[0-9a-f]{6}$" },
+    "name": { "type": "string", "minLength": 1 },
+    "derived_from": { "type": ["string", "null"] },
+    "finalized": { "type": "boolean" },
+    "saved_at": { "type": "string" },
+    "prompt_template": { "type": "string" },
+    "anchor_ref": { "type": ["string", "null"] },
+    "ref_set": { "type": "array", "items": { "type": "string" } },
+    "casting": { "type": "array", "items": { "type": "string" } }
+  }
+}

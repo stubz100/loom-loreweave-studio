@@ -40,6 +40,8 @@ try:
     from . import components
     from .diskguard import DiskGuard
     from . import logsetup
+    from . import bible
+    from . import assets
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from adapters import JobSpec  # type: ignore
@@ -50,6 +52,8 @@ except ImportError:  # pragma: no cover - direct-run convenience
     import components  # type: ignore
     from diskguard import DiskGuard  # type: ignore
     import logsetup  # type: ignore
+    import bible  # type: ignore
+    import assets  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
 
@@ -93,6 +97,12 @@ class GenerateRequest(BaseModel):
     guidance_scale: float | None = Field(default=None, ge=0.0, le=30.0)
     negative_prompt: str | None = None
     dry_run: bool = False           # return the argv without running the GPU job (testing)
+    # P1/M1: scope a batch to an AssetProfile version (lineage stage + requester); the L1
+    # style fragment auto-prepends unless apply_style is unticked (the R104 override).
+    asset_id: str | None = None
+    version_id: str | None = None   # default = the asset's active version
+    stage: Literal["A", "B", "C"] | None = None
+    apply_style: bool = True
 
     @field_validator("prompt")
     @classmethod
@@ -127,6 +137,22 @@ class EstimateRequest(BaseModel):
     height: int = Field(default=720, ge=16)
     fps: int = Field(default=24, ge=1)
     size_cap_gb: float | None = None
+
+
+class CreateAssetRequest(BaseModel):
+    """Create an AssetProfile (P1/M1). `asset_class` defaults to characters."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    asset_class: Literal["characters", "props", "scenes"] = "characters"
+
+
+class StyleRequest(BaseModel):
+    """Edit the L1 style fragment (R104 fixed prepend + default-on toggle)."""
+
+    model_config = ConfigDict(extra="forbid")
+    fragment: str | None = None
+    enabled_default: bool | None = None
 
 
 def require_token(x_loom_token: str | None = Header(default=None)) -> None:
@@ -221,8 +247,8 @@ def create_app() -> FastAPI:
             "token_required": ["POST /generate", "POST /jobs/{id}/cancel",
                                "DELETE /jobs/{id}", "POST /queue/pause",
                                "POST /queue/unpause", "POST /project", "POST /project/open",
-                               "POST /project/forget", "POST /components/fetch",
-                               "POST /shutdown"],
+                               "POST /project/forget", "PUT /bible/style", "POST /assets",
+                               "POST /components/fetch", "POST /shutdown"],
             "worker_reap": WORKER_REAP,
             "work_disk_root": str(CONFIG.work_disk_root),
             "active_project": (str(RUNNER.workspace.path) if RUNNER.workspace else None),
@@ -254,13 +280,32 @@ def create_app() -> FastAPI:
             raise HTTPException(412, f"required model weight(s) missing: {missing} — "
                                      "fetch via POST /components/fetch first")
 
-        base = req.model_dump(exclude={"pipeline", "mode", "dry_run", "count"})
+        # Resolve the L2 scope (P1/M1): which AssetProfile version this batch is for, and
+        # therefore the lineage requester. Default requester = the project (P0 sandbox).
+        requester_id = project["id"]
+        profile_version_id = None
+        if req.asset_id is not None:
+            try:
+                profile_version_id = assets.resolve_version(ws, req.asset_id, req.version_id)
+            except ws_mod.WorkspaceError as e:
+                raise HTTPException(404, str(e))
+            requester_id = profile_version_id
+
+        base = req.model_dump(exclude={"pipeline", "mode", "dry_run", "count",
+                                       "asset_id", "version_id", "stage", "apply_style"})
+
+        # L1 style fragment auto-prepend (R104) — unless the per-gen override unticks it.
+        if req.apply_style:
+            fragment = (bible.load_style(ws).get("fragment") or "").strip()
+            if fragment:
+                base["prompt"] = f"{fragment}, {base['prompt']}"
 
         if req.dry_run:
             spec = JobSpec(pipeline=req.pipeline, mode=req.mode, params=base,
                            output_dir=ws.out_dir)
             argv = zimage_adapter.build_argv(spec, CONFIG.venv_python, script)
-            return {"dry_run": True, "count": req.count, "argv": argv,
+            return {"dry_run": True, "count": req.count, "argv": argv, "prompt": base["prompt"],
+                    "requester_id": requester_id, "profile_version_id": profile_version_id,
                     "cwd": str(script.parents[2]), "output_dir": str(ws.out_dir)}
 
         # VRAM admission (§7) — enforce, don't just record (review #2): refuse a job
@@ -285,10 +330,12 @@ def create_app() -> FastAPI:
                 params["seed"] = req.seed + i      # distinct but reproducible
             jid = RUNNER.submit(pipeline=req.pipeline, mode=req.mode, params=params,
                                 batch_id=batch_id, index=i, batch_size=req.count,
-                                requester_id=project["id"])   # lineage edge → project (R98)
+                                requester_id=requester_id,          # project or asset version (R98)
+                                profile_version_id=profile_version_id, stage=req.stage)
             job_ids.append(jid)
-        LOG.info("generate: batch %s of %d (%s) for project %s",
-                 batch_id, req.count, req.pipeline, project["id"])
+        LOG.info("generate: batch %s of %d (%s) for %s%s",
+                 batch_id, req.count, req.pipeline, requester_id,
+                 f" stage={req.stage}" if req.stage else "")
         return {"batch_id": batch_id, "count": req.count, "job_ids": job_ids}
 
     @app.get("/project")
@@ -307,6 +354,48 @@ def create_app() -> FastAPI:
         """Remove a project from the registry's recent list (a moved/deleted one). Does
         not touch files or the active project. Token-gated."""
         return projects.forget_project(Path(req.path))
+
+    # --- P1: L1 style fragment + L2 asset library -------------------------
+    def _require_ws():
+        ws = RUNNER.workspace
+        if ws is None:
+            raise HTTPException(409, "no project open")
+        return ws
+
+    @app.get("/bible/style")
+    def get_style() -> dict:
+        """The L1 style fragment (auto-prepended to generation, R104). Unauthenticated read."""
+        return bible.load_style(_require_ws())
+
+    @app.put("/bible/style")
+    def put_style(req: StyleRequest, _auth: None = Depends(require_token)) -> dict:
+        """Edit the style fragment / default-on flag (writes story.json). Token-gated."""
+        return bible.set_style(_require_ws(), fragment=req.fragment,
+                               enabled_default=req.enabled_default)
+
+    @app.get("/assets")
+    def get_assets() -> dict:
+        """L2 library tree — AssetProfiles in the open project. Unauthenticated read."""
+        return assets.list_assets(_require_ws())
+
+    @app.post("/assets")
+    def create_asset(req: CreateAssetRequest, _auth: None = Depends(require_token)) -> dict:
+        """Create an AssetProfile + a single v1_base version (P1/M1). Token-gated."""
+        try:
+            res = assets.create_asset(_require_ws(), name=req.name, asset_class=req.asset_class)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        LOG.info("asset created: %s (%s) %s", res["profile"]["name"],
+                 res["profile"]["asset_class"], res["profile"]["id"])
+        return res
+
+    @app.get("/assets/{asset_id}")
+    def get_asset(asset_id: str) -> dict:
+        """Full AssetProfile + its versions, by id."""
+        res = assets.get_asset(_require_ws(), asset_id)
+        if res is None:
+            raise HTTPException(404, f"no such asset {asset_id!r}")
+        return res
 
     @app.post("/project")
     def create_project(req: CreateProjectRequest, _auth: None = Depends(require_token)) -> dict:

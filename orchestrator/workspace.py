@@ -68,6 +68,15 @@ def new_id(prefix: str, n: int = 6) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:n]}"
 
 
+def slugify(name: str) -> str:
+    """Filesystem-safe folder slug from a display name (P1 asset folders are `<name>/`,
+    §3.1). Lowercase, non-alphanumerics → `-`, trimmed; references still use the stable
+    id, this is only the human-readable folder."""
+    out = "".join(c if c.isalnum() else "-" for c in name.strip().lower())
+    out = "-".join(p for p in out.split("-") if p)   # collapse runs of '-'
+    return out or "asset"
+
+
 # --- atomic JSON I/O ------------------------------------------------------------
 
 def atomic_write_json(path: Path, data: Any) -> None:
@@ -297,6 +306,17 @@ class Workspace:
 
     def log_path(self, job_id: str) -> Path:
         return self.logs_dir / f"{job_id}.log"
+
+    # P1 subtrees (§4) — created lazily by L1/L2 (P0 made only project.json/jobs/lineage)
+    @property
+    def story_json(self) -> Path: return self.path / "story.json"
+    @property
+    def bible_dir(self) -> Path: return self.path / "bible"
+    @property
+    def assets_dir(self) -> Path: return self.path / "assets"
+
+    def asset_dir(self, asset_class: str, slug: str) -> Path:
+        return self.assets_dir / asset_class / slug
 
     def _ensure_tree(self) -> None:
         for sub in _SUBDIRS:

@@ -370,7 +370,8 @@ class JobRunner:
 
     def submit(self, *, pipeline: str, mode: str, params: dict,
                batch_id: str, index: int, batch_size: int,
-               requester_id: str = "sandbox") -> str:
+               requester_id: str = "sandbox",
+               profile_version_id: str | None = None, stage: str | None = None) -> str:
         job_id = new_id("job", 8)
         with self._cv:
             self.jobs[job_id] = {
@@ -380,6 +381,8 @@ class JobRunner:
                 "mode": mode,
                 "params": params,
                 "requester_id": requester_id,
+                "profile_version_id": profile_version_id,   # P1: AssetProfile version (lineage)
+                "stage": stage,                             # P1: bootstrap stage A|B|C
                 "vram_estimate_gb": VRAM_ESTIMATES.get(pipeline, DEFAULT_VRAM_GB),
                 "resumable": False,                # P0 jobs don't checkpoint (R159)
                 "retry_count": 0,

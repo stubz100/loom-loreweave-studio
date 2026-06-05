@@ -18,6 +18,8 @@
           "manifest": { "type": ["string", "null"] },
           "asset_version": { "type": ["string", "null"] },
           "lora_version": { "type": ["string", "null"] },
+          "profile_version_id": { "type": ["string", "null"] },
+          "stage": { "type": ["string", "null"] },
           "created_at": { "type": "string" }
         }
       }

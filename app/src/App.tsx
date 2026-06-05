@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   cancelJob,
+  createAsset,
   createProject,
   deleteJob,
   estimateFootprint,
@@ -11,17 +12,22 @@ import {
   getDisk,
   getHealth,
   getProject,
+  getStyle,
+  listAssets,
   listJobs,
   listProjects,
   openProject,
   outputUrl,
+  setStyle,
   unpauseQueue,
+  type AssetSummary,
   type DiskStatus,
   type Health,
   type Job,
   type LaunchReport,
   type ProjectInfo,
   type ProjectListEntry,
+  type StyleInfo,
 } from "./lib/orchestrator";
 import { log } from "./lib/log";
 
@@ -51,6 +57,11 @@ export default function App() {
   const [fetching, setFetching] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const [projectList, setProjectList] = useState<ProjectListEntry[]>([]);
+  const [assets, setAssets] = useState<AssetSummary[]>([]);
+  const [activeAsset, setActiveAsset] = useState<AssetSummary | null>(null);
+  const [style, setStyleState] = useState<StyleInfo | null>(null);
+  const [styleDraft, setStyleDraft] = useState("");
+  const [applyStyle, setApplyStyle] = useState(true);
   const pollRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -184,9 +195,15 @@ export default function App() {
       return;
     }
     try {
-      const res = await generate({ prompt: prompt.trim(), count });
-      log.info("generate: batch", res.batch_id, `(${count} image${count > 1 ? "s" : ""})`);
-      setBatchIds(res.job_ids);
+      const res = await generate(
+        activeAsset
+          ? { prompt: prompt.trim(), count, asset_id: activeAsset.id, stage: "A", apply_style: applyStyle }
+          : { prompt: prompt.trim(), count },
+      );
+      log.info("generate: batch", res.batch_id, `(${count} image${count > 1 ? "s" : ""})`,
+        activeAsset ? `for ${activeAsset.name} [Stage A]` : "(sandbox)");
+      // Asset grid is derived from jobs (by requester); sandbox tracks its batch ids.
+      if (!activeAsset) setBatchIds(res.job_ids);
       setSelected(null);
       startPolling();
     } catch (e) {
@@ -271,6 +288,65 @@ export default function App() {
     }
   };
 
+  // --- L2 Asset Studio (P1/M1) ---
+  const refreshAssets = async () => {
+    try {
+      const [a, s] = await Promise.all([listAssets(), getStyle()]);
+      setAssets(a.assets);
+      setStyleState(s);
+      setStyleDraft(s.fragment);
+      setApplyStyle(s.enabled_default);
+    } catch {
+      /* no project / transient */
+    }
+  };
+
+  // Load the library + style whenever the open project changes.
+  useEffect(() => {
+    if (!project?.open) {
+      setAssets([]);
+      setActiveAsset(null);
+      setStyleState(null);
+      return;
+    }
+    void refreshAssets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.open, project?.id]);
+
+  const onCreateAsset = async () => {
+    setError(null);
+    const name = window.prompt("New character name:");
+    if (!name) return;
+    try {
+      const r = await createAsset(name);
+      log.info("created asset:", name);
+      const a = await listAssets();
+      setAssets(a.assets);
+      setActiveAsset(a.assets.find((x) => x.id === r.profile.id) ?? null);
+      setSelected(null);
+      startPolling();
+    } catch (e) {
+      log.error("create asset failed:", e);
+      setError(String(e));
+    }
+  };
+
+  const onSelectAsset = (asset: AssetSummary | null) => {
+    setActiveAsset(asset);
+    setSelected(null);
+    startPolling(); // refresh jobs so the derived asset grid is current
+  };
+
+  const onSaveStyle = async () => {
+    try {
+      const s = await setStyle(styleDraft);
+      setStyleState(s);
+      log.info("style fragment saved");
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   // Explicit, on-demand model fetch (R163) when the launch gate reports a missing
   // P0-essential weight — the no-surprise alternative to auto-downloading at startup.
   const onFetchWeights = async () => {
@@ -289,6 +365,14 @@ export default function App() {
   const dot = conn === "online" ? "ok" : conn === "offline" ? "err" : "warn";
   const pending = counts.queued + counts.running;
   const selJob = selected ? jobs[selected] : null;
+  // When an asset is active, the grid is derived from its jobs (lineage requester =
+  // active version); the sandbox tracks the last batch's ids.
+  const gridIds = activeAsset
+    ? Object.values(jobs)
+        .filter((j) => j.requester_id === activeAsset.active_version)
+        .sort((a, b) => a.created_at.localeCompare(b.created_at))
+        .map((j) => j.id)
+    : batchIds;
 
   return (
     <div className="app">
@@ -344,11 +428,43 @@ export default function App() {
 
       <div className="panes">
         <nav className="rail">
-          <div className="rail-head">NAVIGATOR</div>
-          <div className="muted">(empty in P0)</div>
+          <div className="rail-head">
+            ASSETS
+            <button className="rail-add" onClick={onCreateAsset}
+                    disabled={conn !== "online" || !project?.open} title="new character">
+              + Character
+            </button>
+          </div>
+          {!project?.open && <div className="muted">open a project first</div>}
+          {project?.open && assets.length === 0 && (
+            <div className="muted">no assets yet — add a character</div>
+          )}
+          <button
+            className={`asset-row sandbox ${activeAsset === null ? "sel" : ""}`}
+            onClick={() => onSelectAsset(null)}
+          >
+            ▦ Sandbox <span className="muted">(unscoped)</span>
+          </button>
+          {assets.map((a) => (
+            <button
+              key={a.id}
+              className={`asset-row ${activeAsset?.id === a.id ? "sel" : ""}`}
+              onClick={() => onSelectAsset(a)}
+              title={`${a.asset_class} · ${a.version_count} version(s)`}
+            >
+              <span className="asset-dot" /> {a.name}
+            </button>
+          ))}
         </nav>
 
         <main className="stage">
+          {activeAsset && (
+            <div className="stage-ctx">
+              <span className="ctx-asset">{activeAsset.name}</span>
+              <span className="muted"> · v1_base · CHARACTER BOOTSTRAP — </span>
+              <span className="ctx-stage">Stage A · Casting</span>
+            </div>
+          )}
           <div className="generate-bar">
             <label>
               pipeline
@@ -390,9 +506,32 @@ export default function App() {
                 launch?.weights_ok === false
               }
             >
-              Generate ▶
+              {activeAsset ? "Cast ▶" : "Generate ▶"}
             </button>
           </div>
+          {project?.open && (
+            <div className="style-bar">
+              <span className="style-label">L1 style</span>
+              <input
+                className="style-frag"
+                placeholder="style fragment (auto-prepended)…"
+                value={styleDraft}
+                onChange={(e) => setStyleDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onSaveStyle();
+                }}
+              />
+              <button className="proj-btn" onClick={onSaveStyle}
+                      disabled={!style || styleDraft === style.fragment}>
+                Save
+              </button>
+              <label className="apply-style" title="prepend the style to this generation (R104)">
+                <input type="checkbox" checked={applyStyle}
+                       onChange={(e) => setApplyStyle(e.target.checked)} />
+                apply
+              </label>
+            </div>
+          )}
           {launch && !launch.weights_ok && (
             <div className="banner banner-err">
               ⛔ Required model weight(s) missing: {launch.weights_missing.join(", ")}.{" "}
@@ -417,12 +556,14 @@ export default function App() {
           {error && <div className="error">⚠ {error}</div>}
 
           <div className="grid">
-            {batchIds.length === 0 && (
+            {gridIds.length === 0 && (
               <p className="muted center span">
-                Fire a batch — results stream in here (the casting-grid embryo).
+                {activeAsset
+                  ? `Cast ${activeAsset.name} — candidates stream into this grid (Stage A).`
+                  : "Fire a batch — results stream in here (the casting-grid embryo)."}
               </p>
             )}
-            {batchIds.map((id) => (
+            {gridIds.map((id) => (
               <GridCell
                 key={id}
                 job={jobs[id]}

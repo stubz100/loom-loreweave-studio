@@ -93,6 +93,10 @@ async def lifespan(app: FastAPI):
     RUNNER.start()
     print(f"LOOM_ORCH_READY url={CONFIG.base_url} token={CONFIG.token}", flush=True)
     yield
+    # Graceful shutdown: re-queue any running job + mark a clean stop so a reload
+    # re-queues (not fails) it (R159 graceful branch). Runs on a clean uvicorn stop;
+    # a hard kill skips this -> reload treats running jobs as a crash (-> failed).
+    RUNNER.graceful_shutdown()
 
 
 def create_app() -> FastAPI:
@@ -165,7 +169,20 @@ def create_app() -> FastAPI:
 
     @app.get("/jobs")
     def list_jobs() -> dict:
-        return {"jobs": RUNNER.snapshot(), "counts": RUNNER.counts()}
+        st = RUNNER.state()
+        return {"jobs": RUNNER.snapshot(), "counts": st["counts"],
+                "paused": st["paused"], "vram_budget_gb": st["vram_budget_gb"]}
+
+    @app.post("/queue/pause")
+    def queue_pause(_auth: None = Depends(require_token)) -> dict:
+        RUNNER.pause()
+        return RUNNER.state()
+
+    @app.post("/queue/unpause")
+    def queue_unpause(_auth: None = Depends(require_token)) -> dict:
+        """Resume the GPU worker (the [unpause] control after a resume-paused load, R88)."""
+        RUNNER.unpause()
+        return RUNNER.state()
 
     @app.get("/jobs/{job_id}")
     def get_job(job_id: str) -> dict:

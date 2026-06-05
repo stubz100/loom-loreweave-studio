@@ -5,6 +5,7 @@ import {
   getHealth,
   listJobs,
   outputUrl,
+  unpauseQueue,
   type Health,
   type Job,
 } from "./lib/orchestrator";
@@ -27,6 +28,8 @@ export default function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [counts, setCounts] = useState({ queued: 0, running: 0, done: 0, failed: 0, canceled: 0 });
+  const [paused, setPaused] = useState(false);
+  const [vramBudget, setVramBudget] = useState(16);
   const pollRef = useRef<number | null>(null);
 
   // Health probe (every 2 s).
@@ -55,13 +58,17 @@ export default function App() {
     if (pollRef.current != null) return;
     const tick = async () => {
       try {
-        const { jobs: all, counts: c } = await listJobs();
-        setJobs(all);
-        setCounts(c);
-        const pending = Object.values(all).some(
+        const r = await listJobs();
+        setJobs(r.jobs);
+        setCounts(r.counts);
+        setPaused(r.paused);
+        setVramBudget(r.vram_budget_gb);
+        const pending = Object.values(r.jobs).some(
           (j) => j.status === "queued" || j.status === "running"
         );
-        if (!pending && pollRef.current != null) {
+        // Keep polling while work is in flight OR the queue is paused with pending
+        // work (so the dock + unpause stay live after a resume-paused load, R88).
+        if (!pending && !r.paused && pollRef.current != null) {
           window.clearInterval(pollRef.current);
           pollRef.current = null;
         }
@@ -79,13 +86,20 @@ export default function App() {
   // Seed the queue counts on mount so the dock reflects the runner's full state
   // (not just the current batch) even before/after a batch (review #5).
   useEffect(() => {
-    listJobs()
-      .then((r) => {
-        setJobs(r.jobs);
-        setCounts(r.counts);
-      })
-      .catch(() => {});
+    // Seed + (if there's pending/paused work after a resume-paused load) keep polling.
+    startPolling();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const onUnpause = async () => {
+    try {
+      await unpauseQueue();
+      setPaused(false);
+    } catch (e) {
+      setError(String(e));
+    }
+    startPolling();
+  };
 
   const onCancel = async (id: string) => {
     try {
@@ -200,16 +214,26 @@ export default function App() {
       </div>
 
       <footer className="dock">
-        <span className={`status dot-${pending > 0 ? "warn" : dot}`}>
+        <span className={`status dot-${paused ? "warn" : pending > 0 ? "warn" : dot}`}>
           <i className="dot" /> JOB QUEUE{" "}
-          {pending > 0 ? `▶ running (${pending})` : `· idle`}
+          {paused
+            ? `⏸ paused (${counts.queued} queued)`
+            : pending > 0
+            ? `▶ running (${pending})`
+            : `· idle`}
         </span>
         <span className="meter">
           done {counts.done}
           {counts.failed ? ` · failed ${counts.failed}` : ""}
+          {counts.canceled ? ` · canceled ${counts.canceled}` : ""}
         </span>
-        <span className="meter">VRAM 0.0/16.0G</span>
+        <span className="meter">VRAM 0.0/{vramBudget.toFixed(1)}G</span>
         <span className="meter">disk —/250G</span>
+        {paused && (
+          <button className="unpause" onClick={onUnpause}>
+            unpause ▶
+          </button>
+        )}
       </footer>
     </div>
   );

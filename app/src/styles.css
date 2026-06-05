@@ -100,3 +100,5 @@ body {
 }
 .meter { color: var(--muted); font-variant-numeric: tabular-nums; }
 .dock button { margin-left: auto; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 3px 10px; }
+.dock .unpause { margin-left: auto; background: var(--amber); color: #1a1a1a; border: 0; font-weight: 600; cursor: pointer; }
+.dock .unpause:hover { filter: brightness(1.08); }

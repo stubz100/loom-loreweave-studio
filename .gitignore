@@ -242,6 +242,8 @@ hf_cache/
 
 # M1 smoke-output dir (replaced by per-project workspace out/ at M5)
 .dev_out/
+# M4 durable queue state (relocated to <project>/jobs/ at M5)
+.loom_state/
 
 # Node / Vite (app/)
 node_modules/

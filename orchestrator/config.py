@@ -131,11 +131,25 @@ class Config:
     venv_python: str = field(default_factory=_resolve_venv_python)
     monorepo_root: Path = field(default_factory=lambda: _MONOREPO_ROOT_GUESS)
     app_repo_root: Path = field(default_factory=lambda: APP_REPO_ROOT)
+    # VRAM budget for admission (16 GB target rig — RX 9070 XT). Override LOOM_VRAM_BUDGET_GB.
+    vram_budget_gb: float = field(default_factory=lambda: float(_get("LOOM_VRAM_BUDGET_GB", "16")))
 
     @property
     def models_dir(self) -> Path:
         """Bulk model weights live OUTSIDE the app repo (R160), in the monorepo."""
         return self.src_root / "village_ai" / "models"
+
+    @property
+    def state_dir(self) -> Path:
+        """Durable orchestrator state (the M4 queue lives here). Interim until M5's
+        per-project workspace (`<project>/jobs/`, R72); gitignored. Override LOOM_STATE_DIR."""
+        env = _get("LOOM_STATE_DIR")
+        return Path(env).resolve() if env else (self.app_repo_root / ".loom_state")
+
+    @property
+    def queue_path(self) -> Path:
+        """Durable job queue (R69/R88). M5 relocates to `<project>/jobs/queue.json`."""
+        return self.state_dir / "queue.json"
 
     @property
     def base_url(self) -> str:

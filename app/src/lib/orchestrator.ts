@@ -66,6 +66,9 @@ export interface Job {
   wall_s: number | null;
   result: JobResult | null;
   log_tail: string;
+  note?: string;
+  retry_count?: number;
+  vram_estimate_gb?: number;
   batch_id: string;
   index: number;
   batch_size: number;
@@ -73,6 +76,14 @@ export interface Job {
 
 export interface JobsResponse {
   jobs: Record<string, Job>;
+  counts: Record<JobStatus, number>;
+  paused: boolean;
+  vram_budget_gb: number;
+}
+
+export interface QueueState {
+  paused: boolean;
+  vram_budget_gb: number;
   counts: Record<JobStatus, number>;
 }
 
@@ -126,6 +137,18 @@ export async function cancelJob(id: string): Promise<void> {
   // 409 = already finished/unknown — treat as a no-op.
   if (!res.ok && res.status !== 409) throw new Error(`cancel ${res.status}`);
 }
+
+async function queueControl(action: "pause" | "unpause"): Promise<QueueState> {
+  const res = await fetch(`${orchestratorUrl()}/queue/${action}`, {
+    method: "POST",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`${action} ${res.status}`);
+  return (await res.json()) as QueueState;
+}
+
+export const pauseQueue = () => queueControl("pause");
+export const unpauseQueue = () => queueControl("unpause");
 
 export function outputUrl(name: string): string {
   // name may be a per-job subpath (job_id/file.png); encode each segment.

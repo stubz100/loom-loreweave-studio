@@ -17,10 +17,11 @@ React/TypeScript UI + a Python FastAPI orchestrator that wraps the
 > start on a missing P0 code component; missing P0 weight → explicit HF fetch, M7), and
 > the **§1 seven-step acceptance test green on real hardware** (M8).
 >
-> **Phase 1 (MVP creative layer) — underway.** **M1 done:** L2 Asset Studio scaffold — StoryBible
-> style fragment (auto-prepended, R104), AssetProfile + `v1_base` records, a library rail, and the
-> P0 grid promoted to **asset-scoped casting (Stage A)** reusing `zimage`. Next: M2 `multi` casting →
-> M3 Stage B+C (the MVP done-line). Spec:
+> **Phase 1 (MVP creative layer) — underway.** **M1–M2 done:** L2 Asset Studio scaffold (StoryBible
+> style fragment auto-prepended R104; AssetProfile + `v1_base`; library rail), **Stage-A casting** —
+> `casting[]` + hero-star ★ persisted into `version.json` (self-contained `casting/` copies), and the
+> **`multi` adapter onboarded** (one cast → a pool of N candidates across flux2+sd35+zimage; per-
+> candidate tiles, output-keyed star; real-GPU verified). Next: M3 Stage B+C (the MVP done-line). Spec:
 > [`kb-loom-p1.md`](../../.github/copilot/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:
 > [`kb-loom-p1-imp.md`](../../.github/copilot/kb-loom-p1-imp.md) (P0 spine:

@@ -218,6 +218,8 @@ class JobRunner:
             self._ws = ws
             self.jobs = {}
             self._canceled.clear()
+            self._shutting_down = False   # binding a project = operational again (clears a prior
+                                          # graceful_shutdown flag on an in-process re-bind)
             self._load_locked()
             self._cv.notify()
 

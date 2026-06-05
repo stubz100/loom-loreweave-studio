@@ -4,18 +4,19 @@ A non-linear storyboard / story-generation desktop app. Tauri (Rust shell) +
 React/TypeScript UI + a Python FastAPI orchestrator that wraps the
 `run_pipeline.py` generation CLIs behind a single VRAM-aware job queue.
 
-> **Status: Phase 0 (foundation) — M0–M7 done (Phase B underway).**
+> **Status: Phase 0 (foundation) — ✅ COMPLETE & ACCEPTED (M0–M8, 7/7 acceptance green).**
 > App shell + orchestrator handshake (M0), one real generation (M1), an N-image batch
 > streaming into a selectable grid (M2), the hardened adapter contract — token-gated
 > `/generate`, `capabilities()`, coarse progress, **cancel = subprocess kill**,
 > manifest-status-as-truth (M3) — a **durable, resume-paused `queue.json`** with VRAM
 > admission + OOM retry (M4), **durable bundle I/O + `loom init` project workspaces**
 > (stable IDs, `schema_version`, atomic writes, JSON Schemas, lineage edge, footprint
-> estimator; the queue + outputs + per-job logs now live in a real `<project>/`, M5),
+> estimator; the queue + outputs + per-job logs live in a real `<project>/`, M5),
 > a **continuously-polled disk guard** (two measures × two thresholds; hard-stop blocks
-> new jobs, M6), and a **phase-scoped launch gate** (3-state component manifest; refuse
-> to start on a missing P0 code component; missing P0 weight → explicit HF fetch, M7).
-> Next: §1 acceptance (M8). Spec:
+> new jobs, M6), a **phase-scoped launch gate** (3-state component manifest; refuse to
+> start on a missing P0 code component; missing P0 weight → explicit HF fetch, M7), and
+> the **§1 seven-step acceptance test green on real hardware** (M8). Next: **P1**
+> (img2img/inpaint + multi-ref/SD3.5 adapters, World/Asset Studio embryo). Spec:
 > [`kb-loom-p0.md`](../../.github/copilot/kb-loom-p0.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:
 > [`kb-loom-p0-imp.md`](../../.github/copilot/kb-loom-p0-imp.md).

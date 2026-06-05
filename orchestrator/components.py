@@ -18,7 +18,11 @@ Two kinds of component:
   on-demand HF fetch** (R163, §11.1, no-surprise posture). Launch then fails fast — same
   refuse-to-start outcome — only if the fetch is unavailable/declined/fails checksum.
 
-Active phases default to `{"P0"}` (override `LOOM_ACTIVE_PHASES`, comma-separated).
+Active phases default to `{"P0", "P1"}` — both are runnable now (P0 spine + P1's L1/L2
+record layer ships in the UI), so a broken P1 schema *should* block startup, not just be
+reported (review). Override via `LOOM_ACTIVE_PHASES` (comma-separated). This pulls in only
+the **code** components for the active phases; P1 declares no *weight* in `models.json`
+yet, so `/generate` stays ungated until `multi`'s weight lands (M2).
 """
 
 from __future__ import annotations
@@ -50,7 +54,7 @@ def active_phases() -> set[str]:
     env = CONFIG_active_phases_env()
     if env:
         return {p.strip().upper() for p in env.split(",") if p.strip()}
-    return {"P0"}
+    return {"P0", "P1"}   # both runnable now (review); P1 has code components, no weight yet
 
 
 def CONFIG_active_phases_env() -> str | None:  # tiny indirection so tests can monkeypatch

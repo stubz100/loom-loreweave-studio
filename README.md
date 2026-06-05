@@ -159,7 +159,7 @@ token from `.env.local`.
 | `LOOM_STATE_DIR` | `<repo>/.loom_state` | **app-level** state (last-project pointer `app.json`) |
 | `LOOM_VRAM_BUDGET_GB` | `16` | VRAM admission budget (RX 9070 XT) |
 | `LOOM_DISK_POLL_S` | `5` | disk-guard poll cadence (M6, §9) |
-| `LOOM_ACTIVE_PHASES` | `P0` | phases the launch gate hard-requires (comma-sep, M7, §11) |
+| `LOOM_ACTIVE_PHASES` | `P0,P1` | phases the launch gate hard-requires (comma-sep, M7, §11); P1 adds the L1/L2 record check (no P1 weight yet, so `/generate` stays ungated) |
 | `LOOM_LOG_LEVEL` | `brief` | backend log verbosity: `brief`(INFO) / `verbose`(DEBUG) / level name |
 | `VITE_LOOM_ORCH_TOKEN` | `.env.local` | dev UI token (sent as `X-Loom-Token`) |
 | `VITE_LOOM_LOG_LEVEL` | `brief` | frontend (webview console) log verbosity |

@@ -209,7 +209,7 @@ def create_app() -> FastAPI:
             "token_required": ["POST /generate", "POST /jobs/{id}/cancel",
                                "POST /queue/pause", "POST /queue/unpause",
                                "POST /project", "POST /project/open",
-                               "POST /components/fetch"],
+                               "POST /components/fetch", "POST /shutdown"],
             "worker_reap": WORKER_REAP,
             "work_disk_root": str(CONFIG.work_disk_root),
             "active_project": (str(RUNNER.workspace.path) if RUNNER.workspace else None),
@@ -340,6 +340,17 @@ def create_app() -> FastAPI:
         res = components.fetch_missing_weights()
         _LAUNCH = res["report"]
         return res
+
+    @app.post("/shutdown")
+    def shutdown(_auth: None = Depends(require_token)) -> dict:
+        """Graceful-shutdown handshake (P0-15): re-queue the in-flight job + mark a clean
+        stop so a relaunch resumes it **paused/queued** (not failed). The Tauri shell calls
+        this **before** hard-killing the sidecar on app exit, so the desktop 'quit mid-job'
+        takes the R159 graceful branch. The process stays up (Tauri kills it next) — the
+        durable state is already clean. Idempotent + token-gated."""
+        GUARD.stop()
+        RUNNER.graceful_shutdown()
+        return {"stopped": True, "clean_shutdown": True}
 
     @app.post("/queue/pause")
     def queue_pause(_auth: None = Depends(require_token)) -> dict:

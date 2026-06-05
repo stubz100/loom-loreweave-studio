@@ -4,13 +4,16 @@
 //   * single-instance: a second launch focuses the existing window (R74).
 //   * spawn the Python orchestrator as a sidecar child process.
 //   * read the orchestrator's READY line (url + token) — the M0 handshake (R101).
-//   * kill the sidecar when the app exits, so it never lingers holding the port
-//     (review fix / P0-15 lifecycle): a leaked orchestrator would block the next
-//     launch's spawn from binding 127.0.0.1:8765.
+//   * on app exit, **gracefully** stop the sidecar (P0-15): POST /shutdown so the
+//     orchestrator re-queues the in-flight job + marks a clean stop (so a relaunch
+//     resumes it queued/paused, not failed — R159), THEN hard-kill as a fallback so it
+//     never lingers holding the port (a leaked orchestrator would block the next launch
+//     from binding 127.0.0.1:8765).
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tauri::{Manager, RunEvent};
 
@@ -96,6 +99,45 @@ fn spawn_orchestrator(app: &tauri::AppHandle, child_slot: ChildSlot, endpoint: A
     *child_slot.lock().unwrap() = Some(child);
 }
 
+/// Ask the orchestrator to stop **gracefully** before we kill it (P0-15): a raw loopback
+/// HTTP POST /shutdown with the token, so it re-queues the in-flight job + persists a
+/// clean stop (R159 graceful branch → relaunch resumes queued/paused, not failed). Best
+/// effort + short-timeout; the hard kill is the fallback. No HTTP crate needed — it's one
+/// fixed request over a loopback TcpStream.
+fn graceful_shutdown_orchestrator(endpoint: &Arc<Mutex<OrchestratorEndpoint>>) {
+    let (url, token) = {
+        let e = endpoint.lock().unwrap();
+        (e.url.clone(), e.token.clone())
+    };
+    if url.is_empty() {
+        return; // never got a READY line — nothing to talk to
+    }
+    let addr = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
+
+    let mut stream = match std::net::TcpStream::connect(addr) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let req = format!(
+        "POST /shutdown HTTP/1.1\r\nHost: {addr}\r\nX-Loom-Token: {token}\r\n\
+         Content-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(req.as_bytes()).is_err() {
+        return;
+    }
+    let _ = stream.flush();
+    // Block until the orchestrator responds — it answers only AFTER persisting the clean
+    // state, so by the time we read EOF the durable queue is safe to kill.
+    let mut sink = Vec::new();
+    let _ = stream.read_to_end(&mut sink);
+    println!("[loom] requested graceful orchestrator shutdown");
+}
+
 fn kill_orchestrator(child_slot: &ChildSlot) {
     if let Some(mut child) = child_slot.lock().unwrap().take() {
         let _ = child.kill();
@@ -128,10 +170,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Loreweave Studio");
 
-    // Kill the sidecar when the app exits so it doesn't linger on the port.
+    // On exit: ask the orchestrator to stop gracefully (re-queue in-flight job + clean
+    // stop, P0-15) BEFORE hard-killing it so it doesn't linger on the port.
     let exit_child = child_slot.clone();
+    let exit_endpoint = endpoint.clone();
     app.run(move |_app_handle, event| {
         if let RunEvent::Exit = event {
+            graceful_shutdown_orchestrator(&exit_endpoint);
             kill_orchestrator(&exit_child);
         }
     });

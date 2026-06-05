@@ -459,8 +459,8 @@ class JobRunner:
     def _run_loop(self) -> None:
         while True:
             with self._cv:
-                while (self._ws is None or self._paused or self._disk_blocked()
-                       or self._next_queued_id_locked() is None):
+                while (self._ws is None or self._paused or self._shutting_down
+                       or self._disk_blocked() or self._next_queued_id_locked() is None):
                     self._cv.wait()
                 job_id = self._next_queued_id_locked()
                 job = self.jobs[job_id]
@@ -546,7 +546,10 @@ class JobRunner:
 
         # Shutdown wins over everything: re-queue the in-flight job (don't mark it
         # failed because we killed its worker) so it survives the restart (review #1).
+        # Discard the partial here too (the subprocess is dead by now) so 'quit mid-job →
+        # partial discarded' holds deterministically, not only via the reload race (P0-15).
         if shutting:
+            self._discard_partial(job_id)
             with self._cv:
                 j = self.jobs[job_id]
                 j["status"] = "queued"

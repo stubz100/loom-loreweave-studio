@@ -102,9 +102,12 @@ the orchestrator as a sidecar, and kills it on exit. (Requires the Rust toolchai
   `/health.weights_ok`) so the UI can **fetch on demand** (`POST /components/fetch`), and
   `/generate` returns **412** until it's present. Presence-only (R97); **sha256 verify on
   fetch is TODO** until the companion HF repo publishes hashes.
-- On the *packaged* app, exit hard-kills the orchestrator: the worker is reaped (Job
-  Object — no orphaned GPU), but the in-flight job becomes `failed` rather than re-queued
-  (a clean-stop **P0-15** refinement is still owed).
+- On app exit the Tauri shell does a **graceful shutdown handshake** (P0-15): it calls
+  `POST /shutdown` so the orchestrator re-queues the in-flight job + marks a clean stop
+  (relaunch resumes it **queued/paused**, not failed — R159), then hard-kills as a
+  fallback so the port is never left held (the worker is also Job-Object-reaped — no
+  orphaned GPU). A genuine *crash* (no handshake) still correctly lands the in-flight job
+  as `failed` for the user to inspect.
 - Only **t2i** is wired; img2img/inpaint (+ image inputs) arrive in **P1**.
 - The on-demand HF **fetch** flow is built (M7: `POST /components/fetch` + the UI's
   [Fetch now]); what's still pending is **publishing** the artifacts — `models.json`'s

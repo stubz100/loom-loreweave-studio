@@ -4,7 +4,7 @@ A non-linear storyboard / story-generation desktop app. Tauri (Rust shell) +
 React/TypeScript UI + a Python FastAPI orchestrator that wraps the
 `run_pipeline.py` generation CLIs behind a single VRAM-aware job queue.
 
-> **Status: Phase 0 (foundation) — M0–M6 done (Phase B underway).**
+> **Status: Phase 0 (foundation) — M0–M7 done (Phase B underway).**
 > App shell + orchestrator handshake (M0), one real generation (M1), an N-image batch
 > streaming into a selectable grid (M2), the hardened adapter contract — token-gated
 > `/generate`, `capabilities()`, coarse progress, **cancel = subprocess kill**,
@@ -12,9 +12,10 @@ React/TypeScript UI + a Python FastAPI orchestrator that wraps the
 > admission + OOM retry (M4), **durable bundle I/O + `loom init` project workspaces**
 > (stable IDs, `schema_version`, atomic writes, JSON Schemas, lineage edge, footprint
 > estimator; the queue + outputs + per-job logs now live in a real `<project>/`, M5),
-> and a **continuously-polled disk guard** (two measures × two thresholds; hard-stop
-> blocks new jobs, dock shows live usage, M6). Next: launch gate / acceptance (M7–M8).
-> Spec:
+> a **continuously-polled disk guard** (two measures × two thresholds; hard-stop blocks
+> new jobs, M6), and a **phase-scoped launch gate** (3-state component manifest; refuse
+> to start on a missing P0 code component; missing P0 weight → explicit HF fetch, M7).
+> Next: §1 acceptance (M8). Spec:
 > [`kb-loom-p0.md`](../../.github/copilot/kb-loom-p0.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:
 > [`kb-loom-p0-imp.md`](../../.github/copilot/kb-loom-p0-imp.md).
@@ -31,11 +32,12 @@ loom-loreweave-studio/
 │   ├── src/           #   React UI (three-pane shell + job-queue dock + batch grid + project bar)
 │   └── src-tauri/     #   Rust: single-instance, orchestrator sidecar spawn + kill, READY handshake
 └── orchestrator/      # Python FastAPI service (127.0.0.1)
-    ├── main.py        #   app factory + /health /version /generate /jobs /queue /project /disk /outputs
+    ├── main.py        #   app factory + /health /version /generate /jobs /queue /project /disk /components /outputs
     ├── runner.py      #   durable, resume-paused single-worker queue, workspace-bound + disk-gated (M4/M5/M6)
     ├── workspace.py   #   bundle I/O: IDs, atomic writes, schema validation, footprint estimator (M5)
     ├── projects.py    #   project lifecycle (create/open/resume) + app-level last-project pointer (M5)
     ├── diskguard.py   #   two-measure/two-threshold space guard, continuously polled (M6, §9/R96)
+    ├── components.py  #   phase-scoped 3-state launch gate + model-weight presence/fetch (M7, §11/R163)
     ├── lineage.py     #   per-output lineage edge → rebuildable lineage/index.json (M5, R98)
     ├── schemas/       #   JSON Schemas for the P0 records (project/job/manifest/lineage)
     ├── config.py      #   port/token + pipeline roots + interpreter + work disk (R101/R103/R72)
@@ -93,6 +95,12 @@ the orchestrator as a sidecar, and kills it on exit. (Requires the Rust toolchai
   **hard-stop (<2%) returns 507** on `/generate` and holds queued jobs (running jobs
   finish). Project size is an `os.walk` sum each poll — fine for P0; an incremental
   accountant is a later refinement once PNG-sequence masters make projects large.
+- The **launch gate** (M7) hard-requires the P0-essential code components at startup
+  (`zimage`, queue, workspace I/O) and **refuses to start** with a clear error if one is
+  missing. A missing P0 **weight** doesn't block startup — it's reported (`/components`,
+  `/health.weights_ok`) so the UI can **fetch on demand** (`POST /components/fetch`), and
+  `/generate` returns **412** until it's present. Presence-only (R97); **sha256 verify on
+  fetch is TODO** until the companion HF repo publishes hashes.
 - On the *packaged* app, exit hard-kills the orchestrator: the worker is reaped (Job
   Object — no orphaned GPU), but the in-flight job becomes `failed` rather than re-queued
   (a clean-stop **P0-15** refinement is still owed).
@@ -129,6 +137,7 @@ token from `.env.local`.
 | `LOOM_STATE_DIR` | `<repo>/.loom_state` | **app-level** state (last-project pointer `app.json`) |
 | `LOOM_VRAM_BUDGET_GB` | `16` | VRAM admission budget (RX 9070 XT) |
 | `LOOM_DISK_POLL_S` | `5` | disk-guard poll cadence (M6, §9) |
+| `LOOM_ACTIVE_PHASES` | `P0` | phases the launch gate hard-requires (comma-sep, M7, §11) |
 | `LOOM_DEV_OUT` | `<repo>/.dev_out` | **legacy** scratch (dry-run only; real output → `<project>/out/`) |
 | `LOOM_APP_REPO` | `../..` (from `src-tauri/`) | app-repo cwd the Tauri shell spawns the orchestrator from |
 | `VITE_LOOM_ORCH_URL` | `http://127.0.0.1:8765` | orchestrator URL the dev UI probes |

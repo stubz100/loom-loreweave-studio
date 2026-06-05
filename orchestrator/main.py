@@ -37,6 +37,7 @@ try:
     from .runner import RUNNER, WORKER_REAP, estimate_vram
     from . import projects
     from . import workspace as ws_mod
+    from . import components
     from .diskguard import DiskGuard
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
@@ -45,9 +46,15 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from runner import RUNNER, WORKER_REAP, estimate_vram  # type: ignore
     import projects  # type: ignore
     import workspace as ws_mod  # type: ignore
+    import components  # type: ignore
     from diskguard import DiskGuard  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
+
+
+# Cached launch report (set by the gate at startup, refreshed after a fetch) so /health
+# can report launch_ok without re-running the presence checks every probe.
+_LAUNCH: dict = {"launch_ok": True}
 
 
 _STARTED_AT = time.time()
@@ -135,6 +142,19 @@ async def lifespan(app: FastAPI):
     # the worker idles until a project is bound — resolve_startup binds the last one,
     # resume-paused). Then emit READY — lifespan startup runs AFTER uvicorn binds the
     # socket (review #3), so a port conflict fails before any false READY line.
+    # Launch gate (M7, §11): refuse to start on a missing P0-essential CODE component
+    # (clear error, no degraded mode). A missing P0-essential WEIGHT does not abort —
+    # it's reported so the UI can offer an explicit HF fetch (R163).
+    global _LAUNCH
+    try:
+        _LAUNCH = components.gate()
+    except components.LaunchError as e:
+        print(f"LOOM_ORCH_LAUNCH_REFUSED {e}", file=sys.stderr, flush=True)
+        raise
+    if not _LAUNCH.get("weights_ok", True):
+        print(f"[loom] launch: P0 weights missing {_LAUNCH['weights_missing']} — "
+              "fetch via POST /components/fetch before generating", file=sys.stderr, flush=True)
+
     RUNNER.start()
     projects.resolve_startup()
     # Disk guard (M6): gate the worker's dispatch on the hard-stop, then start polling.
@@ -170,6 +190,8 @@ def create_app() -> FastAPI:
             "schema_version": SCHEMA_VERSION,
             "pid": os.getpid(),
             "uptime_s": round(time.time() - _STARTED_AT, 3),
+            "launch_ok": _LAUNCH.get("launch_ok", True),
+            "weights_ok": _LAUNCH.get("weights_ok", True),
         }
 
     @app.get("/version")
@@ -186,7 +208,8 @@ def create_app() -> FastAPI:
             "cors_origins": CONFIG.cors_origins,
             "token_required": ["POST /generate", "POST /jobs/{id}/cancel",
                                "POST /queue/pause", "POST /queue/unpause",
-                               "POST /project", "POST /project/open"],
+                               "POST /project", "POST /project/open",
+                               "POST /components/fetch"],
             "worker_reap": WORKER_REAP,
             "work_disk_root": str(CONFIG.work_disk_root),
             "active_project": (str(RUNNER.workspace.path) if RUNNER.workspace else None),
@@ -208,6 +231,13 @@ def create_app() -> FastAPI:
             raise HTTPException(409, "no project open — create or open a project first "
                                      "(POST /project or /project/open)")
         project = ws.load_project()
+
+        # Launch-gate precondition (M7/§11.1): a P0-essential weight must be present —
+        # offer the explicit fetch rather than failing the GPU run mid-flight.
+        ok, missing = components.weights_ok()
+        if not ok:
+            raise HTTPException(412, f"required model weight(s) missing: {missing} — "
+                                     "fetch via POST /components/fetch first")
 
         base = req.model_dump(exclude={"pipeline", "mode", "dry_run", "count"})
 
@@ -294,6 +324,22 @@ def create_app() -> FastAPI:
     def disk() -> dict:
         """Live disk-guard status (two measures × two thresholds, §9). Unauthenticated read."""
         return GUARD.status()
+
+    @app.get("/components")
+    def get_components() -> dict:
+        """Live launch report — phase-scoped 3-state component manifest (§11). The
+        orchestrator only started if `code_ok`; `weights_ok=false` means the UI should
+        offer a fetch. Unauthenticated read."""
+        return components.launch_report()
+
+    @app.post("/components/fetch")
+    def fetch_components(_auth: None = Depends(require_token)) -> dict:
+        """Explicit, on-demand fetch of missing active-phase weights from the manifest
+        (R163, §11.1). Token-gated; never an auto-download. Refreshes the cached report."""
+        global _LAUNCH
+        res = components.fetch_missing_weights()
+        _LAUNCH = res["report"]
+        return res
 
     @app.post("/queue/pause")
     def queue_pause(_auth: None = Depends(require_token)) -> dict:

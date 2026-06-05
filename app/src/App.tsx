@@ -3,7 +3,9 @@ import {
   cancelJob,
   createProject,
   estimateFootprint,
+  fetchComponents,
   generate,
+  getComponents,
   getDisk,
   getHealth,
   getProject,
@@ -14,6 +16,7 @@ import {
   type DiskStatus,
   type Health,
   type Job,
+  type LaunchReport,
   type ProjectInfo,
 } from "./lib/orchestrator";
 
@@ -39,6 +42,8 @@ export default function App() {
   const [paused, setPaused] = useState(false);
   const [vramBudget, setVramBudget] = useState(16);
   const [disk, setDisk] = useState<DiskStatus | null>(null);
+  const [launch, setLaunch] = useState<LaunchReport | null>(null);
+  const [fetching, setFetching] = useState(false);
   const pollRef = useRef<number | null>(null);
 
   // Health probe (every 2 s).
@@ -51,13 +56,14 @@ export default function App() {
         setHealth(h);
         setConn("online");
         try {
-          const [p, d] = await Promise.all([getProject(), getDisk()]);
+          const [p, d, l] = await Promise.all([getProject(), getDisk(), getComponents()]);
           if (alive) {
             setProject(p);
             setDisk(d);
+            setLaunch(l);
           }
         } catch {
-          /* project/disk fetch transient */
+          /* project/disk/components fetch transient */
         }
       } catch {
         if (alive) setConn("offline");
@@ -201,6 +207,21 @@ export default function App() {
     }
   };
 
+  // Explicit, on-demand model fetch (R163) when the launch gate reports a missing
+  // P0-essential weight — the no-surprise alternative to auto-downloading at startup.
+  const onFetchWeights = async () => {
+    setError(null);
+    setFetching(true);
+    try {
+      const res = await fetchComponents();
+      setLaunch(res.report);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setFetching(false);
+    }
+  };
+
   const dot = conn === "online" ? "ok" : conn === "offline" ? "err" : "warn";
   const pending = counts.queued + counts.running;
   const selJob = selected ? jobs[selected] : null;
@@ -267,11 +288,25 @@ export default function App() {
             </label>
             <button
               onClick={onGenerate}
-              disabled={conn !== "online" || !project?.open || disk?.blocked === true}
+              disabled={
+                conn !== "online" ||
+                !project?.open ||
+                disk?.blocked === true ||
+                launch?.weights_ok === false
+              }
             >
               Generate ▶
             </button>
           </div>
+          {launch && !launch.weights_ok && (
+            <div className="banner banner-err">
+              ⛔ Required model weight(s) missing: {launch.weights_missing.join(", ")}.{" "}
+              <button className="link" onClick={onFetchWeights} disabled={fetching}>
+                {fetching ? "fetching…" : "Fetch now"}
+              </button>{" "}
+              (explicit, on-demand — R163).
+            </div>
+          )}
           {conn === "online" && !project?.open && (
             <div className="banner">
               No project open. <button className="link" onClick={onNewProject}>Create</button> or{" "}

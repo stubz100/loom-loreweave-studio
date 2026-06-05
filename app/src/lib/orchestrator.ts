@@ -154,6 +154,40 @@ export async function getDisk(signal?: AbortSignal): Promise<DiskStatus> {
   return (await res.json()) as DiskStatus;
 }
 
+export interface ComponentInfo {
+  id: string;
+  kind: "code" | "model_weight";
+  phase: string;
+  present: boolean;
+  state: "phase-essential" | "installed-but-unavailable" | "missing" | "declared";
+  detail: string;
+}
+
+export interface LaunchReport {
+  active_phases: string[];
+  code_ok: boolean;
+  weights_ok: boolean;
+  launch_ok: boolean;
+  blocking: { id: string; detail: string }[];
+  weights_missing: string[];
+  components: ComponentInfo[];
+}
+
+export async function getComponents(signal?: AbortSignal): Promise<LaunchReport> {
+  const res = await fetch(`${orchestratorUrl()}/components`, { signal });
+  if (!res.ok) throw new Error(`components ${res.status}`);
+  return (await res.json()) as LaunchReport;
+}
+
+export async function fetchComponents(): Promise<{ report: LaunchReport }> {
+  const res = await fetch(`${orchestratorUrl()}/components/fetch`, {
+    method: "POST",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`fetch components ${res.status}: ${await res.text()}`);
+  return (await res.json()) as { report: LaunchReport };
+}
+
 export async function createProject(
   dest: string,
   name: string,
@@ -211,6 +245,9 @@ export async function generate(req: GenerateRequest): Promise<GenerateResponse> 
   }
   if (res.status === 507) {
     throw new Error(`disk hard-stop — ${await res.text()}`);
+  }
+  if (res.status === 412) {
+    throw new Error(`model weights missing — fetch them first (${await res.text()})`);
   }
   if (!res.ok) throw new Error(`generate ${res.status}: ${await res.text()}`);
   return (await res.json()) as GenerateResponse;

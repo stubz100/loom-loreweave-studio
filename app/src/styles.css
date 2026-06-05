@@ -94,12 +94,15 @@ body {
 .cell.st-queued { background: repeating-linear-gradient(45deg, var(--panel) 0 10px, var(--panel-2) 10px 20px); }
 .cell.st-canceled { border-color: var(--muted); opacity: 0.65; }
 .cell.st-canceled .cell-status { color: var(--muted); }
-.cell .cancel {
+.cell .cancel, .cell .delete {
   position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; padding: 0;
   border: 0; border-radius: 50%; background: rgba(0,0,0,0.55); color: #fff;
   font-size: 11px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
 }
-.cell .cancel:hover { background: var(--err); }
+.cell .cancel:hover, .cell .delete:hover { background: var(--err); }
+/* delete only appears on hover over a finished tile, so it doesn't clutter the grid */
+.cell .delete { opacity: 0; transition: opacity 0.1s; }
+.cell:hover .delete { opacity: 1; }
 .cell .progress { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(255,255,255,0.12); }
 .cell .progress .bar { height: 100%; background: var(--amber); transition: width 0.3s ease; }
 .span { grid-column: 1 / -1; }

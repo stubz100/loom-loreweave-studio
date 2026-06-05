@@ -60,6 +60,20 @@ def make_edge(job: dict, *, asset_version: str | None = None,
     }
 
 
+def remove_edge(ws: Workspace, job_id: str) -> bool:
+    """Drop a job's lineage edge from the index (atomic). Used when a generation is
+    deleted so the index never references a removed output. Returns True if one was
+    removed. Idempotent (absent → False, no write)."""
+    index = load_index(ws)
+    kept = [e for e in index["edges"] if e.get("job_id") != job_id]
+    if len(kept) == len(index["edges"]):
+        return False
+    index["edges"] = kept
+    ws_mod.validate(index, "lineage.schema.json")
+    ws_mod.atomic_write_json(ws.lineage_index, index)
+    return True
+
+
 def record_output(ws: Workspace, job: dict, *, asset_version: str | None = None,
                   lora_version: str | None = None) -> dict:
     """Append (or replace, on retry) the lineage edge for `job` and persist the index

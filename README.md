@@ -96,6 +96,11 @@ the orchestrator as a sidecar, and kills it on exit. (Requires the Rust toolchai
   **hard-stop (<2%) returns 507** on `/generate` and holds queued jobs (running jobs
   finish). Project size is an `os.walk` sum each poll — fine for P0; an incremental
   accountant is a later refinement once PNG-sequence masters make projects large.
+- A finished generation can be **deleted safely** from the grid (🗑 on a tile): the orchestrator
+  atomically removes the output dir + sidecar manifest, the per-job log, the queue entry, and the
+  lineage edge (`DELETE /jobs/{id}`) — no orphaned files (vs hand-deleting). The **persistent
+  browse-past-generations grid** (showing prior `done` images on reopen) is the **P1 casting grid**;
+  the P0 grid is per-session (data isn't lost — it's in the lineage index + manifests).
 - The **launch gate** (M7) hard-requires the P0-essential code components at startup
   (`zimage`, queue, workspace I/O) and **refuses to start** with a clear error if one is
   missing. A missing P0 **weight** doesn't block startup — it's reported (`/components`,

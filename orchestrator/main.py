@@ -207,8 +207,8 @@ def create_app() -> FastAPI:
             "models_dir": str(CONFIG.models_dir),
             "cors_origins": CONFIG.cors_origins,
             "token_required": ["POST /generate", "POST /jobs/{id}/cancel",
-                               "POST /queue/pause", "POST /queue/unpause",
-                               "POST /project", "POST /project/open",
+                               "DELETE /jobs/{id}", "POST /queue/pause",
+                               "POST /queue/unpause", "POST /project", "POST /project/open",
                                "POST /components/fetch", "POST /shutdown"],
             "worker_reap": WORKER_REAP,
             "work_disk_root": str(CONFIG.work_disk_root),
@@ -376,6 +376,18 @@ def create_app() -> FastAPI:
         if not RUNNER.cancel(job_id):
             raise HTTPException(409, f"job {job_id!r} is unknown or already finished")
         return {"job_id": job_id, "canceling": True}
+
+    @app.delete("/jobs/{job_id}")
+    def delete_job(job_id: str, _auth: None = Depends(require_token)) -> dict:
+        """Delete a **finished** generation and **all** its artifacts (output dir + sidecar
+        manifest, per-job log, queue entry, lineage edge) — atomic + orchestrator-owned, so
+        no orphaned files (the safe alternative to hand-deleting, R80). Cancel a
+        running/queued job first → 409. Token-gated."""
+        if not RUNNER.delete(job_id):
+            raise HTTPException(409, f"job {job_id!r} is unknown or not finished — cancel a "
+                                     "running/queued job before deleting")
+        GUARD.refresh()   # usage dropped — refresh the dock meter immediately (M6)
+        return {"job_id": job_id, "deleted": True}
 
     @app.get("/capabilities")
     def capabilities() -> dict:

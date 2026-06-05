@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   cancelJob,
   createProject,
+  deleteJob,
   estimateFootprint,
   fetchComponents,
   generate,
@@ -143,6 +144,21 @@ export default function App() {
       setError(String(e));
     }
     startPolling(); // observe the transition to canceled
+  };
+
+  // Delete a finished generation + all its files (orchestrator-owned, atomic — no
+  // orphaned manifest/log). A persistent gallery of past generations is the P1 casting
+  // grid; this is just the safe per-image cull (R44 cull, P0-lite).
+  const onDelete = async (id: string) => {
+    if (!window.confirm("Delete this generation and all its files? This cannot be undone.")) return;
+    try {
+      await deleteJob(id);
+      setBatchIds((prev) => prev.filter((b) => b !== id));
+      if (selected === id) setSelected(null);
+    } catch (e) {
+      setError(String(e));
+    }
+    startPolling();
   };
 
   const onGenerate = async () => {
@@ -334,6 +350,7 @@ export default function App() {
                 selected={selected === id}
                 onClick={() => setSelected(id)}
                 onCancel={() => onCancel(id)}
+                onDelete={() => onDelete(id)}
               />
             ))}
           </div>
@@ -383,16 +400,19 @@ function GridCell({
   selected,
   onClick,
   onCancel,
+  onDelete,
 }: {
   job?: Job;
   selected: boolean;
   onClick: () => void;
   onCancel: () => void;
+  onDelete: () => void;
 }) {
   const status = job?.status ?? "queued";
   const name = job?.result?.output_name;
   const prog = job?.progress ?? 0;
   const active = status === "queued" || status === "running";
+  const terminal = status === "done" || status === "failed" || status === "canceled";
   return (
     <div
       className={`cell ${selected ? "sel" : ""} st-${status}`}
@@ -426,6 +446,18 @@ function GridCell({
           }}
         >
           ✕
+        </button>
+      )}
+      {terminal && (
+        <button
+          className="delete"
+          title="delete this generation + its files"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+        >
+          🗑
         </button>
       )}
     </div>

@@ -415,6 +415,35 @@ class JobRunner:
             threading.Thread(target=self._grace_kill, args=(proc,), daemon=True).start()
         return True
 
+    def delete(self, job_id: str) -> bool:
+        """Delete a **terminal** job and **all** its artifacts atomically: the queue
+        entry, the per-job output dir (`out/<id>/` — PNG + sidecar manifest), the per-job
+        log (`jobs/logs/<id>.log`), and the lineage edge. A safe replacement for hand-
+        deleting files (which orphans the manifest/log/queue/lineage). Running/queued jobs
+        must be canceled first → returns False (409). Frees disk for the guard (§9)."""
+        with self._cv:
+            job = self.jobs.get(job_id)
+            if job is None or job["status"] not in ("done", "failed", "canceled"):
+                return False
+            ws = self._ws
+            # Drop the durable record FIRST (+persist) so a crash mid-delete leaves at
+            # worst orphaned files (harmless, swept by disk usage) — never a queue/lineage
+            # entry pointing at deleted files.
+            self.jobs.pop(job_id, None)
+            self._canceled.discard(job_id)
+            self._persist_locked()
+        if ws is not None:
+            shutil.rmtree(ws.out_dir / job_id, ignore_errors=True)
+            try:
+                ws.log_path(job_id).unlink(missing_ok=True)
+            except OSError as e:
+                _warn(f"could not remove job log for {job_id}: {e}")
+            try:
+                lineage.remove_edge(ws, job_id)
+            except Exception as e:  # noqa: BLE001 - lineage is rebuildable, never block delete
+                _warn(f"lineage edge cleanup failed for {job_id}: {e}")
+        return True
+
     @staticmethod
     def _grace_kill(proc: subprocess.Popen, grace_s: float = 5.0) -> None:
         try:

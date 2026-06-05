@@ -268,6 +268,16 @@ export async function cancelJob(id: string): Promise<void> {
   if (!res.ok && res.status !== 409) throw new Error(`cancel ${res.status}`);
 }
 
+export async function deleteJob(id: string): Promise<void> {
+  // Delete a finished generation + ALL its artifacts (out dir, manifest, log, queue
+  // entry, lineage edge) — orchestrator-owned, atomic, no orphans.
+  const res = await fetch(`${orchestratorUrl()}/jobs/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`delete ${res.status}: ${await res.text()}`);
+}
+
 async function queueControl(action: "pause" | "unpause"): Promise<QueueState> {
   const res = await fetch(`${orchestratorUrl()}/queue/${action}`, {
     method: "POST",

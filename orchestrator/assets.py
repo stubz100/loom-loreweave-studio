@@ -15,6 +15,7 @@ The display name lives in the record; the folder is a slug; references use the s
 
 from __future__ import annotations
 
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -155,10 +156,11 @@ def _find_profile(ws: Workspace, asset_id: str) -> tuple[Path, dict] | None:
     return None
 
 
-def _load_version_strict(asset_dir: Path, version_id: str) -> dict | None:
-    """Load + **validate** the on-disk version record whose `id == version_id`. Returns
-    None if no such file exists; **raises** `WorkspaceError` if the matched record is
-    unreadable/invalid (review: a corrupt version must fail loudly here, not be hidden)."""
+def _find_version(asset_dir: Path, version_id: str) -> tuple[Path, dict] | None:
+    """`(version_dir, record)` for the on-disk version whose `id == version_id`, with the
+    record **validated**. Returns None if no such file exists; **raises** `WorkspaceError`
+    if the matched record is unreadable/invalid (a corrupt version must fail loudly, not be
+    hidden — review High)."""
     vroot = asset_dir / "versions"
     if not vroot.is_dir():
         return None
@@ -173,8 +175,13 @@ def _load_version_strict(asset_dir: Path, version_id: str) -> dict | None:
         if v.get("id") != version_id:
             continue
         ws_mod.validate(v, "version.schema.json")   # propagate loudly if the target is invalid
-        return v
+        return vdir, v
     return None
+
+
+def _load_version_strict(asset_dir: Path, version_id: str) -> dict | None:
+    found = _find_version(asset_dir, version_id)
+    return found[1] if found is not None else None
 
 
 def get_asset(ws: Workspace, asset_id: str) -> dict | None:
@@ -204,3 +211,96 @@ def resolve_version(ws: Workspace, asset_id: str, version_id: str | None = None)
         raise ws_mod.WorkspaceError(
             f"version {target!r} of asset {asset_id!r} is missing or unreadable on disk")
     return target
+
+
+# --- Stage-A casting: persist candidates + hero-star into version.json (M2) -----
+
+def _resolve_version_dir(ws: Workspace, asset_id: str, version_id: str | None):
+    """`(version_dir, record)` for the target version (active by default). Raises on an
+    unknown asset / version (shared by the casting ops below)."""
+    found = _find_profile(ws, asset_id)
+    if found is None:
+        raise ws_mod.WorkspaceError(f"unknown asset {asset_id!r}")
+    adir, profile = found
+    vid = version_id or profile["active_version"]
+    if vid not in profile["versions"]:
+        raise ws_mod.WorkspaceError(f"version {vid!r} not in asset {asset_id!r}")
+    fv = _find_version(adir, vid)
+    if fv is None:
+        raise ws_mod.WorkspaceError(
+            f"version {vid!r} of asset {asset_id!r} is missing or unreadable on disk")
+    return fv
+
+
+def _write_version(vdir: Path, version: dict) -> dict:
+    ws_mod.validate(version, "version.schema.json")
+    ws_mod.atomic_write_json(vdir / "version.json", version)
+    return version
+
+
+def star_candidate(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
+                   version_id: str | None = None, pipeline: str | None = None,
+                   seed: int | None = None, starred: bool = True) -> dict:
+    """Promote a completed Stage-A job output into the version's `casting[]` and (when
+    `starred`) make it the **sole hero ★** (R44). Idempotent on `job_id` — a candidate is
+    recorded once; re-calling just toggles the hero.
+
+    The candidate image (+ sidecar manifest if present) is **copied into the version's
+    `casting/` dir** so a Saved version is self-contained and survives deleting the source
+    job / pruning `out/` (the casting set is the saved provenance, not a live pointer).
+    `source_output` is the job's `output_name` (`<job_id>/<file>`), relative to `out/`."""
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    casting = version.setdefault("casting", [])
+    entry = next((c for c in casting if c["job_id"] == job_id), None)
+
+    if entry is None:
+        if ".." in source_output or "\\" in source_output:
+            raise ws_mod.WorkspaceError(f"invalid output {source_output!r}")
+        src = (ws.out_dir / source_output).resolve()
+        if not src.is_relative_to(ws.out_dir.resolve()) or not src.is_file():
+            raise ws_mod.WorkspaceError(f"output {source_output!r} not found in out/")
+        cand_id = new_id("cand")
+        cdir = vdir / "casting"
+        cdir.mkdir(parents=True, exist_ok=True)
+        dst = cdir / f"{cand_id}{src.suffix}"
+        shutil.copy2(src, dst)
+        man = src.with_suffix(".json")
+        if man.is_file():
+            shutil.copy2(man, cdir / f"{cand_id}.json")
+        entry = {"id": cand_id, "job_id": job_id, "file": dst.name,
+                 "source_output": source_output, "pipeline": pipeline, "seed": seed,
+                 "starred": False, "added_at": _now()}
+        casting.append(entry)
+
+    if starred:
+        for c in casting:
+            c["starred"] = (c["id"] == entry["id"])   # exactly one hero
+    else:
+        entry["starred"] = False                       # un-star this one (toggle off)
+    return _write_version(vdir, version)
+
+
+def set_hero(ws: Workspace, asset_id: str, *, candidate_id: str | None,
+             version_id: str | None = None) -> dict:
+    """Set (or clear, with `candidate_id=None`) the hero ★ among already-recorded casting
+    candidates. Raises if `candidate_id` isn't in the version's casting set."""
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    casting = version.get("casting", [])
+    if candidate_id is not None and not any(c["id"] == candidate_id for c in casting):
+        raise ws_mod.WorkspaceError(f"candidate {candidate_id!r} not in casting set")
+    for c in casting:
+        c["starred"] = (c["id"] == candidate_id)
+    return _write_version(vdir, version)
+
+
+def casting_file_path(ws: Workspace, asset_id: str, file: str,
+                      version_id: str | None = None) -> Path:
+    """Resolve a casting image path for serving (traversal-guarded). Raises if absent."""
+    if ".." in file or "/" in file or "\\" in file:
+        raise ws_mod.WorkspaceError(f"invalid casting file {file!r}")
+    vdir, _version = _resolve_version_dir(ws, asset_id, version_id)
+    base = (vdir / "casting").resolve()
+    path = (base / file).resolve()
+    if not path.is_relative_to(base) or not path.is_file():
+        raise ws_mod.WorkspaceError(f"no such casting file {file!r}")
+    return path

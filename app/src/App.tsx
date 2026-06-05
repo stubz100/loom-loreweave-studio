@@ -8,6 +8,7 @@ import {
   fetchComponents,
   forgetProject,
   generate,
+  getAsset,
   getComponents,
   getDisk,
   getHealth,
@@ -19,8 +20,10 @@ import {
   openProject,
   outputUrl,
   setStyle,
+  starCandidate,
   unpauseQueue,
   type AssetSummary,
+  type CastingCandidate,
   type DiskStatus,
   type Health,
   type Job,
@@ -59,6 +62,7 @@ export default function App() {
   const [projectList, setProjectList] = useState<ProjectListEntry[]>([]);
   const [assets, setAssets] = useState<AssetSummary[]>([]);
   const [activeAsset, setActiveAsset] = useState<AssetSummary | null>(null);
+  const [casting, setCasting] = useState<CastingCandidate[]>([]);
   const [style, setStyleState] = useState<StyleInfo | null>(null);
   const [styleDraft, setStyleDraft] = useState("");
   const [applyStyle, setApplyStyle] = useState(true);
@@ -306,6 +310,7 @@ export default function App() {
     if (!project?.open) {
       setAssets([]);
       setActiveAsset(null);
+      setCasting([]);
       setStyleState(null);
       return;
     }
@@ -323,6 +328,7 @@ export default function App() {
       const a = await listAssets();
       setAssets(a.assets);
       setActiveAsset(a.assets.find((x) => x.id === r.profile.id) ?? null);
+      setCasting([]); // a fresh asset has no casting yet
       setSelected(null);
       startPolling();
     } catch (e) {
@@ -331,10 +337,42 @@ export default function App() {
     }
   };
 
+  // Load the active version's casting set (candidates + which one is the hero ★) so the
+  // grid can star/highlight by job_id. Persisted in version.json (P1/M2).
+  const refreshCasting = async (asset: AssetSummary | null) => {
+    if (!asset) {
+      setCasting([]);
+      return;
+    }
+    try {
+      const detail = await getAsset(asset.id);
+      const v = detail.versions.find((x) => x.id === asset.active_version);
+      setCasting(v?.casting ?? []);
+    } catch {
+      setCasting([]);
+    }
+  };
+
   const onSelectAsset = (asset: AssetSummary | null) => {
     setActiveAsset(asset);
     setSelected(null);
+    void refreshCasting(asset);
     startPolling(); // refresh jobs so the derived asset grid is current
+  };
+
+  // Star/un-star a completed candidate as the hero ★ (persists into version.json).
+  const onStar = async (jobId: string) => {
+    if (!activeAsset) return;
+    const current = casting.find((c) => c.job_id === jobId);
+    const makeHero = !(current?.starred ?? false); // toggle
+    try {
+      const version = await starCandidate(activeAsset.id, jobId, makeHero);
+      setCasting(version.casting);
+      log.info(makeHero ? "starred hero:" : "un-starred:", jobId, "for", activeAsset.name);
+    } catch (e) {
+      log.error("star failed:", e);
+      setError(String(e));
+    }
   };
 
   const onSaveStyle = async () => {
@@ -375,6 +413,8 @@ export default function App() {
         .sort((a, b) => a.created_at.localeCompare(b.created_at))
         .map((j) => j.id)
     : batchIds;
+  // Which grid jobs are the saved casting hero ★ (persisted in version.json).
+  const starredJobs = new Set(casting.filter((c) => c.starred).map((c) => c.job_id));
 
   return (
     <div className="app">
@@ -575,6 +615,9 @@ export default function App() {
                 onClick={() => setSelected(id)}
                 onCancel={() => onCancel(id)}
                 onDelete={() => onDelete(id)}
+                castable={!!activeAsset}
+                isHero={starredJobs.has(id)}
+                onStar={() => onStar(id)}
               />
             ))}
           </div>
@@ -625,21 +668,28 @@ function GridCell({
   onClick,
   onCancel,
   onDelete,
+  castable = false,
+  isHero = false,
+  onStar,
 }: {
   job?: Job;
   selected: boolean;
   onClick: () => void;
   onCancel: () => void;
   onDelete: () => void;
+  castable?: boolean;
+  isHero?: boolean;
+  onStar?: () => void;
 }) {
   const status = job?.status ?? "queued";
   const name = job?.result?.output_name;
   const prog = job?.progress ?? 0;
   const active = status === "queued" || status === "running";
   const terminal = status === "done" || status === "failed" || status === "canceled";
+  const done = status === "done";
   return (
     <div
-      className={`cell ${selected ? "sel" : ""} st-${status}`}
+      className={`cell ${selected ? "sel" : ""} ${isHero ? "hero" : ""} st-${status}`}
       role="button"
       tabIndex={0}
       onClick={onClick}
@@ -682,6 +732,18 @@ function GridCell({
           }}
         >
           🗑
+        </button>
+      )}
+      {castable && done && onStar && (
+        <button
+          className={`star ${isHero ? "on" : ""}`}
+          title={isHero ? "the hero ★ — click to un-star" : "star as hero (save into casting)"}
+          onClick={(e) => {
+            e.stopPropagation();
+            onStar();
+          }}
+        >
+          {isHero ? "★" : "☆"}
         </button>
       )}
     </div>

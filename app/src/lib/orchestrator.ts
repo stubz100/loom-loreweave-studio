@@ -209,6 +209,61 @@ export async function createAsset(name: string, asset_class = "characters"): Pro
   return await res.json();
 }
 
+// --- P1/M2: Stage-A casting (candidates + hero ★ persisted into version.json) ---
+export interface CastingCandidate {
+  id: string;
+  job_id: string;
+  file: string;
+  source_output?: string;
+  pipeline?: string | null;
+  seed?: number | null;
+  starred: boolean;
+  added_at?: string;
+}
+
+export interface ProfileVersion {
+  id: string;
+  name: string;
+  finalized: boolean;
+  prompt_template: string;
+  anchor_ref?: string | null;
+  ref_set: string[];
+  casting: CastingCandidate[];
+}
+
+export interface AssetDetail {
+  profile: AssetSummary;
+  versions: ProfileVersion[];
+}
+
+export async function getAsset(assetId: string, signal?: AbortSignal): Promise<AssetDetail> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}`, { signal });
+  if (!res.ok) throw new Error(`asset ${res.status}`);
+  return (await res.json()) as AssetDetail;
+}
+
+/** Star (or un-star) a completed candidate job into a version's casting set. */
+export async function starCandidate(
+  assetId: string,
+  jobId: string,
+  starred = true,
+  versionId?: string,
+): Promise<ProfileVersion> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/casting/star`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ job_id: jobId, starred, version_id: versionId ?? null }),
+  });
+  if (!res.ok) throw new Error(`star ${res.status}: ${await res.text()}`);
+  return (await res.json()) as ProfileVersion;
+}
+
+/** Serve a saved casting candidate image from the version's casting/ dir. */
+export function castingUrl(assetId: string, file: string, versionId?: string): string {
+  const q = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
+  return `${orchestratorUrl()}/assets/${assetId}/casting/${encodeURIComponent(file)}${q}`;
+}
+
 export interface ComponentInfo {
   id: string;
   kind: "code" | "model_weight";

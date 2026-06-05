@@ -157,6 +157,24 @@ class StyleRequest(BaseModel):
     enabled_default: bool | None = None
 
 
+class StarRequest(BaseModel):
+    """Star/un-star a completed Stage-A candidate into a version's casting set (M2, R44).
+    `job_id` is the completed casting job; `starred=False` toggles the hero off."""
+
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
+    version_id: str | None = None
+    starred: bool = True
+
+
+class HeroRequest(BaseModel):
+    """Set (or clear, `candidate_id=null`) the hero among already-recorded candidates."""
+
+    model_config = ConfigDict(extra="forbid")
+    candidate_id: str | None = None
+    version_id: str | None = None
+
+
 def require_token(x_loom_token: str | None = Header(default=None)) -> None:
     """Auth gate for mutating/expensive endpoints (review #1, R101 transport).
 
@@ -250,6 +268,7 @@ def create_app() -> FastAPI:
                                "DELETE /jobs/{id}", "POST /queue/pause",
                                "POST /queue/unpause", "POST /project", "POST /project/open",
                                "POST /project/forget", "PUT /bible/style", "POST /assets",
+                               "POST /assets/{id}/casting/star", "POST /assets/{id}/casting/hero",
                                "POST /components/fetch", "POST /shutdown"],
             "worker_reap": WORKER_REAP,
             "work_disk_root": str(CONFIG.work_disk_root),
@@ -403,6 +422,53 @@ def create_app() -> FastAPI:
         if res is None:
             raise HTTPException(404, f"no such asset {asset_id!r}")
         return res
+
+    @app.post("/assets/{asset_id}/casting/star")
+    def star_casting(asset_id: str, req: StarRequest,
+                     _auth: None = Depends(require_token)) -> dict:
+        """Promote a completed Stage-A candidate into the version's casting[] as the hero ★
+        (M2, R44) — persists into version.json + copies the image into casting/. Token-gated."""
+        ws = _require_ws()
+        job = RUNNER.get(req.job_id)
+        if job is None:
+            raise HTTPException(404, f"no such job {req.job_id!r}")
+        if job.get("status") != "done":
+            raise HTTPException(409, "can only star a completed (done) candidate")
+        result = job.get("result") or {}
+        output = result.get("output_name")
+        if not output:
+            raise HTTPException(409, "candidate job has no output to star")
+        try:
+            version = assets.star_candidate(
+                ws, asset_id, job_id=req.job_id, source_output=output,
+                version_id=req.version_id, pipeline=job.get("pipeline"),
+                seed=result.get("seed"), starred=req.starred)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        LOG.info("casting %s: job %s -> asset %s (%s)",
+                 "star" if req.starred else "unstar", req.job_id, asset_id, version["id"])
+        return version
+
+    @app.post("/assets/{asset_id}/casting/hero")
+    def set_hero(asset_id: str, req: HeroRequest,
+                 _auth: None = Depends(require_token)) -> dict:
+        """Set/clear the hero ★ among already-recorded casting candidates. Token-gated."""
+        try:
+            return assets.set_hero(_require_ws(), asset_id,
+                                   candidate_id=req.candidate_id, version_id=req.version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/assets/{asset_id}/casting/{file}")
+    def get_casting(asset_id: str, file: str,
+                    version_id: str | None = None) -> FileResponse:
+        """Serve a saved casting candidate image from the version's casting/ dir
+        (traversal-guarded). Unauthenticated read (mirrors /outputs)."""
+        try:
+            path = assets.casting_file_path(_require_ws(), asset_id, file, version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+        return FileResponse(path)
 
     @app.post("/project")
     def create_project(req: CreateProjectRequest, _auth: None = Depends(require_token)) -> dict:

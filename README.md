@@ -156,6 +156,7 @@ token from `.env.local`.
 | `LOOM_SRC_ROOT` | parent `../../src` | monorepo `src/` (holds `village_ai/models`, R160) |
 | `LOOM_VENV_PYTHON` | current interpreter | python used to shell out to pipeline CLIs (R103) |
 | `LOOM_WORK_DISK` | `F:\_tmp` (win) | default parent for new project workspaces (R72) |
+| `LOOM_MODELS_DIR` | `<work-disk drive>\loom-models` | **shared** HF weights cache (set as `HF_HOME`); off the system drive, next to projects; shared across all projects (R160) |
 | `LOOM_PROJECT_DIR` | _(unset)_ | force-open/create a project at startup (tests/CI/GPU-verify) |
 | `LOOM_STATE_DIR` | `<repo>/.loom_state` | **app-level** state (last-project pointer `app.json`) |
 | `LOOM_VRAM_BUDGET_GB` | `16` | VRAM admission budget (RX 9070 XT) |

@@ -180,6 +180,21 @@ class Config:
         return Path.home() / "LoreweaveProjects"
 
     @property
+    def hf_home(self) -> Path:
+        """Where Hugging Face weights are cached (the `hub/` cache lives here). Defaults to
+        a **shared `loom-models/` dir on the work disk** (next to projects, off the system
+        drive) rather than the buried `~/.cache/huggingface`. Override `LOOM_MODELS_DIR`.
+        Weights are **shared across all loom projects** (R160 — never per-project, never in
+        git): one ~330 GB casting set, not a copy per project. Set as `HF_HOME` for the
+        orchestrator + every pipeline subprocess at startup."""
+        env = _get("LOOM_MODELS_DIR")
+        if env:
+            return Path(env).resolve()
+        wd = self.work_disk_root
+        base = Path(wd.anchor) if wd.anchor else wd     # e.g. F:\  →  F:\loom-models
+        return (base / "loom-models").resolve()
+
+    @property
     def hf_token(self) -> str | None:
         """A Hugging Face token for gated-weight downloads (multi's flux2/sd3.5-large),
         read via the central loader (`.env.local` → `HF_TOKEN`, or a real env var). Kept

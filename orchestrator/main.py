@@ -205,6 +205,18 @@ async def lifespan(app: FastAPI):
     log = logsetup.configure(CONFIG.log_level, CONFIG.log_dir)
     log.info("starting orchestrator v%s (python %s)", __version__, sys.version.split()[0])
 
+    # Relocate the HF weights cache to a shared dir on the work disk (off the system drive,
+    # next to projects). Must be set BEFORE huggingface_hub is first imported (the launch
+    # gate's weight checks below), so it governs both the orchestrator's own presence checks
+    # and every pipeline subprocess (which inherit os.environ). Real env wins. (P1/M2.5)
+    if not os.environ.get("HF_HOME"):
+        try:
+            CONFIG.hf_home.mkdir(parents=True, exist_ok=True)
+            os.environ["HF_HOME"] = str(CONFIG.hf_home)
+            log.info("HF cache → %s (shared across projects)", CONFIG.hf_home)
+        except OSError as e:
+            log.warning("could not create HF cache dir %s: %s", CONFIG.hf_home, e)
+
     # Propagate an HF token from the central config (`.env.local`) into the process env so
     # pipeline subprocesses (multi → flux2/sd35 hf_hub_download) inherit it — gated weights
     # (FLUX.2-dev, sd3.5-large) need it. Real env wins; we only fill what's unset (P1/M2).
@@ -292,6 +304,7 @@ def create_app() -> FastAPI:
                                "POST /components/fetch", "POST /shutdown"],
             "worker_reap": WORKER_REAP,
             "work_disk_root": str(CONFIG.work_disk_root),
+            "hf_home": os.environ.get("HF_HOME") or str(CONFIG.hf_home),
             "active_project": (str(RUNNER.workspace.path) if RUNNER.workspace else None),
             "log_level": CONFIG.log_level,
             "log_file": str(CONFIG.log_dir / "orchestrator.log"),

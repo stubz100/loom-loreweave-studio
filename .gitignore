@@ -259,3 +259,7 @@ app/src-tauri/gen/
 # e.g. F:\_tmp\<project>\) — never commit one if it lands here.
 /workspace/
 *.loomproject
+
+# one-off migration artifacts
+_migrate_models.ps1
+_migrate_models.log

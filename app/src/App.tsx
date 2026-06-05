@@ -48,6 +48,10 @@ export default function App() {
 
   const [prompt, setPrompt] = useState("");
   const [count, setCount] = useState(3);
+  // P1/M2 casting controls (active when an asset is selected).
+  const [castPipeline, setCastPipeline] = useState<"multi" | "zimage">("multi");
+  const [numCandidates, setNumCandidates] = useState(2);
+  const [ideationMode, setIdeationMode] = useState<"fast" | "refined">("fast");
   const [batchIds, setBatchIds] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Record<string, Job>>({});
   const [selected, setSelected] = useState<string | null>(null);
@@ -199,13 +203,32 @@ export default function App() {
       return;
     }
     try {
-      const res = await generate(
-        activeAsset
-          ? { prompt: prompt.trim(), count, asset_id: activeAsset.id, stage: "A", apply_style: applyStyle }
-          : { prompt: prompt.trim(), count },
+      let req: Parameters<typeof generate>[0];
+      if (activeAsset && castPipeline === "multi") {
+        // A multi cast = one job → a pool of num_candidates × pipelines candidates.
+        req = {
+          pipeline: "multi",
+          prompt: prompt.trim(),
+          num_candidates: numCandidates,
+          ideation_mode: ideationMode,
+          asset_id: activeAsset.id,
+          stage: "A",
+          apply_style: applyStyle,
+        };
+      } else if (activeAsset) {
+        req = { prompt: prompt.trim(), count, asset_id: activeAsset.id, stage: "A", apply_style: applyStyle };
+      } else {
+        req = { prompt: prompt.trim(), count };
+      }
+      const res = await generate(req);
+      log.info(
+        activeAsset ? "cast" : "generate", res.batch_id,
+        activeAsset && castPipeline === "multi"
+          ? `(multi ×${numCandidates}, ${ideationMode}) for ${activeAsset.name} [Stage A]`
+          : activeAsset
+          ? `(${count}) for ${activeAsset.name} [Stage A]`
+          : `(${count}, sandbox)`,
       );
-      log.info("generate: batch", res.batch_id, `(${count} image${count > 1 ? "s" : ""})`,
-        activeAsset ? `for ${activeAsset.name} [Stage A]` : "(sandbox)");
       // Asset grid is derived from jobs (by requester); sandbox tracks its batch ids.
       if (!activeAsset) setBatchIds(res.job_ids);
       setSelected(null);
@@ -360,15 +383,15 @@ export default function App() {
     startPolling(); // refresh jobs so the derived asset grid is current
   };
 
-  // Star/un-star a completed candidate as the hero ★ (persists into version.json).
-  const onStar = async (jobId: string) => {
+  // Star/un-star a specific candidate output as the hero ★ (persists into version.json).
+  const onStar = async (jobId: string, output?: string) => {
     if (!activeAsset) return;
-    const current = casting.find((c) => c.job_id === jobId);
+    const current = casting.find((c) => c.source_output === output);
     const makeHero = !(current?.starred ?? false); // toggle
     try {
-      const version = await starCandidate(activeAsset.id, jobId, makeHero);
+      const version = await starCandidate(activeAsset.id, jobId, makeHero, output);
       setCasting(version.casting);
-      log.info(makeHero ? "starred hero:" : "un-starred:", jobId, "for", activeAsset.name);
+      log.info(makeHero ? "starred hero:" : "un-starred:", output ?? jobId, "for", activeAsset.name);
     } catch (e) {
       log.error("star failed:", e);
       setError(String(e));
@@ -404,7 +427,8 @@ export default function App() {
 
   const dot = conn === "online" ? "ok" : conn === "offline" ? "err" : "warn";
   const pending = counts.queued + counts.running;
-  const selJob = selected ? jobs[selected] : null;
+  // A selected cell key is either "<jobId>" or "<jobId>:<output>" (multi candidate).
+  const selJob = selected ? jobs[selected.split(":")[0]] : null;
   // When an asset is active, the grid is derived from its jobs (lineage requester =
   // active version); the sandbox tracks the last batch's ids.
   const gridIds = activeAsset
@@ -413,8 +437,19 @@ export default function App() {
         .sort((a, b) => a.created_at.localeCompare(b.created_at))
         .map((j) => j.id)
     : batchIds;
-  // Which grid jobs are the saved casting hero ★ (persisted in version.json).
-  const starredJobs = new Set(casting.filter((c) => c.starred).map((c) => c.job_id));
+  // Which saved candidate outputs are starred (the hero ★, persisted in version.json).
+  const starredOutputs = new Set(casting.filter((c) => c.starred).map((c) => c.source_output));
+  // Flatten jobs → candidate cells: a multi cast (one job → N outputs) expands into one
+  // tile per candidate; everything else is one tile per job.
+  type Cell = { key: string; job?: Job; output?: string };
+  const cells: Cell[] = gridIds.flatMap((id) => {
+    const job = jobs[id];
+    const names = job?.result?.output_names;
+    if (names && names.length > 1) {
+      return names.map((o) => ({ key: `${id}:${o}`, job, output: o }));
+    }
+    return [{ key: id, job, output: job?.result?.output_name }];
+  });
 
   return (
     <div className="app">
@@ -510,14 +545,19 @@ export default function App() {
           <div className="generate-bar">
             <label>
               pipeline
-              <select disabled>
-                <option>zimage</option>
+              <select
+                value={activeAsset ? castPipeline : "zimage"}
+                disabled={!activeAsset}
+                onChange={(e) => setCastPipeline(e.target.value as "multi" | "zimage")}
+              >
+                {activeAsset && <option value="multi">multi</option>}
+                <option value="zimage">zimage</option>
               </select>
             </label>
             <label>
               mode
               <select disabled>
-                <option>t2i</option>
+                <option>{activeAsset && castPipeline === "multi" ? "ideate" : "t2i"}</option>
               </select>
             </label>
             <input
@@ -529,16 +569,39 @@ export default function App() {
                 if (e.key === "Enter") onGenerate();
               }}
             />
-            <label className="n">
-              N
-              <input
-                type="number"
-                min={1}
-                max={8}
-                value={count}
-                onChange={(e) => setCount(clamp(parseInt(e.target.value || "1", 10), 1, 8))}
-              />
-            </label>
+            {activeAsset && castPipeline === "multi" ? (
+              <>
+                <label className="n" title="seeds per cast → num_candidates × pipelines">
+                  cand
+                  <input
+                    type="number"
+                    min={1}
+                    max={5}
+                    value={numCandidates}
+                    onChange={(e) => setNumCandidates(clamp(parseInt(e.target.value || "1", 10), 1, 5))}
+                  />
+                </label>
+                <label title="fast = klein-4b/turbo (lighter); refined = klein-9b/large">
+                  preset
+                  <select value={ideationMode}
+                          onChange={(e) => setIdeationMode(e.target.value as "fast" | "refined")}>
+                    <option value="fast">fast</option>
+                    <option value="refined">refined</option>
+                  </select>
+                </label>
+              </>
+            ) : (
+              <label className="n">
+                N
+                <input
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={count}
+                  onChange={(e) => setCount(clamp(parseInt(e.target.value || "1", 10), 1, 8))}
+                />
+              </label>
+            )}
             <button
               onClick={onGenerate}
               disabled={
@@ -600,24 +663,25 @@ export default function App() {
           {error && <div className="error">⚠ {error}</div>}
 
           <div className="grid">
-            {gridIds.length === 0 && (
+            {cells.length === 0 && (
               <p className="muted center span">
                 {activeAsset
                   ? `Cast ${activeAsset.name} — candidates stream into this grid (Stage A).`
                   : "Fire a batch — results stream in here (the casting-grid embryo)."}
               </p>
             )}
-            {gridIds.map((id) => (
+            {cells.map((c) => (
               <GridCell
-                key={id}
-                job={jobs[id]}
-                selected={selected === id}
-                onClick={() => setSelected(id)}
-                onCancel={() => onCancel(id)}
-                onDelete={() => onDelete(id)}
+                key={c.key}
+                job={c.job}
+                output={c.output}
+                selected={selected === c.key}
+                onClick={() => setSelected(c.key)}
+                onCancel={() => c.job && onCancel(c.job.id)}
+                onDelete={() => c.job && onDelete(c.job.id)}
                 castable={!!activeAsset}
-                isHero={starredJobs.has(id)}
-                onStar={() => onStar(id)}
+                isHero={!!c.output && starredOutputs.has(c.output)}
+                onStar={() => c.job && onStar(c.job.id, c.output)}
               />
             ))}
           </div>
@@ -664,6 +728,7 @@ export default function App() {
 
 function GridCell({
   job,
+  output,
   selected,
   onClick,
   onCancel,
@@ -673,6 +738,7 @@ function GridCell({
   onStar,
 }: {
   job?: Job;
+  output?: string;
   selected: boolean;
   onClick: () => void;
   onCancel: () => void;
@@ -682,7 +748,8 @@ function GridCell({
   onStar?: () => void;
 }) {
   const status = job?.status ?? "queued";
-  const name = job?.result?.output_name;
+  // For a multi candidate, `output` is this tile's specific image; else the job's single output.
+  const name = output ?? job?.result?.output_name;
   const prog = job?.progress ?? 0;
   const active = status === "queued" || status === "running";
   const terminal = status === "done" || status === "failed" || status === "canceled";

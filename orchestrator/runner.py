@@ -38,6 +38,7 @@ from pathlib import Path
 try:
     from .adapters import JobSpec
     from .adapters import zimage as zimage_adapter
+    from .adapters import multi as multi_adapter
     from .config import CONFIG
     from . import lineage
     from . import workspace as ws_mod
@@ -46,13 +47,14 @@ try:
 except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import JobSpec  # type: ignore
     from adapters import zimage as zimage_adapter  # type: ignore
+    from adapters import multi as multi_adapter  # type: ignore
     from config import CONFIG  # type: ignore
     import lineage  # type: ignore
     import workspace as ws_mod  # type: ignore
     from workspace import Workspace, new_id  # type: ignore
     from logsetup import get_logger  # type: ignore
 
-ADAPTERS = {"zimage": zimage_adapter}
+ADAPTERS = {"zimage": zimage_adapter, "multi": multi_adapter}
 SCHEMA_VERSION = 1
 LOG = get_logger()
 
@@ -139,7 +141,9 @@ def _assign_to_kill_job(proc: subprocess.Popen) -> None:
 
 # Static per-pipeline VRAM estimate (GB) for admission (§7); refined by observed
 # peaks later. zimage-turbo @720p with cpu_offload peaks ~10–12 GB on the 16 GB rig.
-VRAM_ESTIMATES = {"zimage": 11.0}
+# multi runs its pipelines one-at-a-time as isolated subprocesses (VRAM isolation), so the
+# peak is a single pipeline (flux2-klein ~ the largest), not the sum — admission vs 16 GB.
+VRAM_ESTIMATES = {"zimage": 11.0, "multi": 14.0}
 DEFAULT_VRAM_GB = 8.0
 MAX_OOM_RETRIES = 1
 _OOM_MARKERS = (
@@ -634,8 +638,20 @@ class JobRunner:
             return
 
         result = rec.to_dict()
-        if rec.outputs:
-            result["output_name"] = f"{job_id}/{os.path.basename(rec.outputs[0])}"
+        # Surface outputs as paths **relative to the project out/ dir** so /outputs can serve
+        # them (works for nested per-pipeline candidate trees, not just basenames). A multi
+        # run yields N candidates → `output_names` is the pool; `output_name` stays the
+        # primary (first) for back-compat (zimage = exactly one).
+        out_root = ws.out_dir.resolve()
+        names: list[str] = []
+        for o in rec.outputs:
+            try:
+                names.append(Path(o).resolve().relative_to(out_root).as_posix())
+            except ValueError:
+                names.append(f"{job_id}/{os.path.basename(o)}")   # defensive fallback
+        if names:
+            result["output_name"] = names[0]
+            result["output_names"] = names
         if rec.manifest_path and Path(rec.manifest_path).is_file():
             try:
                 m = json.loads(Path(rec.manifest_path).read_text(encoding="utf-8"))

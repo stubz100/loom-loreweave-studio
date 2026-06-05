@@ -48,6 +48,7 @@ export interface JobResult {
   manifest_status?: string | null;
   error?: string | null;
   output_name?: string;
+  output_names?: string[];   // multi cast: the whole candidate pool (one job → N)
   seed?: number | null;
 }
 
@@ -101,8 +102,11 @@ export interface QueueState {
 }
 
 export interface GenerateRequest {
+  pipeline?: "zimage" | "multi";
   prompt: string;
   count?: number;
+  num_candidates?: number;
+  ideation_mode?: "fast" | "refined";
   seed?: number | null;
   width?: number;
   height?: number;
@@ -242,17 +246,24 @@ export async function getAsset(assetId: string, signal?: AbortSignal): Promise<A
   return (await res.json()) as AssetDetail;
 }
 
-/** Star (or un-star) a completed candidate job into a version's casting set. */
+/** Star (or un-star) a completed candidate into a version's casting set. `output` selects
+ * a specific candidate from a multi pool (omit for a single-output zimage job). */
 export async function starCandidate(
   assetId: string,
   jobId: string,
   starred = true,
+  output?: string,
   versionId?: string,
 ): Promise<ProfileVersion> {
   const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/casting/star`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
-    body: JSON.stringify({ job_id: jobId, starred, version_id: versionId ?? null }),
+    body: JSON.stringify({
+      job_id: jobId,
+      starred,
+      output: output ?? null,
+      version_id: versionId ?? null,
+    }),
   });
   if (!res.ok) throw new Error(`star ${res.status}: ${await res.text()}`);
   return (await res.json()) as ProfileVersion;

@@ -248,10 +248,13 @@ def star_candidate(ws: Workspace, asset_id: str, *, job_id: str, source_output: 
     The candidate image (+ sidecar manifest if present) is **copied into the version's
     `casting/` dir** so a Saved version is self-contained and survives deleting the source
     job / pruning `out/` (the casting set is the saved provenance, not a live pointer).
-    `source_output` is the job's `output_name` (`<job_id>/<file>`), relative to `out/`."""
+    `source_output` is the candidate's output path relative to `out/` — for `zimage` that's
+    `<job>/<file>`; for a `multi` cast (one job → N candidates) it's the specific candidate
+    file, so the candidate (not the job) is the identity (dedup key)."""
     vdir, version = _resolve_version_dir(ws, asset_id, version_id)
     casting = version.setdefault("casting", [])
-    entry = next((c for c in casting if c["job_id"] == job_id), None)
+    # Identity is the specific output, not the job (a multi job yields N candidates).
+    entry = next((c for c in casting if c.get("source_output") == source_output), None)
 
     if entry is None:
         if ".." in source_output or "\\" in source_output:

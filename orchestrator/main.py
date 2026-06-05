@@ -16,6 +16,7 @@ PNG-master footprint to suggest a size cap.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 import uuid
@@ -34,7 +35,8 @@ try:
     from . import __version__, SCHEMA_VERSION
     from .adapters import JobSpec
     from .adapters import zimage as zimage_adapter
-    from .runner import RUNNER, WORKER_REAP, estimate_vram
+    from .adapters import multi as multi_adapter
+    from .runner import RUNNER, WORKER_REAP, ADAPTERS, estimate_vram
     from . import projects
     from . import workspace as ws_mod
     from . import components
@@ -46,7 +48,8 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from adapters import JobSpec  # type: ignore
     from adapters import zimage as zimage_adapter  # type: ignore
-    from runner import RUNNER, WORKER_REAP, estimate_vram  # type: ignore
+    from adapters import multi as multi_adapter  # type: ignore
+    from runner import RUNNER, WORKER_REAP, ADAPTERS, estimate_vram  # type: ignore
     import projects  # type: ignore
     import workspace as ws_mod  # type: ignore
     import components  # type: ignore
@@ -83,10 +86,14 @@ class GenerateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    pipeline: str = "zimage"
-    mode: Literal["t2i"] = "t2i"
+    pipeline: Literal["zimage", "multi"] = "zimage"
+    mode: Literal["t2i", "ideate"] = "t2i"
     prompt: str
     count: int = Field(default=3, ge=1, le=MAX_BATCH)
+    # P1/M2 multi casting: one cast = ONE job → a pool of num_candidates × pipelines
+    # candidates (R38: num_candidates ≤ 5). `ideation_mode` picks the weight preset.
+    num_candidates: int = Field(default=2, ge=1, le=5)
+    ideation_mode: Literal["fast", "refined"] = "fast"
     seed: int | None = None         # if set, image i uses seed+i; else random per image
     # Validated at the API boundary (review #2) so bad dims fail BEFORE a model load:
     # zimage requires width/height divisible by 16.
@@ -159,10 +166,13 @@ class StyleRequest(BaseModel):
 
 class StarRequest(BaseModel):
     """Star/un-star a completed Stage-A candidate into a version's casting set (M2, R44).
-    `job_id` is the completed casting job; `starred=False` toggles the hero off."""
+    `job_id` is the completed casting job; `output` selects a specific candidate when the
+    job produced a pool (multi) — omit for a single-output job (zimage). `starred=False`
+    toggles the hero off."""
 
     model_config = ConfigDict(extra="forbid")
     job_id: str
+    output: str | None = None          # specific candidate output_name (multi pool)
     version_id: str | None = None
     starred: bool = True
 
@@ -194,6 +204,16 @@ async def lifespan(app: FastAPI):
     # Configure logging first (level from .env LOOM_LOG_LEVEL) so everything below logs.
     log = logsetup.configure(CONFIG.log_level, CONFIG.log_dir)
     log.info("starting orchestrator v%s (python %s)", __version__, sys.version.split()[0])
+
+    # Propagate an HF token from the central config (`.env.local`) into the process env so
+    # pipeline subprocesses (multi → flux2/sd35 hf_hub_download) inherit it — gated weights
+    # (FLUX.2-dev, sd3.5-large) need it. Real env wins; we only fill what's unset (P1/M2).
+    for _hf in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN"):
+        _tok = CONFIG.hf_token
+        if _tok and not os.environ.get(_hf):
+            os.environ[_hf] = _tok
+    if CONFIG.hf_token:
+        log.info("HF token present (gated-weight downloads enabled)")
 
     # Launch gate (M7, §11): refuse to start on a missing P0-essential CODE component
     # (clear error, no degraded mode). A missing P0-essential WEIGHT does not abort —
@@ -279,13 +299,18 @@ def create_app() -> FastAPI:
 
     @app.post("/generate")
     def generate(req: GenerateRequest, _auth: None = Depends(require_token)) -> dict:
-        """Enqueue an N-image batch onto the single-worker runner (M2). Token-gated.
-        Requires an **open project** (M5): outputs + queue are per-project."""
-        if req.pipeline != "zimage":
-            raise HTTPException(400, f"only the 'zimage' adapter is wired (got {req.pipeline!r})")
-        script = zimage_adapter.resolve_script(CONFIG.pipeline_roots)
+        """Enqueue work onto the single-worker runner. Token-gated; needs an open project.
+
+        `zimage` (t2i) → an N-image batch (count jobs). `multi` (ideate) → **one** casting
+        job that fans out into a pool of `num_candidates × pipelines` candidates (P1/M2)."""
+        # Resolve the adapter + coerce the mode to the one this pipeline wires.
+        adapter = ADAPTERS.get(req.pipeline)
+        if adapter is None:
+            raise HTTPException(400, f"unknown pipeline {req.pipeline!r}")
+        mode = "ideate" if req.pipeline == "multi" else "t2i"
+        script = adapter.resolve_script(CONFIG.pipeline_roots)
         if script is None:
-            raise HTTPException(503, "zimage worker not found in any pipeline root "
+            raise HTTPException(503, f"{req.pipeline} worker not found in any pipeline root "
                                      f"({[str(r) for r in CONFIG.pipeline_roots]})")
 
         ws = RUNNER.workspace
@@ -294,7 +319,7 @@ def create_app() -> FastAPI:
                                      "(POST /project or /project/open)")
         project = ws.load_project()
 
-        # Launch-gate precondition (M7/§11.1): a P0-essential weight must be present —
+        # Launch-gate precondition (M7/§11.1): a phase-essential weight must be present —
         # offer the explicit fetch rather than failing the GPU run mid-flight.
         ok, missing = components.weights_ok()
         if not ok:
@@ -313,7 +338,12 @@ def create_app() -> FastAPI:
             requester_id = profile_version_id
 
         base = req.model_dump(exclude={"pipeline", "mode", "dry_run", "count",
-                                       "asset_id", "version_id", "stage", "apply_style"})
+                                       "asset_id", "version_id", "stage", "apply_style",
+                                       "num_candidates", "ideation_mode"})
+        is_multi = req.pipeline == "multi"
+        if is_multi:
+            base["num_candidates"] = req.num_candidates
+            base["ideation_mode"] = req.ideation_mode
 
         # L1 style fragment auto-prepend (R104). Per-gen `apply_style` overrides; when it's
         # omitted, honor the StoryBible's saved `enabled_default` (review: that flag was
@@ -327,10 +357,12 @@ def create_app() -> FastAPI:
                 base["prompt"] = f"{fragment}, {base['prompt']}"
 
         if req.dry_run:
-            spec = JobSpec(pipeline=req.pipeline, mode=req.mode, params=base,
-                           output_dir=ws.out_dir)
-            argv = zimage_adapter.build_argv(spec, CONFIG.venv_python, script)
-            return {"dry_run": True, "count": req.count, "argv": argv, "prompt": base["prompt"],
+            spec = JobSpec(pipeline=req.pipeline, mode=mode, params=base, output_dir=ws.out_dir)
+            argv = adapter.build_argv(spec, CONFIG.venv_python, script)
+            return {"dry_run": True, "pipeline": req.pipeline,
+                    "count": 1 if is_multi else req.count,
+                    "num_candidates": req.num_candidates if is_multi else None,
+                    "argv": argv, "prompt": base["prompt"],
                     "requester_id": requester_id, "profile_version_id": profile_version_id,
                     "cwd": str(script.parents[2]), "output_dir": str(ws.out_dir)}
 
@@ -350,19 +382,25 @@ def create_app() -> FastAPI:
 
         batch_id = "bat_" + uuid.uuid4().hex[:8]
         job_ids: list[str] = []
-        for i in range(req.count):
+        # multi = one casting job (it fans out internally to N candidates); zimage = N jobs.
+        n_jobs = 1 if is_multi else req.count
+        for i in range(n_jobs):
             params = dict(base)
-            if req.seed is not None:
-                params["seed"] = req.seed + i      # distinct but reproducible
-            jid = RUNNER.submit(pipeline=req.pipeline, mode=req.mode, params=params,
-                                batch_id=batch_id, index=i, batch_size=req.count,
+            if req.seed is not None and not is_multi:
+                params["seed"] = req.seed + i      # distinct but reproducible per image
+            elif req.seed is not None:
+                params["seed"] = req.seed          # multi derives its own per-candidate seeds
+            jid = RUNNER.submit(pipeline=req.pipeline, mode=mode, params=params,
+                                batch_id=batch_id, index=i, batch_size=n_jobs,
                                 requester_id=requester_id,          # project or asset version (R98)
                                 profile_version_id=profile_version_id, stage=req.stage)
             job_ids.append(jid)
-        LOG.info("generate: batch %s of %d (%s) for %s%s",
-                 batch_id, req.count, req.pipeline, requester_id,
-                 f" stage={req.stage}" if req.stage else "")
-        return {"batch_id": batch_id, "count": req.count, "job_ids": job_ids}
+        LOG.info("generate: %s %s (%s%s) for %s%s",
+                 "cast" if is_multi else "batch", batch_id, req.pipeline,
+                 f" ×{req.num_candidates}" if is_multi else f" of {req.count}",
+                 requester_id, f" stage={req.stage}" if req.stage else "")
+        return {"batch_id": batch_id, "count": len(job_ids), "job_ids": job_ids,
+                "num_candidates": req.num_candidates if is_multi else None}
 
     @app.get("/project")
     def get_project() -> dict:
@@ -435,14 +473,30 @@ def create_app() -> FastAPI:
         if job.get("status") != "done":
             raise HTTPException(409, "can only star a completed (done) candidate")
         result = job.get("result") or {}
-        output = result.get("output_name")
-        if not output:
+        pool = result.get("output_names") or ([result["output_name"]]
+                                              if result.get("output_name") else [])
+        # Pick the candidate: an explicit `output` must belong to this job's pool; otherwise
+        # default to the job's single output (zimage) / the first of the pool.
+        if req.output is not None:
+            if req.output not in pool:
+                raise HTTPException(409, f"output {req.output!r} not in job {req.job_id!r}")
+            output = req.output
+        elif len(pool) == 1:
+            output = pool[0]
+        elif not pool:
             raise HTTPException(409, "candidate job has no output to star")
+        else:
+            raise HTTPException(409, "this is a multi-candidate job — specify which `output`")
+        # Per-candidate provenance: pipeline = job pipeline for zimage; for a multi pool the
+        # candidate's pipeline/seed live in its path (…/ideate/<pipeline>/seed_<seed>/…).
+        pipeline, seed = job.get("pipeline"), result.get("seed")
+        m = re.search(r"/_inter/.*/ideate/([^/]+)/seed_(\d+)/", "/" + output)
+        if m:
+            pipeline, seed = m.group(1), int(m.group(2))
         try:
             version = assets.star_candidate(
                 ws, asset_id, job_id=req.job_id, source_output=output,
-                version_id=req.version_id, pipeline=job.get("pipeline"),
-                seed=result.get("seed"), starred=req.starred)
+                version_id=req.version_id, pipeline=pipeline, seed=seed, starred=req.starred)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(400, str(e))
         LOG.info("casting %s: job %s -> asset %s (%s)",

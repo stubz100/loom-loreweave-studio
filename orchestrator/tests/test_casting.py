@@ -113,6 +113,30 @@ def test_casting_file_path_resolves_and_guards(ws):
         assets.casting_file_path(ws, a["id"], "../../secret.png")
 
 
+def test_multi_pool_candidates_are_output_keyed(ws):
+    """A multi cast = one job → N candidates. Each candidate is a distinct casting entry
+    (identity = its output path, not the shared job_id), and any one can be the hero."""
+    a = assets.create_asset(ws, name="Mara")["profile"]
+    job_id = "job_multi001"
+    d = ws.out_dir / job_id / "_inter" / "run" / "ideate"
+    outs = []
+    for pl in ("flux2", "sd35", "zimage"):
+        sub = d / pl / "seed_1"
+        sub.mkdir(parents=True)
+        f = sub / f"{pl}.png"
+        f.write_bytes(b"PNG")
+        outs.append(f"{job_id}/_inter/run/ideate/{pl}/seed_1/{pl}.png")
+    # star two distinct candidates from the same job
+    assets.star_candidate(ws, a["id"], job_id=job_id, source_output=outs[0], pipeline="flux2")
+    v = assets.star_candidate(ws, a["id"], job_id=job_id, source_output=outs[1], pipeline="sd35")
+    assert len(v["casting"]) == 2                      # two entries, one job
+    starred = [c for c in v["casting"] if c["starred"]]
+    assert len(starred) == 1 and starred[0]["source_output"] == outs[1]
+    # re-starring the same output doesn't duplicate
+    v = assets.star_candidate(ws, a["id"], job_id=job_id, source_output=outs[0], pipeline="flux2")
+    assert len(v["casting"]) == 2
+
+
 def test_persisted_casting_survives_reload(ws):
     """The whole point: casting[] + hero are durable across reopening the project."""
     a = assets.create_asset(ws, name="Mara")["profile"]

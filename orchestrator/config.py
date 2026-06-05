@@ -180,6 +180,14 @@ class Config:
         return Path.home() / "LoreweaveProjects"
 
     @property
+    def hf_token(self) -> str | None:
+        """A Hugging Face token for gated-weight downloads (multi's flux2/sd3.5-large),
+        read via the central loader (`.env.local` → `HF_TOKEN`, or a real env var). Kept
+        out of git like the orchestrator token. `None` ⇒ only open/cached weights work."""
+        return (_get("HF_TOKEN") or _get("HUGGING_FACE_HUB_TOKEN")
+                or _get("HUGGINGFACE_HUB_TOKEN"))
+
+    @property
     def active_phases_raw(self) -> str | None:
         """Raw `LOOM_ACTIVE_PHASES` (comma-separated phases the launch gate hard-requires),
         read through the **central loader** (real env > `.env.local` > `.env`) like every

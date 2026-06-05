@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "loom:queue.schema.json",
+  "title": "Durable queue envelope (queue.json wrapper, P0)",
+  "type": "object",
+  "required": ["schema_version", "paused", "clean_shutdown", "jobs"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "paused": { "type": "boolean" },
+    "clean_shutdown": { "type": "boolean" },
+    "jobs": { "type": "object" }
+  }
+}

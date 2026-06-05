@@ -175,6 +175,24 @@ def validate(data: Any, schema_name: str) -> None:
         raise WorkspaceError(f"{schema_name} validation failed: " + "; ".join(errors))
 
 
+def validate_project(project: dict) -> None:
+    """Schema-validate a project record **and** enforce the cross-field invariant the
+    schema can't express: aspect and resolution are **locked together** (§5/P0), i.e.
+    `aspect_w · H == aspect_h · W`. Catches e.g. aspect [1,1] with a 1280×720 frame
+    before it poisons downstream geometry assumptions (review: Med)."""
+    validate(project, "project.schema.json")
+    fmt = project.get("format") or {}
+    aspect, res = fmt.get("aspect"), fmt.get("resolution")
+    if (isinstance(aspect, list) and len(aspect) == 2
+            and isinstance(res, list) and len(res) == 2):
+        aw, ah = aspect
+        rw, rh = res
+        if aw * rh != ah * rw:
+            raise WorkspaceError(
+                f"format geometry inconsistent: aspect {aw}:{ah} does not match "
+                f"resolution {rw}×{rh} (require aspect_w·H == aspect_h·W)")
+
+
 # --- footprint estimator (R161/R164) -------------------------------------------
 
 def estimate_footprint_gb(*, length_s: float, width: int, height: int, fps: int,
@@ -297,8 +315,6 @@ class Workspace:
         validate_empty_dest(dest)
         validate_free_space(dest, size_cap_gb)
 
-        ws = cls(dest)
-        ws._ensure_tree()
         project = {
             "schema_version": WORKSPACE_SCHEMA_VERSION,
             "id": new_id("prj"),
@@ -308,7 +324,12 @@ class Workspace:
             "format": fmt or json.loads(json.dumps(DEFAULT_FORMAT)),
             "size_cap_gb": size_cap_gb,
         }
-        validate(project, "project.schema.json")
+        # Validate (schema + geometry lock) BEFORE any side effect, so a bad format
+        # never leaves a half-built tree on disk.
+        validate_project(project)
+
+        ws = cls(dest)
+        ws._ensure_tree()
         atomic_write_json(ws.project_json, project)
         return ws
 
@@ -320,13 +341,13 @@ class Workspace:
         if not ws.project_json.is_file():
             raise WorkspaceError(f"not a loom project (no project.json): {ws.path}")
         project = read_json(ws.project_json)
-        validate(project, "project.schema.json")
+        validate_project(project)
         ws._ensure_tree()
         return ws
 
     def load_project(self) -> dict:
         project = read_json(self.project_json)
-        validate(project, "project.schema.json")
+        validate_project(project)
         return project
 
     def info(self) -> dict:

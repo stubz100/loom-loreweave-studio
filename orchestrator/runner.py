@@ -267,23 +267,19 @@ class JobRunner:
             self._paused = False
             return
 
-        jobs = data.get("jobs")
-        if jobs is None:
-            jobs = {}
-        # Validate the envelope + every job record before we trust any field.
+        # Validate the **envelope** (schema_version/paused/clean_shutdown/jobs types) and
+        # then **every job record** before trusting any field — a bad wrapper (e.g.
+        # clean_shutdown:"false" as a string) must not be coerced into a graceful/crash
+        # decision (review: Med). Any failure quarantines the whole queue.
         invalid: str | None = None
-        if not isinstance(data, dict) or not isinstance(jobs, dict):
-            invalid = "envelope is not a {jobs: {...}} object"
-        else:
-            for jid, j in jobs.items():
-                try:
-                    ws_mod.validate(j, "job.schema.json")
-                except ws_mod.WorkspaceError as e:
-                    invalid = f"job {jid!r}: {e}"
-                    break
+        try:
+            ws_mod.validate(data, "queue.schema.json")
+            for jid, j in data["jobs"].items():
+                ws_mod.validate(j, "job.schema.json")
                 if j.get("id") != jid:
-                    invalid = f"job key {jid!r} != record id {j.get('id')!r}"
-                    break
+                    raise ws_mod.WorkspaceError(f"job key {jid!r} != record id {j.get('id')!r}")
+        except ws_mod.WorkspaceError as e:
+            invalid = str(e)
         if invalid is not None:
             if self._quarantine_queue(f"queue.json invalid ({invalid})"):
                 self.jobs = {}
@@ -293,8 +289,8 @@ class JobRunner:
             self._paused = False
             return
 
-        clean = bool(data.get("clean_shutdown"))
-        self.jobs = jobs
+        clean = data["clean_shutdown"]   # validated boolean (no string coercion)
+        self.jobs = data["jobs"]
         # Reconcile in-flight jobs per the one-job lifecycle (R159).
         for j in self.jobs.values():
             if j.get("status") != "running":

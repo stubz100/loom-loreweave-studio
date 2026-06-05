@@ -221,22 +221,78 @@ class JobRunner:
         if self._ws is not None:
             shutil.rmtree(self._ws.out_dir / job_id, ignore_errors=True)
 
+    def _quarantine_queue(self, reason: str) -> bool:
+        """Move a corrupt/invalid `queue.json` ASIDE (rename to `queue.corrupt-<ts>.json`)
+        before we start a fresh empty queue — so recoverable job history is **never
+        silently overwritten** by the next write (review: High). Returns True if the bad
+        file was preserved (safe to write a fresh empty queue), False if it couldn't be
+        moved (then we must not overwrite it)."""
+        path = self._ws.queue_path
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        target = path.with_name(f"queue.corrupt-{stamp}.json")
+        n = 1
+        while target.exists():
+            target = path.with_name(f"queue.corrupt-{stamp}.{n}.json")
+            n += 1
+        try:
+            os.replace(path, target)
+            _warn(f"{reason}; quarantined to {target.name} — starting with an empty queue")
+            return True
+        except OSError as e:
+            _warn(f"{reason}; could NOT quarantine queue.json ({e}) — starting empty but "
+                  "leaving the original in place (it will not be overwritten at load)")
+            return False
+
     def _load_locked(self) -> None:
         """Load the active project's queue, reconcile in-flight jobs (R159), resume
-        paused (R88). Called under the lock from `bind()`. A corrupt/partial queue is
-        refused and treated as empty (a fresh queue), never a silent half-state."""
+        paused (R88). Called under the lock from `bind()`.
+
+        A corrupt/partial queue, a malformed envelope, or any job record that fails
+        `job.schema.json` is **quarantined** (preserved on disk) and the project opens
+        with a fresh empty queue — never a silent half-state, and never an overwrite of
+        recoverable history (review: High). Per-record validation also stops the worker
+        from later touching a job missing `id`/`status`."""
         path = self._ws.queue_path
         if not path.is_file():
             self._paused = False
             return
         try:
-            data = ws_mod.read_json(path)
-        except ws_mod.WorkspaceError:
-            _warn(f"queue.json unreadable/partial ({path}); starting with an empty queue")
-            self.jobs = {}
+            data = ws_mod.read_json(path)            # refuses partial/corrupt JSON
+        except ws_mod.WorkspaceError as e:
+            if self._quarantine_queue(f"queue.json unreadable/partial ({e})"):
+                self.jobs = {}
+                self._persist_locked()
+            else:
+                self.jobs = {}
             self._paused = False
             return
-        jobs = data.get("jobs") or {}
+
+        jobs = data.get("jobs")
+        if jobs is None:
+            jobs = {}
+        # Validate the envelope + every job record before we trust any field.
+        invalid: str | None = None
+        if not isinstance(data, dict) or not isinstance(jobs, dict):
+            invalid = "envelope is not a {jobs: {...}} object"
+        else:
+            for jid, j in jobs.items():
+                try:
+                    ws_mod.validate(j, "job.schema.json")
+                except ws_mod.WorkspaceError as e:
+                    invalid = f"job {jid!r}: {e}"
+                    break
+                if j.get("id") != jid:
+                    invalid = f"job key {jid!r} != record id {j.get('id')!r}"
+                    break
+        if invalid is not None:
+            if self._quarantine_queue(f"queue.json invalid ({invalid})"):
+                self.jobs = {}
+                self._persist_locked()
+            else:
+                self.jobs = {}
+            self._paused = False
+            return
+
         clean = bool(data.get("clean_shutdown"))
         self.jobs = jobs
         # Reconcile in-flight jobs per the one-job lifecycle (R159).

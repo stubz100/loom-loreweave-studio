@@ -138,11 +138,18 @@ def _validate(data: Any, schema: dict, path: str, errors: list[str]) -> None:
         errors.append(f"{path}: {data!r} not in enum {schema['enum']}")
     if "type" in schema:
         _check_type(data, schema["type"], path, errors)
-    if isinstance(data, str) and "pattern" in schema and not re.search(schema["pattern"], data):
-        errors.append(f"{path}: {data!r} does not match /{schema['pattern']}/")
+    if isinstance(data, str):
+        if "pattern" in schema and not re.search(schema["pattern"], data):
+            errors.append(f"{path}: {data!r} does not match /{schema['pattern']}/")
+        if "minLength" in schema and len(data) < schema["minLength"]:
+            errors.append(f"{path}: length {len(data)} < minLength {schema['minLength']}")
+        if "maxLength" in schema and len(data) > schema["maxLength"]:
+            errors.append(f"{path}: length {len(data)} > maxLength {schema['maxLength']}")
     if isinstance(data, (int, float)) and not isinstance(data, bool):
         if "minimum" in schema and data < schema["minimum"]:
             errors.append(f"{path}: {data} < minimum {schema['minimum']}")
+        if "maximum" in schema and data > schema["maximum"]:
+            errors.append(f"{path}: {data} > maximum {schema['maximum']}")
     if isinstance(data, dict):
         for req in schema.get("required", []):
             if req not in data:
@@ -150,9 +157,14 @@ def _validate(data: Any, schema: dict, path: str, errors: list[str]) -> None:
         for key, subspec in schema.get("properties", {}).items():
             if key in data:
                 _validate(data[key], subspec, f"{path}.{key}" if path else key, errors)
-    if isinstance(data, list) and "items" in schema:
-        for i, item in enumerate(data):
-            _validate(item, schema["items"], f"{path}[{i}]", errors)
+    if isinstance(data, list):
+        if "minItems" in schema and len(data) < schema["minItems"]:
+            errors.append(f"{path}: {len(data)} items < minItems {schema['minItems']}")
+        if "maxItems" in schema and len(data) > schema["maxItems"]:
+            errors.append(f"{path}: {len(data)} items > maxItems {schema['maxItems']}")
+        if "items" in schema:
+            for i, item in enumerate(data):
+                _validate(item, schema["items"], f"{path}[{i}]", errors)
 
 
 def validate(data: Any, schema_name: str) -> None:

@@ -119,6 +119,33 @@ def _check_workspace_io() -> tuple[bool, str]:
         return False, f"workspace I/O broken: {e}"
 
 
+_P1_SCHEMAS = ("story.schema.json", "profile.schema.json", "version.schema.json")
+
+
+def _check_p1_records() -> tuple[bool, str]:
+    """P1 L1/L2 record support (StoryBible style + AssetProfile + ProfileVersion): the new
+    schemas load and validate a sample of each record. **Phase-scoped to P1** — reported
+    but not launch-blocking while only P0 is active, and blocking once P1 is activated
+    (review: the gate must cover P1's new schema dependencies, not silently start with
+    broken record support and fail later at /assets or /bible/style)."""
+    try:
+        for s in _P1_SCHEMAS:
+            ws_mod.load_schema(s)
+        ws_mod.validate({"schema_version": 1, "id": "sto_000000",
+                         "style": {"id": "sty_000000", "fragment": "x",
+                                   "enabled_default": True}}, "story.schema.json")
+        ws_mod.validate({"schema_version": 1, "id": "ast_000000", "name": "probe",
+                         "asset_class": "characters", "created_at": "t",
+                         "active_version": "ver_000000", "versions": ["ver_000000"]},
+                        "profile.schema.json")
+        ws_mod.validate({"schema_version": 1, "id": "ver_000000", "name": "v1_base",
+                         "finalized": False, "saved_at": "t", "prompt_template": "",
+                         "ref_set": [], "casting": []}, "version.schema.json")
+        return True, "P1 record schemas load + validate"
+    except Exception as e:  # noqa: BLE001
+        return False, f"P1 record support broken: {e}"
+
+
 # --- model-weight manifest ------------------------------------------------------
 
 class ManifestError(RuntimeError):
@@ -157,6 +184,8 @@ _CODE_CHECKS = {
     "workspace_io": ("P0", _check_workspace_io),
     # The weight contract is itself P0-essential: a broken models.json → refuse to start.
     "models_manifest": ("P0", manifest_status),
+    # P1 record support — phase-scoped (reported under P0, blocking once P1 is active).
+    "p1_records": ("P1", _check_p1_records),
 }
 
 

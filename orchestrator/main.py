@@ -102,7 +102,9 @@ class GenerateRequest(BaseModel):
     asset_id: str | None = None
     version_id: str | None = None   # default = the asset's active version
     stage: Literal["A", "B", "C"] | None = None
-    apply_style: bool = True
+    # Tri-state (review): True/False = explicit per-gen override (R104); None/omitted =
+    # fall back to the StoryBible's saved `enabled_default`.
+    apply_style: bool | None = None
 
     @field_validator("prompt")
     @classmethod
@@ -294,9 +296,14 @@ def create_app() -> FastAPI:
         base = req.model_dump(exclude={"pipeline", "mode", "dry_run", "count",
                                        "asset_id", "version_id", "stage", "apply_style"})
 
-        # L1 style fragment auto-prepend (R104) — unless the per-gen override unticks it.
-        if req.apply_style:
-            fragment = (bible.load_style(ws).get("fragment") or "").strip()
+        # L1 style fragment auto-prepend (R104). Per-gen `apply_style` overrides; when it's
+        # omitted, honor the StoryBible's saved `enabled_default` (review: that flag was
+        # stored but never consulted).
+        style = bible.load_style(ws)
+        apply_style = req.apply_style if req.apply_style is not None \
+            else bool(style.get("enabled_default", True))
+        if apply_style:
+            fragment = (style.get("fragment") or "").strip()
             if fragment:
                 base["prompt"] = f"{fragment}, {base['prompt']}"
 

@@ -21,9 +21,10 @@ React/TypeScript UI + a Python FastAPI orchestrator that wraps the
 > style fragment (auto-prepended, R104), AssetProfile + `v1_base` records, a library rail, and the
 > P0 grid promoted to **asset-scoped casting (Stage A)** reusing `zimage`. Next: M2 `multi` casting →
 > M3 Stage B+C (the MVP done-line). Spec:
-> [`kb-loom-p0.md`](../../.github/copilot/kb-loom-p0.md), decisions:
+> [`kb-loom-p1.md`](../../.github/copilot/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:
-> [`kb-loom-p0-imp.md`](../../.github/copilot/kb-loom-p0-imp.md).
+> [`kb-loom-p1-imp.md`](../../.github/copilot/kb-loom-p1-imp.md) (P0 spine:
+> [`kb-loom-p0.md`](../../.github/copilot/kb-loom-p0.md) / [`kb-loom-p0-imp.md`](../../.github/copilot/kb-loom-p0-imp.md)).
 
 ## Layout
 

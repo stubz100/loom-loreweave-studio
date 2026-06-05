@@ -339,9 +339,11 @@ export default function App() {
 
   const onSaveStyle = async () => {
     try {
-      const s = await setStyle(styleDraft);
+      // Persist both the fragment and the apply toggle as the saved default (review:
+      // enabled_default must be settable, not just stored).
+      const s = await setStyle(styleDraft, applyStyle);
       setStyleState(s);
-      log.info("style fragment saved");
+      log.info("style saved (apply default:", applyStyle, ")");
     } catch (e) {
       setError(String(e));
     }
@@ -522,10 +524,12 @@ export default function App() {
                 }}
               />
               <button className="proj-btn" onClick={onSaveStyle}
-                      disabled={!style || styleDraft === style.fragment}>
+                      disabled={!style || (styleDraft === style.fragment
+                                           && applyStyle === style.enabled_default)}>
                 Save
               </button>
-              <label className="apply-style" title="prepend the style to this generation (R104)">
+              <label className="apply-style"
+                     title="prepend the style to generation (R104) — Save persists this as the default">
                 <input type="checkbox" checked={applyStyle}
                        onChange={(e) => setApplyStyle(e.target.checked)} />
                 apply

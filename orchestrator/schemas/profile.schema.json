@@ -6,7 +6,7 @@
   "required": ["schema_version", "id", "name", "asset_class", "created_at", "active_version", "versions"],
   "properties": {
     "schema_version": { "const": 1 },
-    "id": { "type": "string", "pattern": "^chr_[0-9a-f]{6}$" },
+    "id": { "type": "string", "pattern": "^ast_[0-9a-f]{6}$" },
     "name": { "type": "string", "minLength": 1 },
     "asset_class": { "enum": ["characters", "props", "scenes"] },
     "slug": { "type": "string" },

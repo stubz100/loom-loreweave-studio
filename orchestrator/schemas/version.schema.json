@@ -53,6 +53,11 @@
         }
       }
     },
+    "rejected": {
+      "type": "array",
+      "description": "P1-12 curation throughput: out/-relative output names the author REJECTED during Stage-C culling (~100→~30). Lightweight + persistent (survives reloads) — no image copy; mutually exclusive with ref_set membership (keep wins, un-rejecting).",
+      "items": { "type": "string" }
+    },
     "casting": {
       "type": "array",
       "items": {

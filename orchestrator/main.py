@@ -233,6 +233,16 @@ class StageBRequest(BaseModel):
     identity_min_det_score: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
+class RejectRefRequest(BaseModel):
+    """P1-12: mark/unmark a Stage-B candidate output rejected during Stage-C culling."""
+
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
+    output: str | None = None
+    version_id: str | None = None
+    rejected: bool = True
+
+
 class AnchorRequest(BaseModel):
     """Set (job_id+output) or clear (job_id=None) the version's face anchor (R94)."""
 
@@ -413,6 +423,7 @@ def create_app() -> FastAPI:
                                "POST /assets/{id}/casting/star", "POST /assets/{id}/casting/hero",
                                "POST /assets/{id}/stage-b", "POST /assets/{id}/stage-b/matte",
                                "POST /assets/{id}/anchor", "POST /assets/{id}/refs/keep",
+                               "POST /assets/{id}/refs/reject",
                                "POST /assets/{id}/refs/cull", "POST /assets/{id}/save",
                                "POST /components/fetch", "POST /shutdown"],
             "worker_reap": WORKER_REAP,
@@ -1181,6 +1192,31 @@ def create_app() -> FastAPI:
         LOG.info("curate keep: job %s -> asset %s (%d refs)",
                  req.job_id, asset_id, len(version.get("ref_set", [])))
         return version
+
+    @app.post("/assets/{asset_id}/refs/reject")
+    def reject_ref(asset_id: str, req: RejectRefRequest,
+                   _auth: None = Depends(require_token)) -> dict:
+        """P1-12 curation throughput: mark/unmark a Stage-B candidate output as REJECTED —
+        a persistent cull-from-view list (`version.rejected[]`, out/-relative names, no
+        image copy) so the ~100→~30 reject sweep survives reloads. Ownership-guarded like
+        refs/keep; a kept output 409s (cull first). Token-gated."""
+        ws = _require_ws()
+        job = RUNNER.get(req.job_id)
+        if job is None:
+            raise HTTPException(404, f"no such job {req.job_id!r}")
+        vid = _require_job_owned_by(ws, asset_id, req.version_id, job)
+        result = job.get("result") or {}
+        pool = result.get("output_names") or ([result["output_name"]]
+                                              if result.get("output_name") else [])
+        output = req.output or (pool[0] if len(pool) == 1 else None)
+        if not output or output not in pool:
+            raise HTTPException(409, f"output {req.output!r} is not one of job "
+                                     f"{req.job_id!r}'s outputs")
+        try:
+            return assets.reject_output(ws, asset_id, source_output=output,
+                                        version_id=vid, rejected=req.rejected)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(409, str(e))
 
     @app.post("/assets/{asset_id}/refs/cull")
     def cull_ref(asset_id: str, req: CullRefRequest,

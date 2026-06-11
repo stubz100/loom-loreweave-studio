@@ -407,6 +407,31 @@ def keep_ref(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
                  "source_output": source_output, "job_id": job_id, "pipeline": pipeline,
                  "method": method, "seed": seed, "added_at": _now()}
         ref_set.append(entry)
+    # Keeping wins over a stale reject mark (P1-12): un-reject on keep.
+    rej = version.get("rejected") or []
+    if source_output in rej:
+        version["rejected"] = [r for r in rej if r != source_output]
+    return _write_version(vdir, version)
+
+
+def reject_output(ws: Workspace, asset_id: str, *, source_output: str,
+                  version_id: str | None = None, rejected: bool = True) -> dict:
+    """Mark (or unmark, `rejected=False`) a Stage-B candidate output as **rejected**
+    (P1-12 curation throughput): a persistent, lightweight cull-from-view list — no image
+    copy, just the out/-relative name in `version.rejected[]`, so the ~100→~30 reject
+    sweep survives reloads. A KEPT output can't be rejected (cull it first); keeping a
+    rejected output un-rejects it (keep wins). Idempotent both ways."""
+    if ".." in source_output or "\\" in source_output:
+        raise ws_mod.WorkspaceError(f"invalid output {source_output!r}")
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    if rejected and any(r.get("source_output") == source_output
+                        for r in version.get("ref_set", [])):
+        raise ws_mod.WorkspaceError(
+            f"output {source_output!r} is KEPT in the ref_set — cull it before rejecting")
+    rej = [r for r in (version.get("rejected") or []) if r != source_output]
+    if rejected:
+        rej.append(source_output)
+    version["rejected"] = rej
     return _write_version(vdir, version)
 
 

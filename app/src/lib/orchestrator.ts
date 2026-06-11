@@ -329,6 +329,16 @@ export interface ProfileVersion {
   anchor?: AnchorInfo | null;
   ref_set: RefItem[];
   casting: CastingCandidate[];
+  /** P1-12: out/-relative output names rejected during Stage-C culling (persistent). */
+  rejected?: string[];
+}
+
+/** P1-12: mark/unmark a Stage-B candidate output rejected (persistent cull-from-view). */
+export function rejectOutput(assetId: string, jobId: string, output?: string,
+                             rejected = true, versionId?: string) {
+  return postAsset(assetId, "refs/reject", {
+    job_id: jobId, output: output ?? null, rejected, version_id: versionId ?? null,
+  });
 }
 
 /** Set the version's face anchor from an owned job output (M4, R94). */
@@ -518,6 +528,8 @@ export interface ParamSpec {
   modes?: string[];
   note?: string;
   advanced?: boolean;
+  /** clean/polish post-pass param — orchestrator-chained, never a worker flag. */
+  post?: boolean;
 }
 
 export interface PipelineModels {

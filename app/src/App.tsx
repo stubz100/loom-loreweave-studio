@@ -33,6 +33,7 @@ import {
   clearAnchor,
   anchorUrl,
   keepRef,
+  rejectOutput,
   cullRef,
   saveProfile,
   getModels,
@@ -59,6 +60,13 @@ import {
   type StyleInfo,
 } from "./lib/orchestrator";
 import { log } from "./lib/log";
+
+// Coverage-cell vocabulary (frozen P1→P2 contract, coverage.py) — drives the Stage-C
+// curation filters (P1-12). Keep in lockstep with the backend vocab.
+const COV_SHOT_SIZES = ["face_closeup", "portrait", "waist_up", "full_body"];
+const COV_ANGLES = ["front", "three_quarter_left", "three_quarter_right",
+                    "profile_left", "profile_right", "back"];
+const COV_EXPRESSIONS = ["neutral", "smile", "serious", "sad", "surprised"];
 
 // M2 shell — three-pane layout + Job Queue dock (kb-loom-p0.md §10). The stage is
 // a generate bar + a simple selectable result grid (the smoke target / casting-grid
@@ -112,6 +120,14 @@ export default function App() {
   // exists); the checkbox writes an explicit true/false override.
   const [anchorInfo, setAnchorInfo] = useState<AnchorInfo | null>(null);
   const [identityOn, setIdentityOn] = useState<boolean | null>(null);
+  // P1-12 — curation throughput: persistent rejected[] (version.json), coverage-cell
+  // filters, and a bulk-select set (cell keys) for keep/reject sweeps (~100→~30).
+  const [rejected, setRejected] = useState<string[]>([]);
+  const [filterShot, setFilterShot] = useState("");
+  const [filterAngle, setFilterAngle] = useState("");
+  const [filterExpr, setFilterExpr] = useState("");
+  const [showRejected, setShowRejected] = useState(false);
+  const [bulkSel, setBulkSel] = useState<Set<string>>(new Set());
   const [characterClause, setCharacterClause] = useState("");
   const [promptTemplate, setPromptTemplate] = useState("");
   const [refSet, setRefSet] = useState<RefItem[]>([]);
@@ -497,6 +513,7 @@ export default function App() {
       setRefSet([]);
       setPromptTemplate("");
       setAnchorInfo(null);
+      setRejected([]);
       return;
     }
     try {
@@ -506,10 +523,12 @@ export default function App() {
       setRefSet(v?.ref_set ?? []);
       setPromptTemplate(v?.prompt_template ?? "");
       setAnchorInfo(v?.anchor ?? null);
+      setRejected(v?.rejected ?? []);
     } catch {
       setCasting([]);
       setRefSet([]);
       setAnchorInfo(null);
+      setRejected([]);
     }
   };
 
@@ -517,6 +536,8 @@ export default function App() {
     setActiveAsset(asset);
     setSelected(null);
     setStage("A");
+    setBulkSel(new Set());
+    setFilterShot(""); setFilterAngle(""); setFilterExpr("");
     void refreshCasting(asset);
     void refreshJobs(); // refresh jobs so the derived asset grid is current
   };
@@ -679,12 +700,26 @@ export default function App() {
     }
   };
 
+  // P1-12: mark/unmark a candidate rejected (persistent cull-from-view, no image copy).
+  const onReject = async (jobId: string, output: string | undefined, flag: boolean) => {
+    if (!activeAsset) return;
+    try {
+      const version = await rejectOutput(activeAsset.id, jobId, output, flag);
+      setRejected(version.rejected ?? []);
+      setRefSet(version.ref_set);
+    } catch (e) {
+      log.error("reject failed:", e);
+      setError(String(e));
+    }
+  };
+
   // Stage-C curation: keep ✓ a candidate into the curated ref_set / cull ✕ a kept one.
   const onKeep = async (jobId: string, output?: string) => {
     if (!activeAsset) return;
     try {
       const version = await keepRef(activeAsset.id, jobId, output);
       setRefSet(version.ref_set);
+      setRejected(version.rejected ?? []);   // keep wins over a stale reject mark
     } catch (e) {
       log.error("keep failed:", e);
       setError(String(e));
@@ -815,6 +850,78 @@ export default function App() {
     }
     return [{ key: id, job, output: job?.result?.output_name }];
   });
+
+  // P1-12 — Stage-C curation throughput: coverage-cell filters + hide-rejected. The
+  // cell's coverage comes from per-output meta (batch jobs) or the job field (legacy).
+  const rejectedSet = new Set(rejected);
+  const covOf = (c: Cell) =>
+    (c.output ? c.job?.result?.output_meta?.[c.output]?.coverage_cell : undefined)
+    ?? c.job?.coverage_cell ?? undefined;
+  const stageCells = stage !== "C" ? cells : cells.filter((c) => {
+    if (!showRejected && c.output && rejectedSet.has(c.output)) return false;
+    const cov = covOf(c);
+    if (filterShot && cov?.shot_size !== filterShot) return false;
+    if (filterAngle && cov?.angle !== filterAngle) return false;
+    if (filterExpr && cov?.expression !== filterExpr) return false;
+    return true;
+  });
+
+  // Bulk keep/reject over the selected cell keys (per-item isolation: one 409 — e.g. a
+  // pre-lock tile — doesn't abort the sweep; authoritative state refreshed once at the end).
+  const onBulk = async (action: "keep" | "reject") => {
+    if (!activeAsset || bulkSel.size === 0) return;
+    setBusy(true);
+    setError(null);
+    const errs: string[] = [];
+    for (const key of bulkSel) {
+      const i = key.indexOf(":");
+      const jobId = i === -1 ? key : key.slice(0, i);
+      const output = i === -1 ? jobs[key]?.result?.output_name ?? undefined : key.slice(i + 1);
+      try {
+        if (action === "keep") await keepRef(activeAsset.id, jobId, output);
+        else await rejectOutput(activeAsset.id, jobId, output, true);
+      } catch (e) {
+        errs.push(String(e));
+      }
+    }
+    await refreshCasting(activeAsset);
+    setBulkSel(new Set());
+    setBusy(false);
+    if (errs.length) setError(`${errs.length} item(s) failed — first: ${errs[0]}`);
+  };
+
+  // Keyboard curation (P1-12): arrows move the selection, k = keep, x = toggle reject,
+  // space = toggle bulk-select. Stage C only; the grid div is focusable.
+  const onGridKey = (e: React.KeyboardEvent) => {
+    if (stage !== "C" || stageCells.length === 0) return;
+    const idx = Math.max(0, stageCells.findIndex((c) => c.key === selected));
+    let next = -1;
+    if (e.key === "ArrowRight") next = Math.min(idx + 1, stageCells.length - 1);
+    else if (e.key === "ArrowLeft") next = Math.max(idx - 1, 0);
+    else if (e.key === "ArrowDown") next = Math.min(idx + 5, stageCells.length - 1);
+    else if (e.key === "ArrowUp") next = Math.max(idx - 5, 0);
+    if (next !== -1) {
+      e.preventDefault();
+      setSelected(stageCells[next].key);
+      return;
+    }
+    const cur = stageCells[idx];
+    if (!cur?.job || cur.job.status !== "done") return;
+    if (e.key === "k") {
+      e.preventDefault();
+      void onKeep(cur.job.id, cur.output);
+    } else if (e.key === "x") {
+      e.preventDefault();
+      void onReject(cur.job.id, cur.output, !(cur.output && rejectedSet.has(cur.output)));
+    } else if (e.key === " ") {
+      e.preventDefault();
+      setBulkSel((s) => {
+        const n = new Set(s);
+        if (n.has(cur.key)) n.delete(cur.key); else n.add(cur.key);
+        return n;
+      });
+    }
+  };
 
   return (
     <div className="app">
@@ -1201,6 +1308,57 @@ export default function App() {
             </div>
           )}
 
+          {/* Stage C — curation throughput (P1-12): filters + bulk keep/reject + keys */}
+          {activeAsset && stage === "C" && (
+            <div className="generate-bar curate-bar">
+              <label title="filter by coverage shot size">
+                shot
+                <select value={filterShot} onChange={(e) => setFilterShot(e.target.value)}>
+                  <option value="">all</option>
+                  {COV_SHOT_SIZES.map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </label>
+              <label title="filter by coverage angle">
+                angle
+                <select value={filterAngle} onChange={(e) => setFilterAngle(e.target.value)}>
+                  <option value="">all</option>
+                  {COV_ANGLES.map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </label>
+              <label title="filter by coverage expression">
+                expr
+                <select value={filterExpr} onChange={(e) => setFilterExpr(e.target.value)}>
+                  <option value="">all</option>
+                  {COV_EXPRESSIONS.map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </label>
+              <label title="show tiles you already rejected (dimmed; ↩ to un-reject)">
+                <input type="checkbox" checked={showRejected}
+                       onChange={(e) => setShowRejected(e.target.checked)} />
+                show rejected
+              </label>
+              <span className="muted">
+                kept {refSet.length} · rejected {rejected.length} · showing{" "}
+                {stageCells.length}/{cells.length}
+              </span>
+              {bulkSel.size > 0 && (
+                <>
+                  <button className="proj-btn" onClick={() => void onBulk("keep")}
+                          disabled={busy} title="keep every selected tile into the ref set">
+                    ✓ keep {bulkSel.size}
+                  </button>
+                  <button className="proj-btn" onClick={() => void onBulk("reject")}
+                          disabled={busy} title="reject every selected tile (persistent, reversible)">
+                    ✕ reject {bulkSel.size}
+                  </button>
+                  <button className="ghost" onClick={() => setBulkSel(new Set())}>clear</button>
+                </>
+              )}
+              <span className="muted" title="click the grid first so it has keyboard focus">
+                keys: ←→↑↓ move · k keep · x reject · space select
+              </span>
+            </div>
+          )}
           {/* Stage C — Save the curated AssetProfile (the MVP done-line) */}
           {activeAsset && stage === "C" && (
             <div className="style-bar">
@@ -1277,8 +1435,8 @@ export default function App() {
           )}
           {error && <div className="error">⚠ {error}</div>}
 
-          <div className="grid">
-            {cells.length === 0 && (
+          <div className="grid" tabIndex={0} onKeyDown={onGridKey}>
+            {stageCells.length === 0 && (
               <p className="muted center span">
                 {!activeAsset
                   ? "Fire a batch — results stream in here (the casting-grid embryo)."
@@ -1286,10 +1444,12 @@ export default function App() {
                   ? `Cast ${activeAsset.name} — candidates stream into this grid (Stage A).`
                   : stage === "B"
                   ? "Pick a recipe + Generate Dataset — img2img variations stream in (Stage B)."
+                  : cells.length > 0
+                  ? "Nothing matches the curation filters — relax them (or untick a filter)."
                   : "Stage-B candidates appear here to keep ✓ / cull ✕ into the curated ref set (Stage C)."}
               </p>
             )}
-            {cells.map((c) => (
+            {stageCells.map((c) => (
               <GridCell
                 key={c.key}
                 job={c.job}
@@ -1309,6 +1469,14 @@ export default function App() {
                   const rid = c.output ? keptByOutput.get(c.output) : undefined;
                   if (rid) onCull(rid);
                 }}
+                isRejected={!!c.output && rejectedSet.has(c.output)}
+                onReject={(flag) => c.job && onReject(c.job.id, c.output, flag)}
+                bulkSelected={bulkSel.has(c.key)}
+                onToggleBulk={() => setBulkSel((s) => {
+                  const n = new Set(s);
+                  if (n.has(c.key)) n.delete(c.key); else n.add(c.key);
+                  return n;
+                })}
               />
             ))}
           </div>
@@ -1502,6 +1670,10 @@ function GridCell({
   isKept = false,
   onKeep,
   onCull,
+  isRejected = false,
+  onReject,
+  bulkSelected = false,
+  onToggleBulk,
 }: {
   job?: Job;
   output?: string;
@@ -1517,6 +1689,10 @@ function GridCell({
   isKept?: boolean;
   onKeep?: () => void;
   onCull?: () => void;
+  isRejected?: boolean;
+  onReject?: (flag: boolean) => void;
+  bulkSelected?: boolean;
+  onToggleBulk?: () => void;
 }) {
   const status = job?.status ?? "queued";
   // For a multi candidate, `output` is this tile's specific image; else the job's single output.
@@ -1538,7 +1714,7 @@ function GridCell({
   const preLock = done && pendingPasses.length > 0;
   return (
     <div
-      className={`cell ${selected ? "sel" : ""} ${isHero ? "hero" : ""} ${isKept ? "kept" : ""} st-${status}`}
+      className={`cell ${selected ? "sel" : ""} ${isHero ? "hero" : ""} ${isKept ? "kept" : ""} ${isRejected ? "rejected" : ""} ${bulkSelected ? "bulksel-on" : ""} st-${status}`}
       style={{ aspectRatio: `${w} / ${h}` }}
       role="button"
       tabIndex={0}
@@ -1615,6 +1791,30 @@ function GridCell({
           }}
         >
           {isKept ? "✓" : "+"}
+        </button>
+      )}
+      {curating && done && onReject && !isKept && (
+        <button
+          className={`reject ${isRejected ? "on" : ""}`}
+          title={isRejected ? "rejected — click to un-reject (↩)" : "reject ✕ (persistent cull-from-view; reversible)"}
+          onClick={(e) => {
+            e.stopPropagation();
+            onReject(!isRejected);
+          }}
+        >
+          {isRejected ? "↩" : "✕"}
+        </button>
+      )}
+      {curating && done && onToggleBulk && (
+        <button
+          className={`bulksel ${bulkSelected ? "on" : ""}`}
+          title="select for bulk keep/reject (or press space on the focused tile)"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleBulk();
+          }}
+        >
+          {bulkSelected ? "■" : "□"}
         </button>
       )}
     </div>
@@ -1716,11 +1916,36 @@ function ParamControls({
       && (!s.modes || s.modes.includes(mode)),
   );
   if (visible.length === 0) return <span className="muted">no tunables for this pipeline/mode</span>;
+  // Grouped blocks (user request 2026-06-11): base model/generation tunables first, then
+  // one block per post-pass family (clean / polish / future postproc) — the flat mix made
+  // the drawer unreadable once the post-pass params joined every pipeline.
+  const isFamily = (s: ParamSpec, fam: string) =>
+    s.name === fam || s.name.startsWith(`${fam}_`);
+  const groups: Array<[string, ParamSpec[]]> = [
+    ["model / generation", visible.filter((s) => !s.post)],
+    ["clean pass", visible.filter((s) => !!s.post && isFamily(s, "clean"))],
+    ["polish pass", visible.filter((s) => !!s.post && isFamily(s, "polish"))],
+    ["other postproc", visible.filter(
+      (s) => !!s.post && !isFamily(s, "clean") && !isFamily(s, "polish"))],
+  ];
   return (
     <>
-      {visible.map((s) => {
-        const v = values[s.name];
-        const title = s.note ?? "";
+      {groups.filter(([, g]) => g.length > 0).map(([label, g]) => (
+        <div key={label} className="p-group">
+          <span className="p-group-label">{label}</span>
+          {g.map((s) => renderParamControl(s, values[s.name], onChange))}
+        </div>
+      ))}
+    </>
+  );
+}
+
+function renderParamControl(
+  s: ParamSpec,
+  v: unknown,
+  onChange: (name: string, value: unknown) => void,
+) {
+  const title = s.note ?? "";
         if (s.type === "flag") {
           return (
             <label key={s.name} className="p-flag" title={title}>
@@ -1778,9 +2003,6 @@ function ParamControls({
             />
           </label>
         );
-      })}
-    </>
-  );
 }
 
 function clamp(n: number, lo: number, hi: number): number {

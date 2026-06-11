@@ -233,6 +233,20 @@ class StageBRequest(BaseModel):
     identity_min_det_score: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
+class CreateVersionRequest(BaseModel):
+    """M5 copy-on-create (R50/R58/R59): deep-duplicate ANY prior version (default: the
+    active one) into a fresh, unlocked version that becomes active."""
+
+    model_config = ConfigDict(extra="forbid")
+    parent_version_id: str | None = None
+    name: str | None = None
+
+
+class ActivateVersionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version_id: str
+
+
 class RejectRefRequest(BaseModel):
     """P1-12: mark/unmark a Stage-B candidate output rejected during Stage-C culling."""
 
@@ -444,7 +458,10 @@ def create_app() -> FastAPI:
                                "POST /project/forget", "PUT /bible/style", "POST /assets",
                                "POST /assets/{id}/casting/star", "POST /assets/{id}/casting/hero",
                                "POST /assets/{id}/stage-b", "POST /assets/{id}/stage-b/matte",
-                               "POST /assets/{id}/anchor", "POST /assets/{id}/refs/keep",
+                               "POST /assets/{id}/anchor", "POST /assets/{id}/versions",
+                               "POST /assets/{id}/versions/{vid}/finalize",
+                               "POST /assets/{id}/versions/activate",
+                               "POST /assets/{id}/refs/keep",
                                "POST /assets/{id}/refs/reject",
                                "POST /assets/{id}/refs/cull", "POST /assets/{id}/save",
                                "POST /components/fetch", "POST /shutdown"],
@@ -1102,6 +1119,40 @@ def create_app() -> FastAPI:
                             requester_id=vid, profile_version_id=vid, stage="B")
         LOG.info("stage-b matte: %s for %s (hero %s)", jid, vid, hero_path.name)
         return {"job_id": jid, "batch_id": batch_id, "hero": str(hero_path)}
+
+    @app.post("/assets/{asset_id}/versions")
+    def create_version(asset_id: str, req: CreateVersionRequest,
+                       _auth: None = Depends(require_token)) -> dict:
+        """M5 — copy-on-create (R50/R58/R59): a FULL deep-duplicate of any prior version
+        (refs, casting, face anchor incl. its verification; `derived_from` recorded),
+        fresh + unlocked, made active. Big change → new *profile* instead (author's
+        call, no hints — R61). Token-gated."""
+        try:
+            return assets.create_version(_require_ws(), asset_id,
+                                         parent_version_id=req.parent_version_id,
+                                         name=req.name)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/assets/{asset_id}/versions/{version_id}/finalize")
+    def finalize_version(asset_id: str, version_id: str,
+                         _auth: None = Depends(require_token)) -> dict:
+        """M5 — finalize = pure-intent lock (R60): the version becomes immutable (every
+        mutator refuses); change means a new version. Idempotent. Token-gated."""
+        try:
+            return assets.finalize_version(_require_ws(), asset_id, version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/assets/{asset_id}/versions/activate")
+    def activate_version(asset_id: str, req: ActivateVersionRequest,
+                         _auth: None = Depends(require_token)) -> dict:
+        """M5 — switch the active version (the selector); grids/casting/curation/Stage-B
+        all scope to it. Returns the updated profile. Token-gated."""
+        try:
+            return assets.set_active_version(_require_ws(), asset_id, req.version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
 
     @app.post("/assets/{asset_id}/anchor")
     def set_anchor(asset_id: str, req: AnchorRequest,

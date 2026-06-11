@@ -303,6 +303,10 @@ body {
 .grid:focus { outline: 1px solid var(--line); outline-offset: -1px; }
 .curate-bar .muted { font-size: 11px; }
 
+/* M5 version selector (stage-ctx bar) */
+.stage-ctx .ver-select { margin: 0 6px; max-width: 180px; }
+.stage-ctx .ghost { margin-right: 4px; }
+
 /* Params drawer blocks (user request 2026-06-11): base / clean / polish / postproc */
 .p-group {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center;

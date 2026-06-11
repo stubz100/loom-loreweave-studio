@@ -102,6 +102,90 @@ def create_asset(ws: Workspace, *, name: str, asset_class: str = "characters") -
     return {"profile": profile, "versions": [version]}
 
 
+# --- M5: profile versioning (R49–R51, R58–R61, §3.4) -----------------------------
+
+def _require_unlocked(version: dict) -> None:
+    """Finalize = pure-intent lock (R60): a finalized version is immutable — every
+    mutator calls this first; change means a NEW version (or profile — author's call,
+    no hints, R61)."""
+    if version.get("finalized"):
+        raise ws_mod.WorkspaceError(
+            f"version {version.get('name') or version.get('id')!r} is FINALIZED (locked, "
+            "R60) — create a new version to change anything")
+
+
+def create_version(ws: Workspace, asset_id: str, *, parent_version_id: str | None = None,
+                   name: str | None = None) -> dict:
+    """Copy-on-create (R50/R58/R59): a **full deep-duplicate** of ANY prior version
+    (default: the active one) — own copies of casting/, refs/, faces/ (anchor incl. its
+    durable verification stamp: the file is byte-identical, the proof carries), the
+    records as-is, `derived_from` = the parent, fresh id, **unlocked** (R51: copy freezes
+    a baseline → edit only what differs → finalize). The new version becomes active."""
+    found = _find_profile(ws, asset_id)
+    if found is None:
+        raise ws_mod.WorkspaceError(f"unknown asset {asset_id!r}")
+    adir, profile = found
+    parent_id = parent_version_id or profile["active_version"]
+    if parent_id not in profile["versions"]:
+        raise ws_mod.WorkspaceError(f"version {parent_id!r} not in asset {asset_id!r}")
+    pfound = _find_version(adir, parent_id)
+    if pfound is None:
+        raise ws_mod.WorkspaceError(f"parent version {parent_id!r} is unloadable")
+    pdir, parent = pfound
+
+    n = len(profile["versions"]) + 1
+    vname = (name or "").strip() or f"v{n}"
+    looks_versioned = vname.startswith("v") and vname[1:2].isdigit()
+    dirname = slugify(vname) if looks_versioned else f"v{n}_{slugify(vname)}"
+    vdir = adir / "versions" / dirname
+    if vdir.exists():
+        raise ws_mod.WorkspaceError(f"version dir {dirname!r} already exists — pick "
+                                    "another name")
+
+    shutil.copytree(pdir, vdir)
+    ver_id = new_id("ver")
+    version = dict(parent)
+    version.update({"id": ver_id, "name": vname, "derived_from": parent_id,
+                    "finalized": False, "saved_at": _now()})
+    ws_mod.validate(version, "version.schema.json")
+    ws_mod.atomic_write_json(vdir / "version.json", version)
+
+    profile["versions"] = [*profile["versions"], ver_id]
+    profile["active_version"] = ver_id
+    ws_mod.validate(profile, "profile.schema.json")
+    ws_mod.atomic_write_json(adir / "profile.json", profile)
+    return {"profile": profile, "version": version}
+
+
+def finalize_version(ws: Workspace, asset_id: str,
+                     version_id: str | None = None) -> dict:
+    """Finalize = pure-intent lock (R60): declare the version done → immutable.
+    Idempotent (re-finalizing a locked version is a no-op, not an error)."""
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    if version.get("finalized"):
+        return version
+    version["finalized"] = True
+    version["saved_at"] = _now()
+    return _write_version(vdir, version)
+
+
+def set_active_version(ws: Workspace, asset_id: str, version_id: str) -> dict:
+    """Switch the profile's active version (the version selector; everything downstream
+    — grids, casting, curation, Stage-B — scopes to it). Returns the updated profile."""
+    found = _find_profile(ws, asset_id)
+    if found is None:
+        raise ws_mod.WorkspaceError(f"unknown asset {asset_id!r}")
+    adir, profile = found
+    if version_id not in profile["versions"]:
+        raise ws_mod.WorkspaceError(f"version {version_id!r} not in asset {asset_id!r}")
+    if _find_version(adir, version_id) is None:
+        raise ws_mod.WorkspaceError(f"version {version_id!r} is unloadable")
+    profile["active_version"] = version_id
+    ws_mod.validate(profile, "profile.schema.json")
+    ws_mod.atomic_write_json(adir / "profile.json", profile)
+    return profile
+
+
 # --- read -----------------------------------------------------------------------
 
 def _iter_profiles(ws: Workspace):
@@ -254,6 +338,7 @@ def star_candidate(ws: Workspace, asset_id: str, *, job_id: str, source_output: 
     `<job>/<file>`; for a `multi` cast (one job → N candidates) it's the specific candidate
     file, so the candidate (not the job) is the identity (dedup key)."""
     vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    _require_unlocked(version)                      # finalized = immutable (R60, M5)
     casting = version.setdefault("casting", [])
     # Identity is the specific output, not the job (a multi job yields N candidates).
     entry = next((c for c in casting if c.get("source_output") == source_output), None)
@@ -290,6 +375,7 @@ def set_hero(ws: Workspace, asset_id: str, *, candidate_id: str | None,
     """Set (or clear, with `candidate_id=None`) the hero ★ among already-recorded casting
     candidates. Raises if `candidate_id` isn't in the version's casting set."""
     vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    _require_unlocked(version)                      # finalized = immutable (R60, M5)
     casting = version.get("casting", [])
     if candidate_id is not None and not any(c["id"] == candidate_id for c in casting):
         raise ws_mod.WorkspaceError(f"candidate {candidate_id!r} not in casting set")
@@ -335,6 +421,7 @@ def set_anchor(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
     into the version's `faces/anchor.png` so a Saved version is self-contained. Re-picking
     overwrites (per-version, re-pickable — scar/tattoo)."""
     vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    _require_unlocked(version)                      # finalized = immutable (R60, M5)
     if ".." in source_output or "\\" in source_output:
         raise ws_mod.WorkspaceError(f"invalid output {source_output!r}")
     src = (ws.out_dir / source_output).resolve()
@@ -352,6 +439,7 @@ def set_anchor(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
 def clear_anchor(ws: Workspace, asset_id: str, version_id: str | None = None) -> dict:
     """Opt the version out of the face anchor (R93). The copied file is removed too."""
     vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    _require_unlocked(version)                      # finalized = immutable (R60, M5)
     anchor = version.get("anchor")
     if anchor and anchor.get("file"):
         try:
@@ -378,6 +466,8 @@ def mark_anchor_verified(ws: Workspace, version_id: str, *, anchor_path: str,
         if found is None:
             return False
         vdir, version = found
+        if version.get("finalized"):
+            return False                  # locked (R60) — even metadata stays immutable
         anchor = version.get("anchor")
         if not anchor or not anchor.get("file"):
             return False
@@ -421,6 +511,7 @@ def keep_ref(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
     cell / unsafe output / missing source."""
     coverage.validate_cell(coverage_cell)                  # frozen-contract guard
     vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    _require_unlocked(version)                      # finalized = immutable (R60, M5)
     ref_set = version.setdefault("ref_set", [])
     entry = next((r for r in ref_set if r.get("source_output") == source_output), None)
     if entry is None:
@@ -458,6 +549,7 @@ def reject_output(ws: Workspace, asset_id: str, *, source_output: str,
     if ".." in source_output or "\\" in source_output:
         raise ws_mod.WorkspaceError(f"invalid output {source_output!r}")
     vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    _require_unlocked(version)                      # finalized = immutable (R60, M5)
     if rejected and any(r.get("source_output") == source_output
                         for r in version.get("ref_set", [])):
         raise ws_mod.WorkspaceError(
@@ -474,6 +566,7 @@ def remove_ref(ws: Workspace, asset_id: str, *, ref_id: str,
     """Cull a kept ref (un-keep): drop it from `ref_set` + delete its copied `refs/` image +
     sidecar. Raises if `ref_id` isn't in the set."""
     vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    _require_unlocked(version)                      # finalized = immutable (R60, M5)
     ref_set = version.get("ref_set", [])
     entry = next((r for r in ref_set if r.get("id") == ref_id), None)
     if entry is None:

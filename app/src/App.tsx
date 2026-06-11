@@ -34,6 +34,9 @@ import {
   anchorUrl,
   keepRef,
   rejectOutput,
+  createVersion,
+  finalizeVersion,
+  activateVersion,
   cullRef,
   saveProfile,
   getModels,
@@ -55,6 +58,7 @@ import {
   type RecipePreset,
   type AnchorInfo,
   type RefItem,
+  type ProfileVersion,
   type StageBPreview,
   type StageBRequest,
   type StyleInfo,
@@ -123,6 +127,8 @@ export default function App() {
   // P1-12 — curation throughput: persistent rejected[] (version.json), coverage-cell
   // filters, and a bulk-select set (cell keys) for keep/reject sweeps (~100→~30).
   const [rejected, setRejected] = useState<string[]>([]);
+  // M5 — the asset's version records (the selector reads name/finalized per id).
+  const [versionList, setVersionList] = useState<ProfileVersion[]>([]);
   const [filterShot, setFilterShot] = useState("");
   const [filterAngle, setFilterAngle] = useState("");
   const [filterExpr, setFilterExpr] = useState("");
@@ -514,6 +520,7 @@ export default function App() {
       setPromptTemplate("");
       setAnchorInfo(null);
       setRejected([]);
+      setVersionList([]);
       return;
     }
     try {
@@ -524,11 +531,68 @@ export default function App() {
       setPromptTemplate(v?.prompt_template ?? "");
       setAnchorInfo(v?.anchor ?? null);
       setRejected(v?.rejected ?? []);
+      setVersionList(detail.versions ?? []);
     } catch {
       setCasting([]);
       setRefSet([]);
       setAnchorInfo(null);
       setRejected([]);
+      setVersionList([]);
+    }
+  };
+
+  // M5 — version ops. Switching/creating resets the per-version Stage-B controls (the
+  // same leak class the asset switch had) and re-scopes everything via refreshCasting.
+  const _switchToVersion = async (activeVersion: string) => {
+    if (!activeAsset) return;
+    const updated = { ...activeAsset, active_version: activeVersion };
+    setActiveAsset(updated);
+    setSelected(null);
+    setBulkSel(new Set());
+    setRealize("img2img");
+    setIdentityOn(null);
+    await refreshCasting(updated);
+    void refreshAssets();
+  };
+
+  const onCreateVersion = async () => {
+    if (!activeAsset) return;
+    const name = window.prompt(
+      "New version name (full copy of the active version — refs, casting, anchor):",
+      "");
+    if (name === null) return;
+    setError(null);
+    try {
+      const res = await createVersion(activeAsset.id, name.trim() || undefined);
+      log.info("version:", res.version.id, `(${res.version.name}) copied — now active`);
+      await _switchToVersion(res.profile.active_version);
+    } catch (e) {
+      log.error("create version failed:", e);
+      setError(String(e));
+    }
+  };
+
+  const onActivateVersion = async (vid: string) => {
+    if (!activeAsset || vid === activeAsset.active_version) return;
+    setError(null);
+    try {
+      const profile = await activateVersion(activeAsset.id, vid);
+      await _switchToVersion(profile.active_version);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const onFinalizeVersion = async () => {
+    if (!activeAsset) return;
+    if (!window.confirm("Finalize = LOCK this version (R60): immutable afterwards — "
+                        + "any change needs a new version. Continue?")) return;
+    setError(null);
+    try {
+      await finalizeVersion(activeAsset.id, activeAsset.active_version);
+      await refreshCasting(activeAsset);
+    } catch (e) {
+      setError(String(e));
     }
   };
 
@@ -1029,7 +1093,44 @@ export default function App() {
           {activeAsset && (
             <div className="stage-ctx">
               <span className="ctx-asset">{activeAsset.name}</span>
-              <span className="muted"> · v1_base · CHARACTER BOOTSTRAP — </span>
+              <select
+                className="ver-select"
+                value={activeAsset.active_version}
+                onChange={(e) => void onActivateVersion(e.target.value)}
+                title="version selector (M5) — everything below is scoped to the active version"
+              >
+                {(versionList.length ? versionList
+                  : [{ id: activeAsset.active_version, name: "v1_base", finalized: false } as ProfileVersion]
+                ).map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}{v.finalized ? " 🔒" : ""}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="ghost"
+                onClick={() => void onCreateVersion()}
+                title="copy-on-create (R50/R58): a FULL deep-duplicate of the active version (refs, casting, face anchor) — fresh + unlocked, becomes active"
+              >
+                + version
+              </button>
+              {versionList.find((v) => v.id === activeAsset.active_version)?.finalized ? (
+                <span
+                  className="muted"
+                  title="finalized = locked (R60): immutable — create a new version to change anything"
+                >
+                  🔒 finalized
+                </span>
+              ) : (
+                <button
+                  className="ghost"
+                  onClick={() => void onFinalizeVersion()}
+                  title="finalize = pure-intent lock (R60): the version becomes immutable"
+                >
+                  finalize 🔒
+                </button>
+              )}
+              <span className="muted"> · CHARACTER BOOTSTRAP — </span>
               <span className="stage-switch">
                 {([["A", "Casting"], ["B", "Expansion"], ["C", "Curation"]] as const).map(
                   ([s, label]) => (

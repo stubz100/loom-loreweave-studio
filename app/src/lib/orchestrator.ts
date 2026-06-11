@@ -361,6 +361,43 @@ export function anchorUrl(assetId: string, versionId?: string): string {
   return `${orchestratorUrl()}/assets/${assetId}/anchor/file${q}`;
 }
 
+// --- M5: profile versioning (copy-on-create, finalize/lock, active switch) --------
+
+/** Deep-copy `parentVersionId` (default: the active version) into a fresh, unlocked
+ * version that becomes active (R50/R58/R59). */
+export async function createVersion(assetId: string, name?: string, parentVersionId?: string):
+    Promise<{ profile: { active_version: string; versions: string[] }; version: ProfileVersion }> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/versions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ name: name ?? null, parent_version_id: parentVersionId ?? null }),
+  });
+  if (!res.ok) throw new Error(`create version ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+/** Finalize = pure-intent lock (R60): the version becomes immutable. Idempotent. */
+export async function finalizeVersion(assetId: string, versionId: string): Promise<ProfileVersion> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/versions/${encodeURIComponent(versionId)}/finalize`, {
+    method: "POST",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`finalize ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+/** Switch the profile's active version — everything downstream scopes to it. */
+export async function activateVersion(assetId: string, versionId: string):
+    Promise<{ active_version: string }> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/versions/activate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ version_id: versionId }),
+  });
+  if (!res.ok) throw new Error(`activate ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
 export interface AssetDetail {
   profile: AssetSummary;
   versions: ProfileVersion[];

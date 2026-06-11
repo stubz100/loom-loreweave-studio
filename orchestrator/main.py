@@ -264,12 +264,16 @@ class HeroRequest(BaseModel):
 class KeepRefRequest(BaseModel):
     """Stage-C curation (M3): keep a completed Stage-B candidate into the version's curated
     `ref_set`. `job_id` is the Stage-B img2img job (it carries the coverage_cell); `output`
-    selects a specific output if the job produced more than one (img2img = one, so optional)."""
+    selects a specific output if the job produced more than one (img2img = one, so optional).
+    `allow_unlocked` (M4 review): explicit escape hatch to curate a NON-terminal output —
+    one whose job still has pending post-passes (e.g. the pre-identity-lock image of a
+    stopped chain). Default-safe: off."""
 
     model_config = ConfigDict(extra="forbid")
     job_id: str
     output: str | None = None
     version_id: str | None = None
+    allow_unlocked: bool = False
 
 
 class CullRefRequest(BaseModel):
@@ -877,11 +881,37 @@ def create_app() -> FastAPI:
 
         # M4 — identity-lock pass (R86/R93): swap every cell's face to the version's
         # anchor (spike: anchor cos 0.105→0.870, CPU). ON by default once an anchor
-        # exists; opt-out with identity=false; identity=true without an anchor → 422.
+        # exists **and is VERIFIED** (M4 review, Medium: a no-face anchor only fails
+        # inside the worker — default-on must not arm a bad anchor); opt-out with
+        # identity=false; identity=true = allowed even unverified (that run IS the
+        # verification — the worker hard-fails on a faceless anchor with a clear error,
+        # and a later sweep sees the successful run and defaults on). Verification is
+        # COMPUTED from job history, no stored flag: a done+ok identity job for this
+        # version using this anchor file, started after the anchor was (re-)picked.
         # Appended LAST so the lock is the final word (a later polish would re-diffuse
         # the swapped face). No-face cells (back views) pass through unchanged.
+        anchor_rec = version.get("anchor")
         anchor_path = assets.anchor_file_path(ws, asset_id, req.version_id)
-        want_identity = req.identity if req.identity is not None else (anchor_path is not None)
+        anchor_ok = False
+        if anchor_path is not None:
+            set_at = (anchor_rec or {}).get("set_at") or ""
+            target = str(anchor_path)
+            anchor_ok = any(
+                j.get("pipeline") == "identity" and j.get("status") == "done"
+                and j.get("profile_version_id") == vid
+                and (j.get("params") or {}).get("anchor_image") == target
+                and (j.get("result") or {}).get("ok")
+                and (j.get("created_at") or "") >= set_at
+                for j in list(RUNNER.jobs.values()))
+        identity_note = None
+        if req.identity is not None:
+            want_identity = req.identity
+        else:
+            want_identity = anchor_path is not None and anchor_ok
+            if anchor_path is not None and not anchor_ok:
+                identity_note = ("anchor UNVERIFIED — identity defaulted OFF; run once with "
+                                 "identity:true (the worker verifies the anchor face on its "
+                                 "first run) to enable default-on")
         if want_identity:
             if anchor_path is None:
                 raise HTTPException(422, "identity pass needs a face anchor — pick one first "
@@ -926,6 +956,7 @@ def create_app() -> FastAPI:
             return {"dry_run": True, "preset": req.preset, "pipeline": req.pipeline,
                     "planned_jobs": len(groups), "items": built["target"], "split": split,
                     "realize": req.realize, "bg_mask": req.bg_mask,
+                    "identity": want_identity, "identity_note": identity_note,
                     "kept_target": built["kept_target"], "post_passes": post_passes,
                     "hero": str(hero_path), "first_cell": cell0,
                     "first_argv": ADAPTERS[req.pipeline].build_argv(spec, CONFIG.venv_python, script)}
@@ -974,6 +1005,7 @@ def create_app() -> FastAPI:
                  batch_id, req.preset, req.realize, len(job_ids), split, vid, hero_path.name)
         return {"batch_id": batch_id, "preset": req.preset, "count": len(job_ids),
                 "items": len(cells), "split": split, "realize": req.realize,
+                "identity": want_identity, "identity_note": identity_note,
                 "job_ids": job_ids, "kept_target": built["kept_target"]}
 
     @app.post("/assets/{asset_id}/stage-b/matte")
@@ -1102,6 +1134,19 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"no such job {req.job_id!r}")
         if job.get("status") != "done":
             raise HTTPException(409, "can only keep a completed (done) candidate")
+        # Terminal-output guard (M4 review, High): a job with PENDING post-passes is not the
+        # end of its chain — its outputs are pre-clean/pre-polish/pre-IDENTITY-LOCK images,
+        # and curating them silently poisons the ref_set/P2 corpus (the whole point of
+        # identity-on-by-default). Curate the terminal pass job's outputs instead. The
+        # explicit `allow_unlocked` escape covers the legitimate case (e.g. a ⏹-stopped
+        # chain whose passes were deliberately not run).
+        pending = job.get("post_passes") or []
+        if pending and not req.allow_unlocked:
+            names = " → ".join(p.get("pass", "?") for p in pending)
+            raise HTTPException(409, f"this output is NOT the end of its pass chain — "
+                                     f"{names} pass(es) pending/un-run; curate the terminal "
+                                     "pass outputs instead, or set allow_unlocked=true to "
+                                     "keep the un-processed image deliberately")
         # Scope guard: the job must belong to the asset/version being curated into — never let a
         # stale / cross-asset / manual call write Asset A's output into Asset B's ref_set.
         vid = _require_job_owned_by(ws, asset_id, req.version_id, job)

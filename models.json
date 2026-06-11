@@ -64,7 +64,8 @@
       {"id": "birefnet-hr", "repo_id": "ZhengPeng7/BiRefNet_HR", "probe": "config.json", "gated": false, "pipeline": "birefnet", "note": "MIT; high-res 2048 variant (~0.9 GB). Entry ids mirror the catalog variant ids — the matte endpoint's gate is VARIANT-aware (checks only the chosen one)"}
     ],
     "identity": [
-      {"id": "inswapper-128", "repo_id": "ezioruan/inswapper_128.onnx", "probe": "inswapper_128.onnx", "gated": false, "pipeline": "identity", "note": "⚠ InsightFace RESEARCH/NON-COMMERCIAL (HF mirror, ~530 MB) — the M4 identity-lock swapper (spike: anchor cos 0.105→0.870). The buffalo_l detector/embedder pack is NOT gated here: the worker auto-downloads it on first run to $LOOM_INSIGHTFACE_ROOT (default <HF_HOME>/insightface)"}
+      {"id": "inswapper-128", "repo_id": "ezioruan/inswapper_128.onnx", "probe": "inswapper_128.onnx", "gated": false, "pipeline": "identity", "note": "⚠ InsightFace RESEARCH/NON-COMMERCIAL (HF mirror, ~530 MB) — the M4 identity-lock swapper (spike: anchor cos 0.105→0.870)"},
+      {"id": "buffalo-l", "insightface_pack": "buffalo_l", "probe": "w600k_r50.onnx", "gated": false, "pipeline": "identity", "note": "InsightFace buffalo_l detection/recognition pack (~280 MB; research/non-commercial) — NOT an HF repo (github-release zip): presence is a FILESYSTEM probe at $LOOM_INSIGHTFACE_ROOT (default <HF_HOME>/insightface)/models/buffalo_l/<probe>; fetch hydrates via the insightface auto-downloader (M4 review: a fresh/offline rig must fail at the 412 gate with a fetch hint, never mid-job)"}
     ]
   }
 }

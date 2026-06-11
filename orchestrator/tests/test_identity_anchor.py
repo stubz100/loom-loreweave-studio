@@ -178,18 +178,78 @@ def _asset_with_hero_and_anchor(client, ws):
     return a
 
 
+def _verify_anchor(ws, a):
+    """A done+ok identity job using THIS anchor, started after it was picked — the
+    computed verification the default-on rule requires (M4 review, Medium)."""
+    from orchestrator import assets
+    from orchestrator.runner import RUNNER
+    anchor_path = assets.anchor_file_path(ws, a["id"])
+    jid = RUNNER.submit(pipeline="identity", mode="lock",
+                        params={"anchor_image": str(anchor_path), "batch_items": [{}],
+                                "prompt": "[verify]"},
+                        batch_id="bat_ver", index=0, batch_size=1,
+                        requester_id=a["active_version"],
+                        profile_version_id=a["active_version"], stage="B")
+    RUNNER.jobs[jid]["status"] = "done"
+    RUNNER.jobs[jid]["result"] = {"ok": True, "output_names": []}
+    return jid
+
+
+def test_stage_b_identity_unverified_anchor_defaults_off(client):
+    """M4 review (Medium): a freshly-picked anchor is UNVERIFIED (it may have no
+    detectable face — the worker only finds out at run time), so default-on must wait;
+    the response says why, and an explicit identity:true is the verification run."""
+    from orchestrator.runner import RUNNER
+    a = _asset_with_hero_and_anchor(client, RUNNER.workspace)
+    r = client.post(f"/assets/{a['id']}/stage-b",
+                    json={"preset": "npc_lite", "character_clause": "x", "dry_run": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["identity"] is False and body["post_passes"] == []
+    assert "UNVERIFIED" in (body["identity_note"] or "")
+    # explicit identity:true is allowed unverified — that run verifies the anchor
+    r2 = client.post(f"/assets/{a['id']}/stage-b",
+                     json={"preset": "npc_lite", "character_clause": "x",
+                           "identity": True, "dry_run": True})
+    assert r2.status_code == 200 and r2.json()["identity"] is True
+
+
 def test_stage_b_identity_default_on_and_appended_last(client):
     from orchestrator.runner import RUNNER
     a = _asset_with_hero_and_anchor(client, RUNNER.workspace)
+    _verify_anchor(RUNNER.workspace, a)            # verified → default-on engages (R93)
     r = client.post(f"/assets/{a['id']}/stage-b",
                     json={"preset": "npc_lite", "character_clause": "a ranger",
                           "params": {"polish": True}, "dry_run": True})
     assert r.status_code == 200, r.text
-    passes = r.json()["post_passes"]
+    body = r.json()
+    assert body["identity"] is True and body["identity_note"] is None
+    passes = body["post_passes"]
     assert [p["pass"] for p in passes] == ["polish", "identity"]   # lock is the final word
     ident = passes[-1]
     assert ident["backend"] == "identity" and ident["min_det_score"] == 0.5
     assert ident["anchor"].replace("\\", "/").endswith("/faces/anchor.png")
+
+
+def test_stage_b_identity_repick_invalidates_verification(client):
+    """Re-picking the anchor (same faces/anchor.png path, NEW content) must reset the
+    computed verification — only runs started AFTER the re-pick count."""
+    import time
+    from orchestrator import assets
+    from orchestrator.runner import RUNNER
+    a = _asset_with_hero_and_anchor(client, RUNNER.workspace)
+    _verify_anchor(RUNNER.workspace, a)
+    time.sleep(0.01)                                # set_at must pass the old job's created_at
+    r0 = client.post(f"/assets/{a['id']}/anchor",   # re-pick (same source, fresh set_at)
+                     json={"job_id": RUNNER.jobs and next(
+                         j["id"] for j in RUNNER.jobs.values()
+                         if j.get("pipeline") == "zimage" and j.get("status") == "done"
+                         and j.get("profile_version_id") == a["active_version"]),
+                           "output": "job_face01/face.png"})
+    assert r0.status_code == 200, r0.text
+    r = client.post(f"/assets/{a['id']}/stage-b",
+                    json={"preset": "npc_lite", "character_clause": "x", "dry_run": True})
+    assert r.status_code == 200 and r.json()["identity"] is False
 
 
 def test_stage_b_identity_opt_out_and_require(client):
@@ -213,6 +273,57 @@ def test_stage_b_identity_opt_out_and_require(client):
     assert r3.status_code == 200 and r3.json()["post_passes"] == []
 
 
+def test_keep_ref_blocks_pre_lock_outputs(client):
+    """M4 review (High): a done job with PENDING post-passes is not the end of its chain —
+    curating its (pre-identity-lock) outputs poisons the ref_set/P2 corpus. 409 unless the
+    explicit allow_unlocked escape is set (the deliberate stopped-chain case)."""
+    from orchestrator import assets
+    from orchestrator.runner import RUNNER
+    ws = RUNNER.workspace
+    RUNNER.pause()
+    a = assets.create_asset(ws, name="PreLock")["profile"]
+    out = ws.out_dir / "job_prelock1"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "img0.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    cell = {"shot_size": "portrait", "angle": "front", "expression": "neutral",
+            "background": ""}
+    jid = RUNNER.submit(pipeline="zimage", mode="img2img",
+                        params={"prompt": "[dataset]", "batch_items": [{}]},
+                        batch_id="bat_pl", index=0, batch_size=1,
+                        requester_id=a["active_version"],
+                        profile_version_id=a["active_version"], stage="B",
+                        post_passes=[{"pass": "identity", "backend": "identity",
+                                      "anchor": "x", "min_det_score": 0.5}])
+    RUNNER.jobs[jid]["status"] = "done"
+    RUNNER.jobs[jid]["result"] = {"ok": True, "output_name": "job_prelock1/img0.png",
+                                  "output_names": ["job_prelock1/img0.png"],
+                                  "output_meta": {"job_prelock1/img0.png":
+                                                  {"coverage_cell": cell}}}
+    r = client.post(f"/assets/{a['id']}/refs/keep", json={"job_id": jid})
+    assert r.status_code == 409, r.text
+    assert "identity" in r.text and "pending" in r.text
+    # explicit escape hatch — e.g. a ⏹-stopped chain curated deliberately
+    r2 = client.post(f"/assets/{a['id']}/refs/keep",
+                     json={"job_id": jid, "allow_unlocked": True})
+    assert r2.status_code == 200, r2.text
+
+
+def test_buffalo_pack_gated_on_filesystem(client, monkeypatch, tmp_path):
+    """M4 review (Medium): the buffalo_l detector pack is part of the identity gate —
+    probed on the FILESYSTEM at the worker's insightface root (it's a github-release
+    zip, not an HF repo), so a fresh rig 412s with a fetch hint instead of dying mid-job."""
+    monkeypatch.setenv("LOOM_INSIGHTFACE_ROOT", str(tmp_path / "iface"))
+    ok, missing = components.postproc_weights_status("identity")
+    assert ok is False
+    assert any(m.get("id") == "buffalo-l" for m in missing)
+    # hydrating the probe file flips the entry to present
+    probe = tmp_path / "iface" / "models" / "buffalo_l" / "w600k_r50.onnx"
+    probe.parent.mkdir(parents=True)
+    probe.write_bytes(b"onnx")
+    _ok2, missing2 = components.postproc_weights_status("identity")
+    assert not any(m.get("id") == "buffalo-l" for m in missing2)
+
+
 def test_stage_b_identity_weight_gate_412(client, monkeypatch):
     from orchestrator.runner import RUNNER
     monkeypatch.setattr(components, "image_model_present", lambda repo_id: True)
@@ -221,7 +332,9 @@ def test_stage_b_identity_weight_gate_412(client, monkeypatch):
                                                              "repo_id": "x", "gated": False,
                                                              "pipeline": "identity"}]))
     a = _asset_with_hero_and_anchor(client, RUNNER.workspace)
+    # explicit identity:true (the unverified anchor defaults identity OFF — correct;
+    # the verification run itself must still clear the weight gate)
     r = client.post(f"/assets/{a['id']}/stage-b",
-                    json={"preset": "npc_lite", "character_clause": "x"})
+                    json={"preset": "npc_lite", "character_clause": "x", "identity": True})
     assert r.status_code == 412, r.text
     assert "postproc=identity" in r.text

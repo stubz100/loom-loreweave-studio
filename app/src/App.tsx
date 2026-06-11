@@ -539,6 +539,18 @@ export default function App() {
   // Stage-B expansion: build the coverage-matrix dataset (one img2img job per cell from the hero).
   const hasHero = casting.some((c) => c.starred);
 
+  // M4 review (Medium): the anchor is VERIFIED once a done+ok identity job for this
+  // version ran after it was (re-)picked — the worker hard-fails on a faceless anchor,
+  // so a successful run is the proof. Gates the checkbox's auto-on (server enforces too).
+  const anchorVerified = useMemo(() => {
+    if (!activeAsset || !anchorInfo) return false;
+    return Object.values(jobs).some((j) =>
+      j.pipeline === "identity" && j.status === "done"
+      && j.requester_id === activeAsset.active_version
+      && j.result?.ok === true
+      && (j.created_at ?? "") >= anchorInfo.set_at);
+  }, [jobs, activeAsset, anchorInfo]);
+
   // M3.5: the newest done matte job's bg mask for this version — enables realize="mixed".
   // Selected by the artifact's output_meta.role (the adapter's contract), NOT a filename
   // suffix (review 2026-06-11 Low: naming changes must not break mask discovery).
@@ -1110,14 +1122,16 @@ export default function App() {
                 {bgMask ? "Matte ✓" : "Matte hero"}
               </button>
               <label
-                title={anchorInfo
+                title={!anchorInfo
+                  ? "set a ⚓ face anchor first (select a face image → '⚓ anchor' in the inspector)"
+                  : anchorVerified
                   ? "identity-lock pass (M4): swap every cell's face to the ⚓ anchor after generation (no-face cells pass through)"
-                  : "set a ⚓ face anchor first (select a face image → '⚓ anchor' in the inspector)"}
+                  : "anchor UNVERIFIED — tick to run identity now (the first run verifies the anchor face, then it defaults on)"}
               >
-                ⚓ identity
+                ⚓ identity{anchorInfo && !anchorVerified ? " ?" : ""}
                 <input
                   type="checkbox"
-                  checked={identityOn ?? Boolean(anchorInfo)}
+                  checked={identityOn ?? (Boolean(anchorInfo) && anchorVerified)}
                   disabled={!anchorInfo}
                   onChange={(e) => setIdentityOn(e.target.checked)}
                 />
@@ -1517,6 +1531,11 @@ function GridCell({
   const h = Number(job?.params?.height) || 720;
   // Interim tiles (a running cast's already-landed candidates) show their image early.
   const showImg = !!name && (done || interim);
+  // M4 review (High): a done job with PENDING post-passes is not the end of its chain —
+  // these are pre-clean/pre-polish/pre-IDENTITY-LOCK images. Mark them and don't offer
+  // keep ✓ (the terminal pass job's tiles are the curatable ones; the API enforces too).
+  const pendingPasses = (job?.post_passes ?? []).map((p) => p.pass);
+  const preLock = done && pendingPasses.length > 0;
   return (
     <div
       className={`cell ${selected ? "sel" : ""} ${isHero ? "hero" : ""} ${isKept ? "kept" : ""} st-${status}`}
@@ -1577,7 +1596,15 @@ function GridCell({
           {isHero ? "★" : "☆"}
         </button>
       )}
-      {curating && done && (onKeep || onCull) && (
+      {preLock && (
+        <span
+          className="prelock"
+          title={`pre-pass image — ${pendingPasses.join(" → ")} pending/un-run; curate the pass outputs instead`}
+        >
+          ⏳ {pendingPasses.join("→")}
+        </span>
+      )}
+      {curating && done && !preLock && (onKeep || onCull) && (
         <button
           className={`keep ${isKept ? "on" : ""}`}
           title={isKept ? "kept ✓ — click to cull from the ref set" : "keep ✓ into the curated ref set"}

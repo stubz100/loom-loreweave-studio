@@ -351,8 +351,27 @@ def _entry_resolve_repo(e: dict) -> str:
     return e.get("repo_id", "")
 
 
+def _insightface_root() -> Path:
+    """Where the insightface packs live. ⚠ Faithful mirror of
+    `postproc/identity/run_pipeline._insightface_root` — keep in lockstep, the gate must
+    probe exactly where the worker will look."""
+    env = os.environ.get("LOOM_INSIGHTFACE_ROOT")
+    if env:
+        return Path(env)
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        return Path(hf_home) / "insightface"
+    return Path.home() / ".insightface"
+
+
 def _entry_present(e: dict) -> bool:
-    """Is the platform-resolved repo for this entry cached?"""
+    """Is the entry's weight on disk? HF entries probe the hub cache; `insightface_pack`
+    entries (buffalo_l — a github-release zip, not an HF repo) probe the filesystem at the
+    worker's insightface root (M4 review: the gate must cover the detector pack too, or a
+    fresh rig passes /components/fetch and still dies mid-job)."""
+    pack = e.get("insightface_pack")
+    if pack:
+        return (_insightface_root() / "models" / pack / e.get("probe", "")).is_file()
     return _hf_cache_probe(_entry_resolve_repo(e), e.get("probe", "config.json"))
 
 
@@ -465,8 +484,18 @@ def fetch_postproc(tool: str, variant_id: str | None = None) -> dict:
                             "fetched": True, "detail": "already cached"})
             continue
         try:
-            from huggingface_hub import snapshot_download
-            snapshot_download(repo_id, token=token)
+            pack = e.get("insightface_pack")
+            if pack:
+                # buffalo_l is a github-release zip, not an HF repo — hydrate via the
+                # insightface auto-downloader (FaceAnalysis init downloads + verifies the
+                # pack at the SAME root the worker uses). Explicit-fetch-only (R163);
+                # the brief CPU model load is released with the local object.
+                from insightface.app import FaceAnalysis
+                FaceAnalysis(name=pack, root=str(_insightface_root()),
+                             providers=["CPUExecutionProvider"])
+            else:
+                from huggingface_hub import snapshot_download
+                snapshot_download(repo_id, token=token)
             results.append({"id": e.get("id"), "repo_id": repo_id,
                             "fetched": _entry_present(e),
                             "gated": bool(e.get("gated"))})

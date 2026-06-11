@@ -37,8 +37,10 @@ from pathlib import Path
 
 try:
     from .adapters import JobSpec
+    from .adapters import _batch as batch_helpers
     from .adapters import zimage as zimage_adapter
     from .adapters import multi as multi_adapter
+    from .adapters import sd35 as sd35_adapter
     from .config import CONFIG
     from . import lineage
     from . import workspace as ws_mod
@@ -46,15 +48,17 @@ try:
     from .logsetup import get_logger
 except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import JobSpec  # type: ignore
+    from adapters import _batch as batch_helpers  # type: ignore
     from adapters import zimage as zimage_adapter  # type: ignore
     from adapters import multi as multi_adapter  # type: ignore
+    from adapters import sd35 as sd35_adapter  # type: ignore
     from config import CONFIG  # type: ignore
     import lineage  # type: ignore
     import workspace as ws_mod  # type: ignore
     from workspace import Workspace, new_id  # type: ignore
     from logsetup import get_logger  # type: ignore
 
-ADAPTERS = {"zimage": zimage_adapter, "multi": multi_adapter}
+ADAPTERS = {"zimage": zimage_adapter, "multi": multi_adapter, "sd35": sd35_adapter}
 SCHEMA_VERSION = 1
 LOG = get_logger()
 
@@ -143,7 +147,8 @@ def _assign_to_kill_job(proc: subprocess.Popen) -> None:
 # peaks later. zimage-turbo @720p with cpu_offload peaks ~10–12 GB on the 16 GB rig.
 # multi runs its pipelines one-at-a-time as isolated subprocesses (VRAM isolation), so the
 # peak is a single pipeline (flux2-klein ~ the largest), not the sum — admission vs 16 GB.
-VRAM_ESTIMATES = {"zimage": 11.0, "multi": 14.0}
+# sd35 (Stage-B img2img/inpaint) with cpu_offload + T5 peaks ~13 GB on the 16 GB rig.
+VRAM_ESTIMATES = {"zimage": 11.0, "multi": 14.0, "sd35": 13.0}
 DEFAULT_VRAM_GB = 8.0
 MAX_OOM_RETRIES = 1
 _OOM_MARKERS = (
@@ -177,6 +182,10 @@ class JobRunner:
         self._procs: dict[str, subprocess.Popen] = {}
         self._canceled: set[str] = set()
         self._paused = False
+        # Why the queue is paused — "resume" (resume-paused load, R88) | "user" (explicit
+        # /queue/pause) | None. Surfaced via state()/queue.json so the UI can say WHY
+        # (review 2026-06-10: a bare "paused" with no visible jobs reads as a stuck pipeline).
+        self._pause_reason: str | None = None
         self._disk_gate: "callable | None" = None   # () -> bool: True = disk hard-stop (M6)
         self._shutting_down = False
         self._worker = threading.Thread(target=self._run_loop, name="loom-gpu-worker", daemon=True)
@@ -230,6 +239,24 @@ class JobRunner:
             self._load_locked()
             self._cv.notify()
 
+    def unbind(self) -> None:
+        """Close the active project (review 2026-06-10 #2): detach the runner so the app
+        runs project-less (project-scoped endpoints 409 again, exactly like pre-open).
+        Refuses while a job is running, like bind(). The project's `queue.json` stays on
+        disk exactly as last persisted — reopening resumes it (paused, R88)."""
+        with self._cv:
+            if self._ws is None:
+                return
+            if any(j["status"] == "running" for j in self.jobs.values()):
+                raise RuntimeError("cannot close the project while a job is running")
+            LOG.info("project closed: %s", self._ws.path)
+            self._ws = None
+            self.jobs = {}
+            self._canceled.clear()
+            self._paused = False
+            self._pause_reason = None
+            self._cv.notify()
+
     # --- persistence ------------------------------------------------------
     def _persist_locked(self, clean_shutdown: bool = False) -> None:
         if self._ws is None:   # nothing to persist with no project open (M5)
@@ -237,6 +264,7 @@ class JobRunner:
         data = {
             "schema_version": SCHEMA_VERSION,
             "paused": self._paused,
+            "pause_reason": self._pause_reason,
             "clean_shutdown": clean_shutdown,
             "jobs": self.jobs,
         }
@@ -280,6 +308,7 @@ class JobRunner:
         path = self._ws.queue_path
         if not path.is_file():
             self._paused = False
+            self._pause_reason = None
             return
         try:
             data = ws_mod.read_json(path)            # refuses partial/corrupt JSON
@@ -290,6 +319,7 @@ class JobRunner:
             else:
                 self.jobs = {}
             self._paused = False
+            self._pause_reason = None
             return
 
         # Validate the **envelope** (schema_version/paused/clean_shutdown/jobs types) and
@@ -312,6 +342,7 @@ class JobRunner:
             else:
                 self.jobs = {}
             self._paused = False
+            self._pause_reason = None
             return
 
         clean = data["clean_shutdown"]   # validated boolean (no string coercion)
@@ -326,6 +357,7 @@ class JobRunner:
             elif clean:
                 j["status"] = "queued"
                 j["progress"] = 0.0
+                j["partial_outputs"] = []
                 j["note"] = "re-queued after graceful shutdown (partial discarded)"
                 self._discard_partial(j["id"])
             else:
@@ -335,8 +367,10 @@ class JobRunner:
                 j["result"] = {"ok": False, "returncode": -1, "outputs": [],
                                "error": "orchestrator crashed mid-job", "stderr_tail": ""}
                 self._discard_partial(j["id"])
-        # Resume PAUSED whenever there is pending work (R88).
+        # Resume PAUSED whenever there is pending work (R88) — tagged "resume" so the UI
+        # can say "resumed from last session — review & unpause", not a bare "paused".
         self._paused = any(j["status"] == "queued" for j in self.jobs.values())
+        self._pause_reason = "resume" if self._paused else None
         self._persist_locked()
 
     def graceful_shutdown(self) -> None:
@@ -360,11 +394,13 @@ class JobRunner:
     def pause(self) -> None:
         with self._cv:
             self._paused = True
+            self._pause_reason = "user"
             self._persist_locked()
 
     def unpause(self) -> None:
         with self._cv:
             self._paused = False
+            self._pause_reason = None
             self._persist_locked()
             self._cv.notify()
 
@@ -372,10 +408,24 @@ class JobRunner:
         with self._lock:
             return self._paused
 
+    def _clear_pause_if_empty_locked(self) -> None:
+        """Drop a now-meaningless paused state: paused exists to hold QUEUED work for
+        review (R88) — once the last queued job is canceled/deleted there is nothing to
+        hold, and a sticky '⏸ paused (0 queued)' reads as a stuck pipeline (review
+        2026-06-10). Called under the lock after any operation that removes queued work."""
+        if self._paused and not any(j["status"] == "queued" for j in self.jobs.values()):
+            self._paused = False
+            self._pause_reason = None
+            self._persist_locked()
+            LOG.info("queue auto-unpaused (no queued work left to hold)")
+
     def submit(self, *, pipeline: str, mode: str, params: dict,
                batch_id: str, index: int, batch_size: int,
                requester_id: str = "sandbox",
-               profile_version_id: str | None = None, stage: str | None = None) -> str:
+               profile_version_id: str | None = None, stage: str | None = None,
+               coverage_cell: dict | None = None,
+               post_passes: list | None = None,
+               chained_from: str | None = None, pass_name: str | None = None) -> str:
         job_id = new_id("job", 8)
         with self._cv:
             self.jobs[job_id] = {
@@ -387,11 +437,16 @@ class JobRunner:
                 "requester_id": requester_id,
                 "profile_version_id": profile_version_id,   # P1: AssetProfile version (lineage)
                 "stage": stage,                             # P1: bootstrap stage A|B|C
+                "coverage_cell": coverage_cell,             # P1/M3: Stage-B recipe cell (→ ref_set, P2)
+                "post_passes": post_passes or [],           # clean/polish chained after success
+                "chained_from": chained_from,               # parent job when THIS is a pass
+                "pass": pass_name,                          # "clean" | "polish" | None
                 "vram_estimate_gb": VRAM_ESTIMATES.get(pipeline, DEFAULT_VRAM_GB),
                 "resumable": False,                # P0 jobs don't checkpoint (R159)
                 "retry_count": 0,
                 "status": "queued",
                 "progress": 0.0,
+                "partial_outputs": [],             # interim results (multi pool streams in)
                 "note": "",
                 "created_at": _now(),
                 "started_at": None,
@@ -410,7 +465,9 @@ class JobRunner:
         return job_id
 
     def cancel(self, job_id: str) -> bool:
-        """Cancel a queued/running job. Cancel = terminate then kill (M3)."""
+        """Cancel a queued/running job. Cancel = kill the worker **tree** (M3; review
+        2026-06-10 — terminating only the direct child left `multi`'s grandchild holding
+        the GPU)."""
         with self._lock:
             job = self.jobs.get(job_id)
             if job is None or job["status"] in ("done", "failed", "canceled"):
@@ -422,10 +479,31 @@ class JobRunner:
             if job["status"] == "queued":
                 job["status"] = "canceled"
                 job["finished_at"] = _now()
+                self._canceled.discard(job_id)   # terminal immediately — no stale entry
                 self._persist_locked()
+                self._clear_pause_if_empty_locked()   # don't leave "paused (0 queued)"
         if proc is not None and proc.poll() is None:
-            proc.terminate()
-            threading.Thread(target=self._grace_kill, args=(proc,), daemon=True).start()
+            threading.Thread(target=self._kill_tree, args=(proc,), daemon=True).start()
+        return True
+
+    def stop_batch(self, job_id: str) -> bool:
+        """Gracefully stop a RUNNING batch job (a job whose params carry `batch_items`):
+        drop a `STOP` file into its out dir — the worker finishes the current item, marks
+        the rest skipped, and exits cleanly, so completed images stay valid (vs `cancel`,
+        which kills the tree and discards the partial dir). Returns False if the job
+        isn't a running batch."""
+        with self._lock:
+            job = self.jobs.get(job_id)
+            ws = self._ws
+            if (job is None or ws is None or job["status"] != "running"
+                    or not job.get("params", {}).get("batch_items")):
+                return False
+        try:
+            (ws.out_dir / job_id / "STOP").write_text("stop", encoding="utf-8")
+        except OSError as e:
+            _warn(f"could not write STOP file for {job_id}: {e}")
+            return False
+        LOG.info("stop requested for batch %s (finishes current item, keeps completed)", job_id)
         return True
 
     def delete(self, job_id: str) -> bool:
@@ -445,6 +523,7 @@ class JobRunner:
             self.jobs.pop(job_id, None)
             self._canceled.discard(job_id)
             self._persist_locked()
+            self._clear_pause_if_empty_locked()   # deleting the last queued job too
         if ws is not None:
             shutil.rmtree(ws.out_dir / job_id, ignore_errors=True)
             try:
@@ -459,7 +538,24 @@ class JobRunner:
         return True
 
     @staticmethod
-    def _grace_kill(proc: subprocess.Popen, grace_s: float = 5.0) -> None:
+    def _kill_tree(proc: subprocess.Popen, grace_s: float = 5.0) -> None:
+        """Kill the worker and ALL its descendants. `multi` does its GPU work in a
+        grandchild (stage_runner → per-pipeline subprocess); `terminate()` on the direct
+        child orphans that grandchild mid-generation (the process-wide Job Object only
+        reaps on orchestrator death, not per-job cancel). Windows: `taskkill /T /F` fells
+        the tree. POSIX: terminate → kill (process-group kill is a later add, like the
+        PDEATHSIG reap path)."""
+        if sys.platform == "win32":
+            try:
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                               capture_output=True, timeout=15)
+            except Exception as e:  # noqa: BLE001 - fall through to the direct kill below
+                _warn(f"taskkill /T failed for pid={proc.pid} ({e}); killing direct child only")
+        else:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
         try:
             proc.wait(timeout=grace_s)
         except subprocess.TimeoutExpired:
@@ -487,7 +583,8 @@ class JobRunner:
 
     def state(self) -> dict:
         with self._lock:
-            return {"paused": self._paused, "vram_budget_gb": CONFIG.vram_budget_gb,
+            return {"paused": self._paused, "pause_reason": self._pause_reason,
+                    "vram_budget_gb": CONFIG.vram_budget_gb,
                     "counts": self.counts()}
 
     # --- worker -----------------------------------------------------------
@@ -510,6 +607,7 @@ class JobRunner:
                 if job_id in self._canceled:
                     job["status"] = "canceled"
                     job["finished_at"] = _now()
+                    self._canceled.discard(job_id)   # terminal — no stale entries
                     self._persist_locked()
                     continue
                 job["status"] = "running"
@@ -545,8 +643,14 @@ class JobRunner:
         argv = adapter.build_argv(spec, CONFIG.venv_python, script)
 
         t0 = time.time()
+        # Force the worker (and its sub-subprocesses, e.g. multi's stage_runner) to flush stdout
+        # line-by-line — Python block-buffers stdout to a pipe by default, which made a running
+        # multi cast look hung (no progress, empty per-job log) for minutes. PYTHONUNBUFFERED is
+        # inherited by the child's children (stage_runner copies os.environ), so the whole tree
+        # streams live → real-time progress + log.
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
         proc = subprocess.Popen(
-            argv, cwd=str(script.parents[2]),
+            argv, cwd=str(script.parents[2]), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
         )
         _assign_to_kill_job(proc)   # die with the orchestrator — never orphan the GPU (review #1)
@@ -562,6 +666,17 @@ class JobRunner:
             log_fp = open(ws.log_path(job_id), "w", encoding="utf-8")
         except OSError as e:
             _warn(f"could not open job log for {job_id}: {e}")
+        # Stateful per-job progress when the adapter offers it (`make_progress(params)`
+        # — e.g. multi counts per-candidate completions for a real fraction); else the
+        # stateless coarse `progress(line)` markers.
+        make_progress = getattr(adapter, "make_progress", None)
+        progress_fn = make_progress(params) if make_progress else adapter.progress
+        # Interim results (user request 2026-06-10): adapters with a `collect_output`
+        # hook announce each finished image as it lands, so a long multi cast streams
+        # tiles into the grid instead of appearing all-at-once at the end.
+        collect_fn = getattr(adapter, "collect_output", None)
+        out_root = ws.out_dir.resolve()
+        last_tail = 0.0
         try:
             if proc.stdout is not None:
                 for line in proc.stdout:
@@ -569,12 +684,30 @@ class JobRunner:
                     tail.append(line)
                     if log_fp is not None:
                         log_fp.write(line + "\n")
-                    pr = adapter.progress(line)
-                    if pr is not None:
+                    pr = progress_fn(line)
+                    partial: str | None = None
+                    if collect_fn is not None:
+                        raw = collect_fn(line)
+                        if raw:
+                            try:    # serve-guard: only paths inside the project out/
+                                partial = Path(raw).resolve().relative_to(out_root).as_posix()
+                            except (ValueError, OSError):
+                                partial = None
+                    # Keep the live tail fresh on EVERY line (throttled), not only at
+                    # coarse stage markers — a multi cast used to show a frozen tail for
+                    # minutes (review 2026-06-10). In-memory only; no disk write here.
+                    now = time.time()
+                    if pr is not None or partial is not None or now - last_tail >= 0.5:
+                        last_tail = now
                         with self._lock:
                             j = self.jobs.get(job_id)
                             if j:
-                                j["progress"] = pr
+                                if pr is not None:
+                                    j["progress"] = pr
+                                if partial is not None:
+                                    prev = j.get("partial_outputs") or []
+                                    if partial not in prev:
+                                        j["partial_outputs"] = [*prev, partial]
                                 j["log_tail"] = "\n".join(tail)
         finally:
             if log_fp is not None:
@@ -598,6 +731,7 @@ class JobRunner:
                 j = self.jobs[job_id]
                 j["status"] = "queued"
                 j["progress"] = 0.0
+                j["partial_outputs"] = []
                 j["note"] = "re-queued at shutdown"
                 self._persist_locked(clean_shutdown=True)
             return
@@ -613,6 +747,7 @@ class JobRunner:
                 j["finished_at"] = _now()
                 j["wall_s"] = round(time.time() - t0, 2)
                 j["log_tail"] = log_text
+                self._canceled.discard(job_id)   # terminal — no stale entries (review)
                 self._persist_locked()
             return
 
@@ -631,6 +766,7 @@ class JobRunner:
                 j["retry_count"] = retry_count + 1
                 j["params"] = new_params
                 j["progress"] = 0.0
+                j["partial_outputs"] = []
                 j["log_tail"] = log_text
                 j["note"] = f"OOM — auto-retry {retry_count + 1}/{MAX_OOM_RETRIES}"
                 self._persist_locked()
@@ -642,7 +778,6 @@ class JobRunner:
         # them (works for nested per-pipeline candidate trees, not just basenames). A multi
         # run yields N candidates → `output_names` is the pool; `output_name` stays the
         # primary (first) for back-compat (zimage = exactly one).
-        out_root = ws.out_dir.resolve()
         names: list[str] = []
         for o in rec.outputs:
             try:
@@ -652,6 +787,11 @@ class JobRunner:
         if names:
             result["output_name"] = names[0]
             result["output_names"] = names
+        # Batch jobs: per-output metadata (parallel to outputs) keyed by the served name —
+        # e.g. each Stage-B image's coverage_cell + seed (curation reads it per output).
+        if rec.outputs_meta and len(rec.outputs_meta) == len(names):
+            result["output_meta"] = {n: m for n, m in zip(names, rec.outputs_meta)
+                                     if m is not None}
         if rec.manifest_path and Path(rec.manifest_path).is_file():
             try:
                 m = json.loads(Path(rec.manifest_path).read_text(encoding="utf-8"))
@@ -667,6 +807,18 @@ class JobRunner:
             j["wall_s"] = round(time.time() - t0, 2)
             j["progress"] = 1.0 if rec.ok else j.get("progress", 0.0)
             j["log_tail"] = log_text
+            # A partial/stopped batch must never read as a silent green done (review
+            # 2026-06-10): surface "partial dataset: ok/count …" as the job note.
+            if rec.ok:
+                note = batch_helpers.partial_note(result.get("batch"))
+                # A user stop also suppresses the chained clean/polish passes (review
+                # 2026-06-11, enforced in _submit_chained) — say so on the note.
+                if rec.manifest_status == "stopped" and j.get("post_passes"):
+                    skipped = " → ".join(p.get("pass", "?") for p in j["post_passes"])
+                    note = f"{note or 'stopped early'}; {skipped} pass(es) not chained"
+                if note:
+                    j["note"] = note
+            self._canceled.discard(job_id)   # terminal — no stale entries (review)
             self._persist_locked()
             job_snapshot = dict(j) if rec.ok else None
         if rec.ok:
@@ -675,14 +827,86 @@ class JobRunner:
         else:
             LOG.warning("failed %s (rc=%s): %s", job_id, rc, (rec.error or "")[:160])
 
-        # Lineage edge per successful output (R98) — written after the job is durable so
-        # the index only ever references a persisted result. Best-effort: a lineage write
-        # failure must not fail an otherwise-good generation (the index is rebuildable).
+        # Lineage edges — ONE PER OUTPUT (R98; review 2026-06-10 — a batch/multi job
+        # yields N outputs and recording only the first lost provenance for the rest).
+        # Written after the job is durable so the index only ever references a persisted
+        # result. Best-effort: a lineage write failure must not fail an otherwise-good
+        # generation (the index is rebuildable).
         if job_snapshot is not None:
             try:
                 lineage.record_output(ws, job_snapshot)
             except Exception as e:  # noqa: BLE001 - lineage is non-critical, never block output
                 _warn(f"lineage write failed for {job_id}: {e}")
+            # Chain the next post-pass (clean/polish, 2026-06-11): one batch img2img job
+            # over this job's outputs. Best-effort: a chain failure leaves the parent done.
+            if job_snapshot.get("post_passes"):
+                try:
+                    self._submit_chained(job_snapshot)
+                except Exception as e:  # noqa: BLE001
+                    _warn(f"post-pass chain failed for {job_id}: {e}")
+
+    def _submit_chained(self, parent: dict) -> None:
+        """Submit the FIRST remaining post-pass of `parent` as a chained **batch img2img
+        job** over the parent's outputs (user request 2026-06-11: clean/polish on ANY
+        run). One item per output (init_image = that image; its own prompt/seed/coverage
+        cell from `output_meta` when present); the rest of the pass list rides on the
+        chained job, so polish chains off clean's outputs. The chained job inherits the
+        parent's batch/requester/version/stage (it lands in the same grid) — and being a
+        normal batch job, its tiles STREAM per item (the old in-worker multi passes were
+        piped and only appeared at the end)."""
+        ws = self._ws
+        passes = list(parent.get("post_passes") or [])
+        result = parent.get("result") or {}
+        # A user-stopped batch must NOT chain (review 2026-06-11): ⏹ means "wind down" —
+        # a stopped batch is still ok (≥1 output), but silently enqueueing a clean/polish
+        # pass over the partial outputs would undo the stop. The skip is surfaced on the
+        # parent's note (finalize); re-run the pass from the drawer once curated.
+        if result.get("manifest_status") == "stopped":
+            LOG.info("skip %s pass chain for %s — batch was user-stopped",
+                     passes[0].get("pass", "?") if passes else "?", parent.get("id"))
+            return
+        names = result.get("output_names") or ([result["output_name"]]
+                                               if result.get("output_name") else [])
+        if ws is None or not passes or not names:
+            return
+        spec, rest = passes[0], passes[1:]
+        meta_map = result.get("output_meta") or {}
+        pparams = parent.get("params") or {}
+        items: list[dict] = []
+        for n in names:
+            m = meta_map.get(n) or {}
+            item: dict = {
+                "prompt": spec.get("prompt") or m.get("prompt") or pparams.get("prompt") or "",
+                "init_image": str((ws.out_dir / n).resolve()),
+            }
+            seed = spec.get("seed", m.get("seed", pparams.get("seed")))
+            if seed is not None:
+                item["seed"] = seed
+            carry = {k: m[k] for k in ("coverage_cell", "method", "index") if k in m}
+            if carry:
+                item["meta"] = carry            # curation survives the pass (Stage-B)
+            items.append(item)
+        params: dict = {
+            "prompt": f"[{spec['pass']} pass of {parent['id']} · {len(items)} image(s)]",
+            "batch_items": items,
+            "width": pparams.get("width", 1024),
+            "height": pparams.get("height", 1024),
+        }
+        if spec.get("strength") is not None:
+            params["strength"] = spec["strength"]
+        if spec.get("model_name"):
+            params["model_name"] = spec["model_name"]
+        if spec.get("negative_prompt"):
+            params["negative_prompt"] = spec["negative_prompt"]
+        jid = self.submit(pipeline=spec["backend"], mode="img2img", params=params,
+                          batch_id=parent.get("batch_id", ""), index=0, batch_size=1,
+                          requester_id=parent.get("requester_id", "sandbox"),
+                          profile_version_id=parent.get("profile_version_id"),
+                          stage=parent.get("stage"),
+                          post_passes=rest,
+                          chained_from=parent["id"], pass_name=spec["pass"])
+        LOG.info("chained %s pass for %s -> %s (%d image(s), backend %s)",
+                 spec["pass"], parent["id"], jid, len(items), spec["backend"])
 
 
 # Process-wide singleton.

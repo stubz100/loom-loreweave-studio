@@ -51,6 +51,26 @@ def test_star_records_candidate_and_copies_image(ws):
     assert copied.is_file()
 
 
+def test_resolve_hero_returns_starred_with_path(ws):
+    a = assets.create_asset(ws, name="Mara")["profile"]
+    o = _fake_output(ws, "job_aaaaaaaa", seed=5)
+    assets.star_candidate(ws, a["id"], job_id="job_aaaaaaaa", source_output=o,
+                          pipeline="zimage", seed=5)
+    version, hero, path = assets.resolve_hero(ws, a["id"])
+    assert hero["starred"] is True and hero["seed"] == 5
+    assert path.is_file() and path.name == hero["file"]   # the casting/ copy (Stage-B init)
+    assert version["id"] == a["active_version"]
+
+
+def test_resolve_hero_raises_without_a_star(ws):
+    a = assets.create_asset(ws, name="Nohero")["profile"]
+    # a recorded-but-unstarred candidate is not a hero
+    o = _fake_output(ws, "job_bbbbbbbb", seed=1)
+    assets.star_candidate(ws, a["id"], job_id="job_bbbbbbbb", source_output=o, starred=False)
+    with pytest.raises(ws_mod.WorkspaceError):
+        assets.resolve_hero(ws, a["id"])
+
+
 def test_single_hero_invariant(ws):
     a = assets.create_asset(ws, name="Mara")["profile"]
     o1 = _fake_output(ws, "job_11111111", seed=1)

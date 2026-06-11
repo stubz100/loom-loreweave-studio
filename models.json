@@ -39,5 +39,22 @@
       "essential_for": ["Muse retrieval / embedding (R144)"],
       "note": "Already present locally. sha256 TODO: fill at companion-repo publish."
     }
-  ]
+  ],
+  "_multi_presets_doc": "Preset-aware weight sets for the `multi` casting pipeline (P1/M2, §5). DELIBERATELY NOT in the phase-scoped `models` list above: these are checked at /generate time for the SELECTED ideation preset only (POST /generate pipeline:multi). Folding them into the phase gate would force ALL presets' gated checkpoints onto every rig before any cast (over-gating a 16 GB target) — instead a cast fails fast (412) listing exactly the missing repos for that preset. Some are HF-GATED (need license acceptance on huggingface.co + an HF_TOKEN). Presence = a cache probe of `probe` under the platform-resolved repo (try_to_load_from_cache). Mirror of pipeline/multi IDEATION_PRESETS — keep in sync if that map changes. NOTE: the flux2 Klein text encoder is Qwen3 (variant 4B for klein-4b, 8B for klein-9b), NOT Mistral (only flux.2-dev uses Mistral, and the presets load Klein checkpoints + the FLUX.2-dev *AE* only). The flux2 loader uses the FP8 Qwen3 on CUDA but falls back to the non-FP8 repo on Windows ROCm (the RX 9070 XT target — flux2/stage1_load_models._load_text_encoder_safe). So the TE entry carries `repo_id` (non-FP8, used on Windows ROCm) + `fp8_repo_id` (used elsewhere); the gate probes whichever EXACTLY matches this platform (components._needs_fp8_workaround mirrors the loader's test).",
+  "multi_presets": {
+    "fast": [
+      {"id": "flux2-klein-4b", "repo_id": "black-forest-labs/FLUX.2-klein-4B", "probe": "flux-2-klein-4b.safetensors", "gated": true, "pipeline": "flux2"},
+      {"id": "flux2-dev-ae", "repo_id": "black-forest-labs/FLUX.2-dev", "probe": "ae.safetensors", "gated": true, "pipeline": "flux2"},
+      {"id": "qwen3-4b-text-encoder", "repo_id": "Qwen/Qwen3-4B", "fp8_repo_id": "Qwen/Qwen3-4B-FP8", "probe": "config.json", "gated": false, "pipeline": "flux2"},
+      {"id": "sd35-large-turbo", "repo_id": "stabilityai/stable-diffusion-3.5-large-turbo", "probe": "model_index.json", "gated": true, "pipeline": "sd35"},
+      {"id": "zimage-turbo", "repo_id": "Tongyi-MAI/Z-Image-Turbo", "probe": "model_index.json", "gated": false, "pipeline": "zimage"}
+    ],
+    "refined": [
+      {"id": "flux2-klein-9b", "repo_id": "black-forest-labs/FLUX.2-klein-9B", "probe": "flux-2-klein-9b.safetensors", "gated": true, "pipeline": "flux2"},
+      {"id": "flux2-dev-ae", "repo_id": "black-forest-labs/FLUX.2-dev", "probe": "ae.safetensors", "gated": true, "pipeline": "flux2"},
+      {"id": "qwen3-8b-text-encoder", "repo_id": "Qwen/Qwen3-8B", "fp8_repo_id": "Qwen/Qwen3-8B-FP8", "probe": "config.json", "gated": false, "pipeline": "flux2"},
+      {"id": "sd35-large", "repo_id": "stabilityai/stable-diffusion-3.5-large", "probe": "model_index.json", "gated": true, "pipeline": "sd35"},
+      {"id": "zimage-base", "repo_id": "Tongyi-MAI/Z-Image", "probe": "model_index.json", "gated": false, "pipeline": "zimage"}
+    ]
+  }
 }

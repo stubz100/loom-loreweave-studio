@@ -7,6 +7,7 @@
   "properties": {
     "schema_version": { "const": 1 },
     "paused": { "type": "boolean" },
+    "pause_reason": { "enum": ["resume", "user", null] },
     "clean_shutdown": { "type": "boolean" },
     "jobs": { "type": "object" }
   }

@@ -136,6 +136,27 @@ def active_info() -> dict:
     return ws.info() if ws is not None else {"open": False}
 
 
+def close_project() -> dict:
+    """Close the active project (user request 2026-06-10 #2): unbind the runner (the app
+    runs project-less — every project-scoped endpoint 409s again) and **clear the
+    pointer's active entry** so a relaunch does NOT auto-reopen it (an explicit close is
+    a user decision). The project stays in the recent list for the picker; its queue.json
+    stays on disk and resumes (paused, R88) on reopen. Raises RuntimeError while a job
+    is running."""
+    ws = RUNNER.workspace
+    if ws is None:
+        return {"open": False}
+    RUNNER.unbind()
+    data = read_pointer()
+    ws_mod.atomic_write_json(CONFIG.app_pointer_path, {
+        "schema_version": POINTER_SCHEMA_VERSION,
+        "active_project": None,
+        "recent": data.get("recent", []),
+    })
+    LOG.info("project closed: %s", ws.path)
+    return {"open": False}
+
+
 def resolve_startup() -> None:
     """Called from the lifespan startup: pick the project to open, if any.
 

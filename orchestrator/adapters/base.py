@@ -39,6 +39,14 @@ class CompletionRecord:
     # cross-checked with the exit code. `error` carries the failing-stage message.
     manifest_status: str | None = None                 # "completed" | "failed" | None
     error: str | None = None
+    # Batch jobs (P1 review 2026-06-10): optional per-output metadata, PARALLEL to
+    # `outputs` (same length/order). Carries each item's `meta` from the batch manifest
+    # (e.g. a Stage-B coverage_cell + seed) so multi-output jobs keep per-image identity.
+    outputs_meta: list | None = None
+    # Batch jobs: the run's item counts {count, ok, failed, skipped, status} — surfaced
+    # in `result.batch` so a partial/stopped dataset is VISIBLE, never a silent green
+    # done (review finding 2026-06-10: 1 ok / 77 failed must not look fully successful).
+    batch: dict | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -51,4 +59,5 @@ class CompletionRecord:
             "stderr_tail": self.stderr_tail,
             "manifest_status": self.manifest_status,
             "error": self.error,
+            "batch": self.batch,
         }

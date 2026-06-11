@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   cancelJob,
+  castingUrl,
+  closeProject,
   createAsset,
   createProject,
   deleteJob,
@@ -8,6 +10,7 @@ import {
   fetchComponents,
   forgetProject,
   generate,
+  generatePreview,
   getAsset,
   getComponents,
   getDisk,
@@ -21,15 +24,33 @@ import {
   outputUrl,
   setStyle,
   starCandidate,
+  stopJob,
   unpauseQueue,
+  stageB,
+  stageBPreview,
+  keepRef,
+  cullRef,
+  saveProfile,
+  getModels,
+  recipePresets,
+  type GeneratePreview,
+  type GenerateRequest,
+  type JobsResponse,
+  type ModelCatalog,
   type AssetSummary,
   type CastingCandidate,
   type DiskStatus,
   type Health,
   type Job,
   type LaunchReport,
+  type ParamSpec,
+  type PauseReason,
   type ProjectInfo,
   type ProjectListEntry,
+  type RecipePreset,
+  type RefItem,
+  type StageBPreview,
+  type StageBRequest,
   type StyleInfo,
 } from "./lib/orchestrator";
 import { log } from "./lib/log";
@@ -48,8 +69,9 @@ export default function App() {
 
   const [prompt, setPrompt] = useState("");
   const [count, setCount] = useState(3);
-  // P1/M2 casting controls (active when an asset is selected).
-  const [castPipeline, setCastPipeline] = useState<"multi" | "zimage">("multi");
+  // Generation pipeline — selectable everywhere since 2026-06-10 #3 (the sandbox is the
+  // experimentation surface: multi casting + zimage/sd35 t2i all work unscoped).
+  const [castPipeline, setCastPipeline] = useState<"multi" | "zimage" | "sd35">("multi");
   const [numCandidates, setNumCandidates] = useState(2);
   const [ideationMode, setIdeationMode] = useState<"fast" | "refined">("fast");
   const [batchIds, setBatchIds] = useState<string[]>([]);
@@ -58,7 +80,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [counts, setCounts] = useState({ queued: 0, running: 0, done: 0, failed: 0, canceled: 0 });
   const [paused, setPaused] = useState(false);
-  const [vramBudget, setVramBudget] = useState(16);
+  const [pauseReason, setPauseReason] = useState<PauseReason>(null);
+  const [showQueue, setShowQueue] = useState(false);
   const [disk, setDisk] = useState<DiskStatus | null>(null);
   const [launch, setLaunch] = useState<LaunchReport | null>(null);
   const [fetching, setFetching] = useState(false);
@@ -70,13 +93,65 @@ export default function App() {
   const [style, setStyleState] = useState<StyleInfo | null>(null);
   const [styleDraft, setStyleDraft] = useState("");
   const [applyStyle, setApplyStyle] = useState(true);
-  const pollRef = useRef<number | null>(null);
+  // P1/M3 bootstrap stages (A casting · B expansion · C curation) + their controls.
+  const [stage, setStage] = useState<"A" | "B" | "C">("A");
+  const [recipePreset, setRecipePreset] = useState<RecipePreset>("full_coverage");
+  const [stageBPipeline, setStageBPipeline] = useState<"zimage" | "sd35">("zimage");
+  const [stageBModel, setStageBModel] = useState("");   // "" = the worker default variant
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+  const [stageBStrength, setStageBStrength] = useState(0.55);
+  const [characterClause, setCharacterClause] = useState("");
+  const [promptTemplate, setPromptTemplate] = useState("");
+  const [refSet, setRefSet] = useState<RefItem[]>([]);
+  const [busy, setBusy] = useState(false);
+  // Parameter drawers (review 2026-06-10, issue 2): catalog-driven tunables, kept as a
+  // sparse record (unset = use the worker/model default — nothing is sent).
+  const [showParamsA, setShowParamsA] = useState(false);
+  const [advParamsA, setAdvParamsA] = useState<Record<string, unknown>>({});
+  const [showParamsB, setShowParamsB] = useState(false);
+  const [advParamsB, setAdvParamsB] = useState<Record<string, unknown>>({});
+  // Dry-run pre-flight review modal: the preview payload + the request to fire on [Run ▶].
+  const [preview, setPreview] = useState<GeneratePreview | StageBPreview | null>(null);
+  const pendingRunRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     log.info("Loreweave Studio UI started (log level:", log.level + ")");
+    // Load the model catalog once (drives the Stage-B model-variant selector).
+    getModels().then(setCatalog).catch(() => {});
   }, []);
 
-  // Health probe (every 2 s).
+  // Apply a /jobs payload to the UI — the single place queue state lands (review
+  // 2026-06-10: the old second 1.2 s poll loop is gone; the steady 2 s probe + an
+  // immediate refresh after every action keep the grid/dock live without double-polling).
+  const applyJobs = (r: JobsResponse) => {
+    setJobs(r.jobs);
+    setCounts(r.counts);
+    setPaused(r.paused);
+    setPauseReason(r.pause_reason ?? null);
+    if (r.disk) setDisk(r.disk);
+    // After a relaunch the grid is empty but the queue may hold persisted pending
+    // jobs — seed the grid from them so they're reviewable + cancelable before
+    // unpause (R88 "Review/Unpause"; review #3).
+    setBatchIds((prev) => {
+      if (prev.length > 0) return prev;
+      return Object.values(r.jobs)
+        .filter((j) => j.status === "queued" || j.status === "running")
+        .sort((a, b) => a.created_at.localeCompare(b.created_at))
+        .map((j) => j.id);
+    });
+  };
+
+  // One-shot refresh right after an action (generate/cancel/unpause/…) so the user sees
+  // the transition immediately instead of waiting out the 2 s probe.
+  const refreshJobs = async () => {
+    try {
+      applyJobs(await listJobs());
+    } catch {
+      /* transient — the steady probe catches up */
+    }
+  };
+
+  // Health probe (every 2 s) — also THE steady /jobs poll (single poller).
   useEffect(() => {
     let alive = true;
     const probe = async () => {
@@ -86,14 +161,17 @@ export default function App() {
         setHealth(h);
         setConn("online");
         try {
-          const [p, d, l] = await Promise.all([getProject(), getDisk(), getComponents()]);
+          const [p, d, l, j] = await Promise.all([
+            getProject(), getDisk(), getComponents(), listJobs(),
+          ]);
           if (alive) {
             setProject(p);
             setDisk(d);
             setLaunch(l);
+            applyJobs(j);
           }
         } catch {
-          /* project/disk/components fetch transient */
+          /* project/disk/components/jobs fetch transient */
         }
       } catch {
         if (alive) setConn("offline");
@@ -105,54 +183,6 @@ export default function App() {
       alive = false;
       window.clearInterval(id);
     };
-  }, []);
-
-  // Poll /jobs while anything in the current batch is still pending.
-  const startPolling = () => {
-    if (pollRef.current != null) return;
-    const tick = async () => {
-      try {
-        const r = await listJobs();
-        setJobs(r.jobs);
-        setCounts(r.counts);
-        setPaused(r.paused);
-        setVramBudget(r.vram_budget_gb);
-        if (r.disk) setDisk(r.disk);
-        // After a relaunch the grid is empty but the queue may hold persisted pending
-        // jobs — seed the grid from them so they're reviewable + cancelable before
-        // unpause (R88 "Review/Unpause"; review #3).
-        setBatchIds((prev) => {
-          if (prev.length > 0) return prev;
-          return Object.values(r.jobs)
-            .filter((j) => j.status === "queued" || j.status === "running")
-            .sort((a, b) => a.created_at.localeCompare(b.created_at))
-            .map((j) => j.id);
-        });
-        const pending = Object.values(r.jobs).some(
-          (j) => j.status === "queued" || j.status === "running"
-        );
-        // Keep polling while work is in flight OR the queue is paused with pending
-        // work (so the dock + unpause stay live after a resume-paused load, R88).
-        if (!pending && !r.paused && pollRef.current != null) {
-          window.clearInterval(pollRef.current);
-          pollRef.current = null;
-        }
-      } catch {
-        /* transient — keep polling */
-      }
-    };
-    tick();
-    pollRef.current = window.setInterval(tick, 1200);
-  };
-  useEffect(() => () => {
-    if (pollRef.current != null) window.clearInterval(pollRef.current);
-  }, []);
-
-  // Seed the queue counts on mount so the dock reflects the runner's full state
-  // (not just the current batch) even before/after a batch (review #5).
-  useEffect(() => {
-    // Seed + (if there's pending/paused work after a resume-paused load) keep polling.
-    startPolling();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -160,10 +190,11 @@ export default function App() {
     try {
       await unpauseQueue();
       setPaused(false);
+      setPauseReason(null);
     } catch (e) {
       setError(String(e));
     }
-    startPolling();
+    void refreshJobs();
   };
 
   const onCancel = async (id: string) => {
@@ -172,7 +203,7 @@ export default function App() {
     } catch (e) {
       setError(String(e));
     }
-    startPolling(); // observe the transition to canceled
+    void refreshJobs(); // observe the transition to canceled
   };
 
   // Delete a finished generation + all its files (orchestrator-owned, atomic — no
@@ -189,52 +220,106 @@ export default function App() {
       log.error("delete failed:", e);
       setError(String(e));
     }
-    startPolling();
+    void refreshJobs();
   };
 
-  const onGenerate = async () => {
+  // Split the parameter-drawer record into top-level request fields vs the catalog
+  // `params` channel (top-level ones get API-side validation, e.g. width % 16).
+  const TOP_LEVEL = new Set(["width", "height", "seed", "num_steps", "guidance_scale",
+                             "negative_prompt", "model_name"]);
+  const splitAdvParams = (vals: Record<string, unknown>) => {
+    const top: Record<string, unknown> = {};
+    const channel: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(vals)) {
+      if (v === undefined || v === null || v === "") continue;
+      (TOP_LEVEL.has(k) ? top : channel)[k] = v;
+    }
+    return { top, channel };
+  };
+
+  // Build the Stage-A / sandbox generate request (shared by Run and Preview).
+  const buildGenerateReq = (): GenerateRequest | null => {
     setError(null);
     if (!project?.open) {
       setError("no project open — create or open one first");
-      return;
+      return null;
     }
     if (!prompt.trim()) {
       setError("enter a prompt");
-      return;
+      return null;
     }
+    const { top, channel } = splitAdvParams(advParamsA);
+    // Asset selected → the batch is Stage-A casting for it; sandbox → unscoped
+    // experimentation (any pipeline, 2026-06-10 #3).
+    const scope = activeAsset ? { asset_id: activeAsset.id, stage: "A" as const } : {};
+    let req: GenerateRequest;
+    if (castPipeline === "multi") {
+      // A multi cast = one job → a pool of num_candidates × pipelines candidates.
+      // Width/height/seed go top-level; the rest of the multi tunables (clean/polish
+      // toggles + sub-params, img2img_batching) ride the catalog params channel.
+      req = {
+        pipeline: "multi",
+        prompt: prompt.trim(),
+        num_candidates: numCandidates,
+        ideation_mode: ideationMode,
+        ...scope,
+        apply_style: applyStyle,
+        ...(top.width !== undefined ? { width: top.width as number } : {}),
+        ...(top.height !== undefined ? { height: top.height as number } : {}),
+        ...(top.seed !== undefined ? { seed: top.seed as number } : {}),
+        ...(Object.keys(channel).length ? { params: channel } : {}),
+      };
+    } else {
+      req = {
+        pipeline: castPipeline,
+        prompt: prompt.trim(),
+        count,
+        ...scope,
+        apply_style: applyStyle,
+        ...top,
+        ...(Object.keys(channel).length ? { params: channel } : {}),
+      };
+    }
+    return req;
+  };
+
+  const fireGenerate = async (req: GenerateRequest) => {
     try {
-      let req: Parameters<typeof generate>[0];
-      if (activeAsset && castPipeline === "multi") {
-        // A multi cast = one job → a pool of num_candidates × pipelines candidates.
-        req = {
-          pipeline: "multi",
-          prompt: prompt.trim(),
-          num_candidates: numCandidates,
-          ideation_mode: ideationMode,
-          asset_id: activeAsset.id,
-          stage: "A",
-          apply_style: applyStyle,
-        };
-      } else if (activeAsset) {
-        req = { prompt: prompt.trim(), count, asset_id: activeAsset.id, stage: "A", apply_style: applyStyle };
-      } else {
-        req = { prompt: prompt.trim(), count };
-      }
       const res = await generate(req);
       log.info(
         activeAsset ? "cast" : "generate", res.batch_id,
-        activeAsset && castPipeline === "multi"
-          ? `(multi ×${numCandidates}, ${ideationMode}) for ${activeAsset.name} [Stage A]`
+        castPipeline === "multi"
+          ? `(multi ×${numCandidates}, ${ideationMode})${activeAsset ? ` for ${activeAsset.name} [Stage A]` : " (sandbox)"}`
           : activeAsset
-          ? `(${count}) for ${activeAsset.name} [Stage A]`
-          : `(${count}, sandbox)`,
+          ? `(${castPipeline} ×${count}) for ${activeAsset.name} [Stage A]`
+          : `(${castPipeline} ×${count}, sandbox)`,
       );
       // Asset grid is derived from jobs (by requester); sandbox tracks its batch ids.
       if (!activeAsset) setBatchIds(res.job_ids);
       setSelected(null);
-      startPolling();
+      void refreshJobs();
     } catch (e) {
       log.error("generate failed:", e);
+      setError(String(e));
+    }
+  };
+
+  const onGenerate = () => {
+    const req = buildGenerateReq();
+    if (req) void fireGenerate(req);
+  };
+
+  // Pre-flight review (issue 2): dry-run the exact request — resolved prompt (style
+  // prepend visible), worker argv, job count — then [Run ▶] fires it unchanged.
+  const onPreviewGenerate = async () => {
+    const req = buildGenerateReq();
+    if (!req) return;
+    try {
+      const p = await generatePreview(req);
+      pendingRunRef.current = () => void fireGenerate(req);
+      setPreview(p);
+    } catch (e) {
+      log.error("preview failed:", e);
       setError(String(e));
     }
   };
@@ -261,7 +346,7 @@ export default function App() {
       setProject(p);
       setBatchIds([]);
       setSelected(null);
-      startPolling();
+      void refreshJobs();
     } catch (e) {
       log.error("create project failed:", e);
       setError(String(e));
@@ -277,7 +362,7 @@ export default function App() {
       setProject(p);
       setBatchIds([]);
       setSelected(null);
-      startPolling();
+      void refreshJobs();
     } catch (e) {
       log.error("open project failed:", e);
       setError(String(e));
@@ -304,6 +389,38 @@ export default function App() {
     setShowPicker(false);
     const path = window.prompt("Open project folder (contains project.json):");
     if (path) void openByPath(path);
+  };
+
+  // Close the active project (2026-06-10 #2): the app runs project-less (generation and
+  // the library disable) until a project is created/opened; a relaunch won't auto-reopen.
+  // Non-destructive — the queue/outputs stay on disk; reopening resumes (paused, R88).
+  const onCloseProject = async () => {
+    setError(null);
+    try {
+      await closeProject();
+      log.info("project closed");
+      setProject({ open: false });
+      setBatchIds([]);
+      setSelected(null);
+      setJobs({});
+      setCounts({ queued: 0, running: 0, done: 0, failed: 0, canceled: 0 });
+      setPaused(false);
+      setPauseReason(null);
+    } catch (e) {
+      log.error("close project failed:", e);   // e.g. 409 while a job is running
+      setError(String(e));
+    }
+  };
+
+  // Gracefully stop a running batch job: finish the current image, keep the completed
+  // ones (vs ✕ cancel = kill + discard the partial dir).
+  const onStop = async (id: string) => {
+    try {
+      await stopJob(id);
+    } catch (e) {
+      setError(String(e));
+    }
+    void refreshJobs();
   };
 
   const onForgetProject = async (path: string) => {
@@ -353,7 +470,7 @@ export default function App() {
       setActiveAsset(a.assets.find((x) => x.id === r.profile.id) ?? null);
       setCasting([]); // a fresh asset has no casting yet
       setSelected(null);
-      startPolling();
+      void refreshJobs();
     } catch (e) {
       log.error("create asset failed:", e);
       setError(String(e));
@@ -365,22 +482,28 @@ export default function App() {
   const refreshCasting = async (asset: AssetSummary | null) => {
     if (!asset) {
       setCasting([]);
+      setRefSet([]);
+      setPromptTemplate("");
       return;
     }
     try {
       const detail = await getAsset(asset.id);
       const v = detail.versions.find((x) => x.id === asset.active_version);
       setCasting(v?.casting ?? []);
+      setRefSet(v?.ref_set ?? []);
+      setPromptTemplate(v?.prompt_template ?? "");
     } catch {
       setCasting([]);
+      setRefSet([]);
     }
   };
 
   const onSelectAsset = (asset: AssetSummary | null) => {
     setActiveAsset(asset);
     setSelected(null);
+    setStage("A");
     void refreshCasting(asset);
-    startPolling(); // refresh jobs so the derived asset grid is current
+    void refreshJobs(); // refresh jobs so the derived asset grid is current
   };
 
   // Star/un-star a specific candidate output as the hero ★ (persists into version.json).
@@ -394,6 +517,110 @@ export default function App() {
       log.info(makeHero ? "starred hero:" : "un-starred:", output ?? jobId, "for", activeAsset.name);
     } catch (e) {
       log.error("star failed:", e);
+      setError(String(e));
+    }
+  };
+
+  // Stage-B expansion: build the coverage-matrix dataset (one img2img job per cell from the hero).
+  const hasHero = casting.some((c) => c.starred);
+
+  const buildStageBBody = (): StageBRequest => {
+    // Drawer mapping: width/height → top-level (API-validated), the catalog "seed"
+    // control = the recipe's base_seed (per-cell seeds derive from it), rest → params.
+    const { top, channel } = splitAdvParams(advParamsB);
+    return {
+      preset: recipePreset,
+      pipeline: stageBPipeline,
+      model_name: stageBModel || undefined,
+      strength: stageBStrength,
+      character_clause: characterClause.trim() || undefined,
+      apply_style: applyStyle,
+      ...(top.width !== undefined ? { width: top.width as number } : {}),
+      ...(top.height !== undefined ? { height: top.height as number } : {}),
+      ...(top.seed !== undefined ? { base_seed: top.seed as number } : {}),
+      ...(top.num_steps !== undefined || top.guidance_scale !== undefined
+          || top.negative_prompt !== undefined || Object.keys(channel).length
+        ? { params: {
+              ...(top.num_steps !== undefined ? { num_steps: top.num_steps } : {}),
+              ...(top.guidance_scale !== undefined ? { guidance_scale: top.guidance_scale } : {}),
+              ...(top.negative_prompt !== undefined ? { negative_prompt: top.negative_prompt } : {}),
+              ...channel,
+            } }
+        : {}),
+    };
+  };
+
+  const fireStageB = async (body: StageBRequest) => {
+    if (!activeAsset) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await stageB(activeAsset.id, body);
+      log.info("stage-b:", res.batch_id,
+               `${recipePreset} → 1 batch job (${res.items ?? "?"} cells, model loads once)`,
+               `(keep ~${res.kept_target.join("–")})`);
+      setStage("C"); // jump to curation as candidates stream in
+      void refreshJobs();
+    } catch (e) {
+      log.error("stage-b failed:", e);
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onStageB = () => {
+    if (!activeAsset || !hasHero) return;
+    void fireStageB(buildStageBBody());
+  };
+
+  // Stage-B pre-flight: dry-run the recipe (planned job count, hero, first cell + argv)
+  // before committing the GPU to ~17–78 img2img jobs.
+  const onPreviewStageB = async () => {
+    if (!activeAsset || !hasHero) return;
+    setError(null);
+    try {
+      const body = buildStageBBody();
+      const p = await stageBPreview(activeAsset.id, body);
+      pendingRunRef.current = () => void fireStageB(body);
+      setPreview(p);
+    } catch (e) {
+      log.error("stage-b preview failed:", e);
+      setError(String(e));
+    }
+  };
+
+  // Stage-C curation: keep ✓ a candidate into the curated ref_set / cull ✕ a kept one.
+  const onKeep = async (jobId: string, output?: string) => {
+    if (!activeAsset) return;
+    try {
+      const version = await keepRef(activeAsset.id, jobId, output);
+      setRefSet(version.ref_set);
+    } catch (e) {
+      log.error("keep failed:", e);
+      setError(String(e));
+    }
+  };
+  const onCull = async (refId: string) => {
+    if (!activeAsset) return;
+    try {
+      const version = await cullRef(activeAsset.id, refId);
+      setRefSet(version.ref_set);
+    } catch (e) {
+      log.error("cull failed:", e);
+      setError(String(e));
+    }
+  };
+  const onSaveProfile = async () => {
+    if (!activeAsset) return;
+    setError(null);
+    try {
+      const version = await saveProfile(activeAsset.id, promptTemplate.trim());
+      setPromptTemplate(version.prompt_template);
+      log.info("saved AssetProfile:", activeAsset.name,
+               `(${version.ref_set.length} refs, Saved not Finalized)`);
+    } catch (e) {
+      log.error("save failed:", e);
       setError(String(e));
     }
   };
@@ -426,27 +653,76 @@ export default function App() {
   };
 
   const dot = conn === "online" ? "ok" : conn === "offline" ? "err" : "warn";
-  const pending = counts.queued + counts.running;
   // A selected cell key is either "<jobId>" or "<jobId>:<output>" (multi candidate).
   const selJob = selected ? jobs[selected.split(":")[0]] : null;
+  // The selected candidate's own output (multi pool) — the Inspector shows THAT image +
+  // its provenance, not the pool's first output (review 2026-06-10 #2).
+  const selOutput = selected && selected.includes(":")
+    ? selected.slice(selected.indexOf(":") + 1)
+    : undefined;
   // When an asset is active, the grid is derived from its jobs (lineage requester =
   // active version); the sandbox tracks the last batch's ids.
+  // The grid is stage-scoped: Stage A shows casting jobs (stage A); Stage B/C show the
+  // Stage-B dataset candidates (stage B). Legacy jobs with no stage read as A.
+  const gridStage = stage === "A" ? "A" : "B";
+  // Sandbox grid: the last batch's jobs + any clean/polish pass jobs chained off them
+  // (a pass follows its parent into the grid; chains can nest — polish after clean).
+  const sandboxIds = (() => {
+    const ids = new Set(batchIds);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const j of Object.values(jobs)) {
+        if (j.chained_from && ids.has(j.chained_from) && !ids.has(j.id)) {
+          ids.add(j.id);
+          grew = true;
+        }
+      }
+    }
+    const known = Object.values(jobs)
+      .filter((j) => ids.has(j.id))
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .map((j) => j.id);
+    const unknown = batchIds.filter((id) => !jobs[id]);   // just-fired, not polled yet
+    return [...unknown, ...known];
+  })();
   const gridIds = activeAsset
     ? Object.values(jobs)
-        .filter((j) => j.requester_id === activeAsset.active_version)
+        .filter((j) => j.requester_id === activeAsset.active_version
+                       && (j.stage ?? "A") === gridStage)
         .sort((a, b) => a.created_at.localeCompare(b.created_at))
         .map((j) => j.id)
-    : batchIds;
+    : sandboxIds;
   // Which saved candidate outputs are starred (the hero ★, persisted in version.json).
   const starredOutputs = new Set(casting.filter((c) => c.starred).map((c) => c.source_output));
+  // Partial/stopped Stage-B datasets (review 2026-06-10): failed/skipped cells mean the
+  // coverage matrix is incomplete — warn in Stages B/C instead of a silent green done.
+  const partialDatasets = activeAsset
+    ? Object.values(jobs).filter(
+        (j) => j.requester_id === activeAsset.active_version
+          && (j.stage ?? "") === "B" && j.status === "done"
+          && !!j.result?.batch
+          && (j.result.batch.failed > 0 || j.result.batch.skipped > 0))
+    : [];
+  // Stage-C: which candidate outputs are kept into the curated ref_set (+ output → ref id).
+  const keptByOutput = new Map(refSet.map((r) => [r.source_output, r.id] as const));
   // Flatten jobs → candidate cells: a multi cast (one job → N outputs) expands into one
-  // tile per candidate; everything else is one tile per job.
-  type Cell = { key: string; job?: Job; output?: string };
+  // tile per candidate; everything else is one tile per job. A still-RUNNING cast
+  // streams its interim candidates (partial_outputs) as tiles the moment each lands
+  // (user request 2026-06-10), plus one placeholder tile for the in-flight remainder.
+  type Cell = { key: string; job?: Job; output?: string; interim?: boolean };
   const cells: Cell[] = gridIds.flatMap((id) => {
     const job = jobs[id];
     const names = job?.result?.output_names;
     if (names && names.length > 1) {
       return names.map((o) => ({ key: `${id}:${o}`, job, output: o }));
+    }
+    const partial = job?.status === "running" ? job.partial_outputs ?? [] : [];
+    if (partial.length > 0) {
+      return [
+        ...partial.map((o) => ({ key: `${id}:${o}`, job, output: o, interim: true })),
+        { key: id, job },     // the in-flight remainder (progress bar + cancel live here)
+      ];
     }
     return [{ key: id, job, output: job?.result?.output_name }];
   });
@@ -496,6 +772,12 @@ export default function App() {
             </div>
           )}
         </div>
+        {project?.open && (
+          <button className="proj-btn" onClick={onCloseProject} disabled={conn !== "online"}
+                  title="close this project (nothing is deleted — its queue resumes paused on reopen)">
+            Close
+          </button>
+        )}
         <span className="spacer" />
         <span className={`status dot-${dot}`}>
           <i className="dot" /> orchestrator: {conn}
@@ -539,25 +821,42 @@ export default function App() {
             <div className="stage-ctx">
               <span className="ctx-asset">{activeAsset.name}</span>
               <span className="muted"> · v1_base · CHARACTER BOOTSTRAP — </span>
-              <span className="ctx-stage">Stage A · Casting</span>
+              <span className="stage-switch">
+                {([["A", "Casting"], ["B", "Expansion"], ["C", "Curation"]] as const).map(
+                  ([s, label]) => (
+                    <button
+                      key={s}
+                      className={`stage-tab ${stage === s ? "on" : ""}`}
+                      onClick={() => setStage(s)}
+                      title={`Stage ${s} · ${label}`}
+                    >
+                      {s} · {label}
+                    </button>
+                  ),
+                )}
+              </span>
             </div>
           )}
+          {(!activeAsset || stage === "A") && (
           <div className="generate-bar">
             <label>
               pipeline
               <select
-                value={activeAsset ? castPipeline : "zimage"}
-                disabled={!activeAsset}
-                onChange={(e) => setCastPipeline(e.target.value as "multi" | "zimage")}
+                value={castPipeline}
+                onChange={(e) => {
+                  setCastPipeline(e.target.value as "multi" | "zimage" | "sd35");
+                  setAdvParamsA({});   // tunables are per-pipeline
+                }}
               >
-                {activeAsset && <option value="multi">multi</option>}
+                <option value="multi">multi</option>
                 <option value="zimage">zimage</option>
+                <option value="sd35">sd35</option>
               </select>
             </label>
             <label>
               mode
               <select disabled>
-                <option>{activeAsset && castPipeline === "multi" ? "ideate" : "t2i"}</option>
+                <option>{castPipeline === "multi" ? "ideate" : "t2i"}</option>
               </select>
             </label>
             <input
@@ -569,7 +868,7 @@ export default function App() {
                 if (e.key === "Enter") onGenerate();
               }}
             />
-            {activeAsset && castPipeline === "multi" ? (
+            {castPipeline === "multi" ? (
               <>
                 <label className="n" title="seeds per cast → num_candidates × pipelines">
                   cand
@@ -603,6 +902,21 @@ export default function App() {
               </label>
             )}
             <button
+              className="ghost"
+              onClick={() => setShowParamsA((v) => !v)}
+              title="show/hide every tunable parameter (unset = the model default)"
+            >
+              ⚙ params{Object.keys(advParamsA).length ? ` (${Object.keys(advParamsA).length})` : ""}
+            </button>
+            <button
+              className="ghost"
+              onClick={onPreviewGenerate}
+              disabled={conn !== "online" || !project?.open}
+              title="dry-run: review the resolved prompt + the exact worker command, no GPU"
+            >
+              Preview
+            </button>
+            <button
               onClick={onGenerate}
               disabled={
                 conn !== "online" ||
@@ -614,6 +928,159 @@ export default function App() {
               {activeAsset ? "Cast ▶" : "Generate ▶"}
             </button>
           </div>
+          )}
+          {(!activeAsset || stage === "A") && showParamsA && (
+            <div className="generate-bar params-bar">
+              <ParamControls
+                specs={castPipeline === "multi"
+                  ? catalog?.multi?.params ?? MULTI_PARAM_SPECS
+                  : catalog?.[castPipeline]?.params ?? []}
+                mode={castPipeline === "multi" ? "ideate" : "t2i"}
+                values={advParamsA}
+                onChange={(k, v) => setAdvParamsA((p) => {
+                  const next = { ...p };
+                  if (v === undefined) delete next[k]; else next[k] = v;
+                  return next;
+                })}
+              />
+              <button className="ghost" onClick={() => setAdvParamsA({})}
+                      title="clear all overrides (back to model defaults)">reset</button>
+            </div>
+          )}
+
+          {/* Stage B — coverage-matrix dataset recipe (img2img from the hero) */}
+          {activeAsset && stage === "B" && casting.some((c) => c.starred) && (
+            <div className="hero-strip">
+              <span className="style-label">base image (the Stage-A hero ★ — every cell img2img's from it):</span>
+              {casting.filter((c) => c.starred).map((c) => (
+                <img
+                  key={c.id}
+                  className="hero-thumb"
+                  src={castingUrl(activeAsset.id, c.file)}
+                  alt={c.file}
+                  title={`${c.pipeline ?? "?"} · seed ${c.seed ?? "?"} — saved in casting/`}
+                />
+              ))}
+            </div>
+          )}
+          {activeAsset && stage === "B" && (
+            <div className="generate-bar">
+              <label title="coverage-matrix preset (R111): candidate count vs detail">
+                recipe
+                <select value={recipePreset}
+                        onChange={(e) => setRecipePreset(e.target.value as RecipePreset)}>
+                  {recipePresets.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </label>
+              <label title="img2img model family for the sweep">
+                pipeline
+                <select value={stageBPipeline}
+                        onChange={(e) => {
+                          setStageBPipeline(e.target.value as "zimage" | "sd35");
+                          setStageBModel("");   // reset variant when the family changes
+                          setAdvParamsB({});    // tunables are per-pipeline — a stale
+                                                // zimage-only key would 422 on sd35
+                        }}>
+                  <option value="zimage">zimage</option>
+                  <option value="sd35">sd35</option>
+                </select>
+              </label>
+              <label title="model variant (default = the pipeline's; ⚠ gated variants need a fetch)">
+                model
+                <select value={stageBModel} onChange={(e) => setStageBModel(e.target.value)}>
+                  <option value="">default</option>
+                  {(catalog?.[stageBPipeline]?.variants ?? []).map((v) => (
+                    <option key={v.id} value={v.id}>{v.id}{v.gated ? " 🔒" : ""}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="n" title="img2img strength (0–1): higher = more variation, less identity">
+                strength
+                <input type="number" min={0.1} max={1} step={0.05} value={stageBStrength}
+                       onChange={(e) => setStageBStrength(clamp(parseFloat(e.target.value || "0.55"), 0.1, 1))} />
+              </label>
+              <input
+                className="prompt"
+                placeholder="character clause (identity — defaults to the saved prompt template)…"
+                value={characterClause}
+                onChange={(e) => setCharacterClause(e.target.value)}
+              />
+              <button
+                className="ghost"
+                onClick={() => setShowParamsB((v) => !v)}
+                title="show/hide every tunable parameter (unset = the model default)"
+              >
+                ⚙ params{Object.keys(advParamsB).length ? ` (${Object.keys(advParamsB).length})` : ""}
+              </button>
+              <button
+                className="ghost"
+                onClick={onPreviewStageB}
+                disabled={conn !== "online" || !project?.open || !hasHero || busy}
+                title="dry-run: review the planned dataset (job count, first cell, argv), no GPU"
+              >
+                Preview
+              </button>
+              <button
+                onClick={onStageB}
+                disabled={conn !== "online" || !project?.open || !hasHero || busy ||
+                          disk?.blocked === true}
+                title={hasHero ? "" : "star a hero in Stage A first"}
+              >
+                {busy ? "…" : "Generate Dataset ▶"}
+              </button>
+            </div>
+          )}
+          {activeAsset && stage === "B" && showParamsB && (
+            <div className="generate-bar params-bar">
+              <ParamControls
+                specs={catalog?.[stageBPipeline]?.params ?? []}
+                mode="img2img"
+                values={advParamsB}
+                onChange={(k, v) => setAdvParamsB((p) => {
+                  const next = { ...p };
+                  if (v === undefined) delete next[k]; else next[k] = v;
+                  return next;
+                })}
+                exclude={["model_name", "strength", "init_image", "mask_image"]}
+              />
+              <button className="ghost" onClick={() => setAdvParamsB({})}
+                      title="clear all overrides (back to model defaults)">reset</button>
+            </div>
+          )}
+          {activeAsset && stage === "B" && !hasHero && (
+            <div className="banner">Star a hero ★ in Stage A before expanding — Stage B img2img's from it.</div>
+          )}
+          {activeAsset && (stage === "B" || stage === "C") && partialDatasets.length > 0 && (
+            <div className="banner">
+              ⚠ Partial dataset{partialDatasets.length > 1 ? "s" : ""}:{" "}
+              {partialDatasets
+                .map((j) => {
+                  const b = j.result!.batch!;
+                  return `${b.ok}/${b.count} cells (${b.failed} failed, ${b.skipped} skipped`
+                    + `${b.status === "stopped" ? ", stopped early" : ""})`;
+                })
+                .join(" · ")}{" "}
+              — the coverage matrix is incomplete; re-run Stage B for the rest or curate what's there.
+            </div>
+          )}
+
+          {/* Stage C — Save the curated AssetProfile (the MVP done-line) */}
+          {activeAsset && stage === "C" && (
+            <div className="style-bar">
+              <span className="style-label">kept {refSet.length}</span>
+              <input
+                className="style-frag"
+                placeholder="prompt template (identity clause saved into the AssetProfile)…"
+                value={promptTemplate}
+                onChange={(e) => setPromptTemplate(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") onSaveProfile(); }}
+              />
+              <button className="proj-btn" onClick={onSaveProfile}
+                      disabled={conn !== "online" || !project?.open}>
+                Save AssetProfile
+              </button>
+            </div>
+          )}
           {project?.open && (
             <div className="style-bar">
               <span className="style-label">L1 style</span>
@@ -660,14 +1127,29 @@ export default function App() {
               are blocked (running jobs finish).
             </div>
           )}
+          {paused && (
+            <div className="banner">
+              ⏸ Queue paused
+              {pauseReason === "resume"
+                ? " — resumed from last session; pending work is held for review (R88)"
+                : ""}{" "}
+              ({counts.queued} queued{counts.running ? `, ${counts.running} running` : ""}).
+              New jobs will wait —{" "}
+              <button className="link" onClick={onUnpause}>unpause ▶</button>
+            </div>
+          )}
           {error && <div className="error">⚠ {error}</div>}
 
           <div className="grid">
             {cells.length === 0 && (
               <p className="muted center span">
-                {activeAsset
+                {!activeAsset
+                  ? "Fire a batch — results stream in here (the casting-grid embryo)."
+                  : stage === "A"
                   ? `Cast ${activeAsset.name} — candidates stream into this grid (Stage A).`
-                  : "Fire a batch — results stream in here (the casting-grid embryo)."}
+                  : stage === "B"
+                  ? "Pick a recipe + Generate Dataset — img2img variations stream in (Stage B)."
+                  : "Stage-B candidates appear here to keep ✓ / cull ✕ into the curated ref set (Stage C)."}
               </p>
             )}
             {cells.map((c) => (
@@ -675,13 +1157,21 @@ export default function App() {
                 key={c.key}
                 job={c.job}
                 output={c.output}
+                interim={c.interim ?? false}
                 selected={selected === c.key}
                 onClick={() => setSelected(c.key)}
                 onCancel={() => c.job && onCancel(c.job.id)}
                 onDelete={() => c.job && onDelete(c.job.id)}
-                castable={!!activeAsset}
+                castable={!!activeAsset && stage === "A"}
                 isHero={!!c.output && starredOutputs.has(c.output)}
                 onStar={() => c.job && onStar(c.job.id, c.output)}
+                curating={stage === "C"}
+                isKept={!!c.output && keptByOutput.has(c.output)}
+                onKeep={() => c.job && onKeep(c.job.id, c.output)}
+                onCull={() => {
+                  const rid = c.output ? keptByOutput.get(c.output) : undefined;
+                  if (rid) onCull(rid);
+                }}
               />
             ))}
           </div>
@@ -690,25 +1180,37 @@ export default function App() {
         <aside className="inspector">
           <div className="rail-head">INSPECTOR</div>
           {!selJob && <div className="muted">Select an image to see job details + lineage.</div>}
-          {selJob && <Inspector job={selJob} />}
+          {selJob && <Inspector job={selJob} output={selOutput} />}
         </aside>
       </div>
 
       <footer className="dock">
-        <span className={`status dot-${paused ? "warn" : pending > 0 ? "warn" : dot}`}>
+        {/* Honest queue states (review 2026-06-10): "running" only when a job IS running;
+            queued-but-held shows WHY (paused with its reason / disk hold / starting). */}
+        <span className={`status dot-${paused ? "warn" : counts.running > 0 ? "warn" : dot}`}>
           <i className="dot" /> JOB QUEUE{" "}
           {paused
-            ? `⏸ paused (${counts.queued} queued)`
-            : pending > 0
-            ? `▶ running (${pending})`
+            ? `⏸ paused${pauseReason === "resume" ? " (resumed last session)" : ""} — ${counts.queued} queued`
+            : counts.running > 0
+            ? `▶ running ${counts.running}${counts.queued ? ` · ${counts.queued} queued` : ""}`
+            : counts.queued > 0
+            ? disk?.blocked
+              ? `⛔ held (disk) — ${counts.queued} queued`
+              : `▸ starting (${counts.queued} queued)`
             : `· idle`}
         </span>
+        <div className="queue-wrap">
+          <button className="proj-btn" onClick={() => setShowQueue((v) => !v)}
+                  title="list queued/running jobs">
+            jobs {showQueue ? "▴" : "▾"}
+          </button>
+          {showQueue && <QueuePanel jobs={jobs} onCancel={onCancel} onStop={onStop} />}
+        </div>
         <span className="meter">
           done {counts.done}
           {counts.failed ? ` · failed ${counts.failed}` : ""}
           {counts.canceled ? ` · canceled ${counts.canceled}` : ""}
         </span>
-        <span className="meter">VRAM 0.0/{vramBudget.toFixed(1)}G</span>
         <span className={`meter disk-${disk?.state ?? "ok"}`} title={disk?.reason ?? "disk OK"}>
           {disk?.project
             ? `proj ${disk.project.used_gb.toFixed(1)}/${disk.project.cap_gb}G`
@@ -722,6 +1224,117 @@ export default function App() {
           </button>
         )}
       </footer>
+      {preview && (
+        <div className="modal-overlay" onClick={() => { setPreview(null); pendingRunRef.current = null; }}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="rail-head">PRE-FLIGHT REVIEW — dry run, no GPU spent</div>
+            {"first_cell" in preview ? (
+              <>
+                <dl>
+                  <dt>recipe</dt>
+                  <dd>
+                    {preview.preset} → <b>1 batch job · {preview.items ?? "?"} cells</b>{" "}
+                    (model loads once; keep ~{preview.kept_target.join("–")})
+                  </dd>
+                  <dt>pipeline</dt><dd>{preview.pipeline}</dd>
+                  <dt>hero</dt><dd className="mono">{preview.hero.split(/[\\/]/).pop()}</dd>
+                  <dt>cell 1/{preview.items ?? "?"}</dt>
+                  <dd>{preview.first_cell.coverage_cell.shot_size} · {preview.first_cell.coverage_cell.angle} · {preview.first_cell.coverage_cell.expression} · {preview.first_cell.coverage_cell.background} (seed {preview.first_cell.seed})</dd>
+                </dl>
+                <div className="modal-label">first cell prompt (style + clause + cell):</div>
+                <div className="modal-prompt">{preview.first_cell.prompt}</div>
+                <div className="modal-label">worker command (cell 1):</div>
+                <pre className="modal-argv mono">{preview.first_argv.join(" ")}</pre>
+              </>
+            ) : (
+              <>
+                <dl>
+                  <dt>pipeline</dt><dd>{preview.pipeline}</dd>
+                  <dt>jobs</dt>
+                  <dd>
+                    {preview.num_candidates != null
+                      ? `1 cast → ${preview.num_candidates} seed(s) × 3 pipelines = ${preview.num_candidates * 3} candidates`
+                      : `${preview.count} job(s)`}
+                  </dd>
+                  <dt>output</dt><dd className="mono">{preview.output_dir}</dd>
+                </dl>
+                <div className="modal-label">resolved prompt (style prepend included):</div>
+                <div className="modal-prompt">{preview.prompt}</div>
+                <div className="modal-label">worker command:</div>
+                <pre className="modal-argv mono">{preview.argv.join(" ")}</pre>
+              </>
+            )}
+            {preview.post_passes && preview.post_passes.length > 0 && (
+              <>
+                <div className="modal-label">chained post-passes (run after, one batch job each):</div>
+                <div className="modal-prompt">
+                  {preview.post_passes
+                    .map((p) => `${p.pass}: ${p.backend}${p.model_name ? ` / ${p.model_name}` : " (default model)"} @ strength ${p.strength}`)
+                    .join("  →  ")}
+                </div>
+              </>
+            )}
+            <div className="modal-actions">
+              <button className="proj-btn" onClick={() => { setPreview(null); pendingRunRef.current = null; }}>
+                Close
+              </button>
+              <button
+                className="modal-run"
+                onClick={() => {
+                  const run = pendingRunRef.current;
+                  setPreview(null);
+                  pendingRunRef.current = null;
+                  run?.();
+                }}
+              >
+                Run ▶
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Queued/running jobs at a glance — id, pipeline/stage, progress, the runner's `note`
+ * (OOM retry, re-queued at shutdown, …) which previously was never rendered anywhere. */
+function QueuePanel({ jobs, onCancel, onStop }: {
+  jobs: Record<string, Job>;
+  onCancel: (id: string) => void;
+  onStop: (id: string) => void;
+}) {
+  const order: Record<string, number> = { running: 0, queued: 1 };
+  const active = Object.values(jobs)
+    .filter((j) => j.status === "queued" || j.status === "running")
+    .sort((a, b) => (order[a.status] - order[b.status]) || a.created_at.localeCompare(b.created_at));
+  return (
+    <div className="queue-panel">
+      {active.length === 0 && <div className="picker-empty">queue is empty</div>}
+      {active.map((j) => {
+        const items = (j.params as Record<string, unknown>)?.batch_items as unknown[] | undefined;
+        return (
+          <div key={j.id} className="queue-row">
+            <span className={`q-st q-${j.status}`}>{j.status === "running" ? "▶" : "⏳"}</span>
+            <span className="mono q-id" title={j.id}>{j.id.slice(0, 12)}</span>
+            <span className="q-pipe">
+              {j.pipeline}/{j.mode}
+              {j.pass ? ` · ${j.pass}⤴` : ""}
+              {j.stage ? ` · ${j.stage}` : ""}
+              {items ? ` · batch ×${items.length}` : ""}
+              {j.batch_size > 1 ? ` · ${j.index + 1}/${j.batch_size}` : ""}
+            </span>
+            <span className="q-prog">{j.status === "running" ? `${Math.round(j.progress * 100)}%` : ""}</span>
+            {j.note ? <span className="q-note" title={j.note}>{j.note}</span> : <span className="q-note" />}
+            {j.status === "running" && !!items && (
+              <button className="picker-forget" title="stop after the current image (keeps completed)"
+                      onClick={() => onStop(j.id)}>⏹</button>
+            )}
+            <button className="picker-forget" title="cancel (kills + discards partial)"
+                    onClick={() => onCancel(j.id)}>✕</button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -729,6 +1342,7 @@ export default function App() {
 function GridCell({
   job,
   output,
+  interim = false,
   selected,
   onClick,
   onCancel,
@@ -736,9 +1350,14 @@ function GridCell({
   castable = false,
   isHero = false,
   onStar,
+  curating = false,
+  isKept = false,
+  onKeep,
+  onCull,
 }: {
   job?: Job;
   output?: string;
+  interim?: boolean;
   selected: boolean;
   onClick: () => void;
   onCancel: () => void;
@@ -746,6 +1365,10 @@ function GridCell({
   castable?: boolean;
   isHero?: boolean;
   onStar?: () => void;
+  curating?: boolean;
+  isKept?: boolean;
+  onKeep?: () => void;
+  onCull?: () => void;
 }) {
   const status = job?.status ?? "queued";
   // For a multi candidate, `output` is this tile's specific image; else the job's single output.
@@ -754,15 +1377,22 @@ function GridCell({
   const active = status === "queued" || status === "running";
   const terminal = status === "done" || status === "failed" || status === "canceled";
   const done = status === "done";
+  // Tile aspect follows the job's actual output dims (review 2026-06-10 #3: 1024×1024
+  // Stage-B images were cropped into the fixed 16:9 cell). Fallback = the t2i default.
+  const w = Number(job?.params?.width) || 1280;
+  const h = Number(job?.params?.height) || 720;
+  // Interim tiles (a running cast's already-landed candidates) show their image early.
+  const showImg = !!name && (done || interim);
   return (
     <div
-      className={`cell ${selected ? "sel" : ""} ${isHero ? "hero" : ""} st-${status}`}
+      className={`cell ${selected ? "sel" : ""} ${isHero ? "hero" : ""} ${isKept ? "kept" : ""} st-${status}`}
+      style={{ aspectRatio: `${w} / ${h}` }}
       role="button"
       tabIndex={0}
       onClick={onClick}
     >
-      {name && status === "done" ? (
-        <img src={outputUrl(name)} alt={job?.id} />
+      {showImg ? (
+        <img src={outputUrl(name!)} alt={job?.id} />
       ) : (
         <span className="cell-status">
           {status === "queued" && "queued…"}
@@ -772,12 +1402,12 @@ function GridCell({
           {status === "done" && "—"}
         </span>
       )}
-      {status === "running" && (
+      {status === "running" && !interim && (
         <div className="progress">
           <div className="bar" style={{ width: `${Math.round(prog * 100)}%` }} />
         </div>
       )}
-      {active && (
+      {active && !interim && (
         <button
           className="cancel"
           title="cancel"
@@ -813,28 +1443,182 @@ function GridCell({
           {isHero ? "★" : "☆"}
         </button>
       )}
+      {curating && done && (onKeep || onCull) && (
+        <button
+          className={`keep ${isKept ? "on" : ""}`}
+          title={isKept ? "kept ✓ — click to cull from the ref set" : "keep ✓ into the curated ref set"}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (isKept) onCull?.();
+            else onKeep?.();
+          }}
+        >
+          {isKept ? "✓" : "+"}
+        </button>
+      )}
     </div>
   );
 }
 
-function Inspector({ job }: { job: Job }) {
+function Inspector({ job, output }: { job: Job; output?: string }) {
   const r = job.result;
+  const p = job.params ?? {};
+  const cov = job.coverage_cell;
+  // A multi-candidate tile carries its own output — show THAT image + the candidate's
+  // pipeline/seed (parsed from its …/ideate/<pipeline>/seed_<n>/… path), not the pool's
+  // first output (review 2026-06-10 #2). clean/polish outputs fall back to job-level.
+  const m = output ? /\/ideate\/([^/]+)\/seed_(\d+)\//.exec("/" + output) : null;
+  const candPipeline = m ? m[1] : null;
+  const candSeed = m ? Number(m[2]) : null;
+  const pass = output ? (/\/clean\//.test("/" + output) ? "clean"
+    : /\/polish\//.test("/" + output) ? "polish" : null) : null;
+  // Batch jobs: per-output meta (cell + seed) echoed from the worker's batch manifest.
+  const ometa = output ? r?.output_meta?.[output] : undefined;
+  const cell = ometa?.coverage_cell ?? cov;
+  const file = output ?? r?.output_name;
+  const showPreview = !!file && (r?.ok === true || job.status === "running");
   return (
     <div className="insp">
-      {r?.output_name && r.ok && <img className="preview" src={outputUrl(r.output_name)} alt={job.id} />}
+      {showPreview && <img className="preview" src={outputUrl(file!)} alt={job.id} />}
       <dl>
         <dt>job</dt><dd>{job.id}</dd>
-        <dt>status</dt><dd>{job.status}</dd>
-        <dt>seed</dt><dd>{r?.seed ?? "—"}</dd>
+        <dt>status</dt>
+        <dd>{job.status}{job.status === "running" ? ` · ${Math.round(job.progress * 100)}%` : ""}</dd>
+        <dt>pipeline</dt>
+        <dd>
+          {candPipeline ?? job.pipeline}/{job.mode}
+          {pass ? ` · ${pass} pass` : ""}
+          {job.pass ? ` · ${job.pass}⤴${job.chained_from ? ` of ${job.chained_from}` : ""}` : ""}
+          {job.stage ? ` · stage ${job.stage}` : ""}
+        </dd>
+        <dt>model</dt><dd>{String(p.model_name ?? "default")}</dd>
+        <dt>seed</dt><dd>{candSeed ?? ometa?.seed ?? r?.seed ?? (p.seed as number | undefined) ?? "—"}</dd>
         <dt>wall</dt><dd>{job.wall_s != null ? `${job.wall_s}s` : "—"}</dd>
-        <dt>pipeline</dt><dd>{r?.duration_s != null ? `${r.duration_s}s` : "—"}</dd>
-        <dt>file</dt><dd className="mono">{r?.output_name ?? "—"}</dd>
+        <dt>duration</dt><dd>{r?.duration_s != null ? `${r.duration_s}s` : "—"}</dd>
+        <dt>file</dt><dd className="mono">{file ?? "—"}</dd>
       </dl>
+      {job.note && <div className="banner insp-note">{job.note}</div>}
+      {cell && (
+        <div className="muted insp-cov">
+          cell: {cell.shot_size} · {cell.angle} · {cell.expression}
+          {cell.background ? ` · ${cell.background}` : ""}
+        </div>
+      )}
+      {typeof p.prompt === "string" && (
+        <details className="insp-details">
+          <summary>resolved prompt (as run)</summary>
+          <div className="insp-prompt">{p.prompt}</div>
+        </details>
+      )}
+      <details className="insp-details">
+        <summary>params (as run)</summary>
+        <pre className="mono insp-params">{JSON.stringify(p, null, 1)}</pre>
+      </details>
       {r?.error && <div className="error">⚠ {r.error}</div>}
+      {job.status === "running" && job.log_tail && (
+        <pre className="logtail">{job.log_tail}</pre>
+      )}
       {(job.status === "failed" || job.status === "canceled") && job.log_tail && (
         <pre className="stderr">{job.log_tail}</pre>
       )}
     </div>
+  );
+}
+
+// Fallback multi tunables for before GET /models loads — the live drawer uses
+// catalog.multi.params (the full batch surface: clean/polish toggles + sub-params).
+const MULTI_PARAM_SPECS: ParamSpec[] = [
+  { name: "width", type: "int", default: 1024, min: 256, max: 2048, step: 16, note: "divisible by 16" },
+  { name: "height", type: "int", default: 1024, min: 256, max: 2048, step: 16, note: "divisible by 16" },
+  { name: "seed", type: "int", note: "random if unset; candidates derive per-seed" },
+];
+
+/** Catalog-driven parameter controls (review 2026-06-10, issue 2): renders every
+ * non-advanced tunable for the pipeline+mode from GET /models — int/float as bounded
+ * numbers, enum as a select (with the model_name variants), flag as a checkbox, str as
+ * text. Unset (empty) = the worker/model default; nothing is sent for it. */
+function ParamControls({
+  specs,
+  mode,
+  values,
+  onChange,
+  exclude = [],
+}: {
+  specs: ParamSpec[];
+  mode: string;
+  values: Record<string, unknown>;
+  onChange: (name: string, value: unknown) => void;
+  exclude?: string[];
+}) {
+  const visible = specs.filter(
+    (s) => !s.advanced && s.type !== "image" && !exclude.includes(s.name)
+      && (!s.modes || s.modes.includes(mode)),
+  );
+  if (visible.length === 0) return <span className="muted">no tunables for this pipeline/mode</span>;
+  return (
+    <>
+      {visible.map((s) => {
+        const v = values[s.name];
+        const title = s.note ?? "";
+        if (s.type === "flag") {
+          return (
+            <label key={s.name} className="p-flag" title={title}>
+              <input
+                type="checkbox"
+                checked={v === true}
+                onChange={(e) => onChange(s.name, e.target.checked ? true : undefined)}
+              />
+              {s.name}
+            </label>
+          );
+        }
+        if (s.type === "enum") {
+          return (
+            <label key={s.name} title={title}>
+              {s.name}
+              <select
+                value={(v as string) ?? ""}
+                onChange={(e) => onChange(s.name, e.target.value || undefined)}
+              >
+                <option value="">default</option>
+                {(s.choices ?? []).map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </label>
+          );
+        }
+        if (s.type === "int" || s.type === "float") {
+          return (
+            <label key={s.name} className="p-num" title={title}>
+              {s.name}
+              <input
+                type="number"
+                min={s.min}
+                max={s.max}
+                step={s.step ?? (s.type === "float" ? 0.05 : 1)}
+                value={v === undefined ? "" : (v as number)}
+                placeholder={s.default != null ? String(s.default) : "auto"}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === "") return onChange(s.name, undefined);
+                  const n = s.type === "int" ? parseInt(raw, 10) : parseFloat(raw);
+                  onChange(s.name, Number.isNaN(n) ? undefined : n);
+                }}
+              />
+            </label>
+          );
+        }
+        return (
+          <label key={s.name} className="p-str" title={title}>
+            {s.name}
+            <input
+              type="text"
+              value={(v as string) ?? ""}
+              onChange={(e) => onChange(s.name, e.target.value || undefined)}
+            />
+          </label>
+        );
+      })}
+    </>
   );
 }
 

@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "loom:coverage_cell.schema.json",
+  "title": "Coverage cell — the frozen P1→P2 Stage-B metadata contract (P1 §7.1, P1-16)",
+  "description": "Structured per-image coverage along the four LoRA axes. Mirrors orchestrator/coverage.py vocab (a test keeps them in lockstep). P2's template captioner consumes these fields. Any change here is a breaking change to P2 — bump coverage.CONTRACT_VERSION.",
+  "type": "object",
+  "required": ["shot_size", "angle", "expression", "background"],
+  "additionalProperties": false,
+  "properties": {
+    "shot_size": { "type": "string", "enum": ["face_closeup", "portrait", "waist_up", "full_body"] },
+    "angle": { "type": "string", "enum": ["front", "three_quarter_left", "three_quarter_right", "profile_left", "profile_right", "back"] },
+    "expression": { "type": "string", "enum": ["neutral", "smile", "serious", "sad", "surprised"] },
+    "background": { "type": "string" }
+  }
+}

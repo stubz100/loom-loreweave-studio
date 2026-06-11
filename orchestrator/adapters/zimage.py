@@ -19,15 +19,23 @@ import json
 import re
 from pathlib import Path
 
+from . import _batch
 from .base import CompletionRecord, JobSpec
 
+try:
+    from .. import model_catalog
+except ImportError:  # pragma: no cover - direct-run convenience
+    import model_catalog  # type: ignore
+
 PIPELINE = "zimage"
+# catalog flag → worker run() kwarg for the batch jobs file (see _batch)
+_BATCH_INVERSIONS = {"no_cpu_offload": ("cpu_offload", False)}
 # What the worker CLI can do (build_argv supports all three — ready for P1).
 SUPPORTED_MODES = ("t2i", "img2img", "inpaint")
-# What the orchestrator API actually accepts TODAY (review #1): capabilities must
-# advertise only this, so it never claims a mode/param GenerateRequest will reject.
-# img2img/inpaint (+ init_image/mask_image/strength) get wired in P1 (asset studio).
-WIRED_MODES = ("t2i",)
+# What the orchestrator API actually accepts TODAY: capabilities must advertise only this,
+# so it never claims a mode/param GenerateRequest will reject. img2img/inpaint (+ init_image/
+# mask_image/strength) wired in P1/M3 for Stage-B expansion (build_argv already handled them).
+WIRED_MODES = ("t2i", "img2img", "inpaint")
 WIRED_PARAMS = (
     "prompt", "mode", "width", "height", "seed", "model_name",
     "num_steps", "guidance_scale", "negative_prompt",
@@ -93,38 +101,37 @@ def progress(line: str) -> float | None:
 
 
 def build_argv(spec: JobSpec, python: str, script: Path) -> list[str]:
-    """Typed params → the real CLI. width/height must be divisible by 16.
+    """Typed params → the real CLI. Fixed args (prompt/mode/output-dir/device) + every catalog
+    param present (`model_catalog.emit_argv` — the single flag-mapping source, so any variant +
+    any tunable in the request's params channel flows through). width/height divisible by 16.
 
-    `script` is the resolved absolute worker path (see resolve_script) — zimage
-    must be invoked by file path, not `-m` (module docstring)."""
+    A job with **`batch_items`** becomes ONE `--jobs-file` invocation instead (the worker
+    loads the model once and loops the items — the Stage-B dataset path, see `_batch`).
+
+    `script` is the resolved absolute worker path — zimage is invoked by file path, not `-m`."""
     p = spec.params
+    if p.get("batch_items"):
+        return _batch.build_batch_argv(spec, python, script, PIPELINE, _BATCH_INVERSIONS)
     argv: list[str] = [
         python,
         str(script),
         "--prompt", str(p["prompt"]),
         "--mode", spec.mode,
-        "--width", str(p.get("width", 1280)),
-        "--height", str(p.get("height", 720)),
         "--output-dir", str(spec.output_dir),
         "--device", str(p.get("device", "cuda")),
     ]
-    if p.get("model_name"):
-        argv += ["--model-name", str(p["model_name"])]
-    if p.get("seed") is not None:
-        argv += ["--seed", str(p["seed"])]
-    if p.get("num_steps") is not None:
-        argv += ["--num-steps", str(p["num_steps"])]
-    if p.get("guidance_scale") is not None:
-        argv += ["--guidance-scale", str(p["guidance_scale"])]
-    if p.get("negative_prompt"):
-        argv += ["--negative-prompt", str(p["negative_prompt"])]
-    if spec.mode in ("img2img", "inpaint") and p.get("init_image"):
-        argv += ["--init-image", str(p["init_image"])]
-    if spec.mode == "inpaint" and p.get("mask_image"):
-        argv += ["--mask-image", str(p["mask_image"])]
-    if p.get("strength") is not None:
-        argv += ["--strength", str(p["strength"])]
+    argv += model_catalog.emit_argv(PIPELINE, p, spec.mode)
     return argv
+
+
+def make_progress(params: dict):
+    """Batch jobs get a real per-item fraction; single runs keep the coarse markers."""
+    items = params.get("batch_items")
+    return _batch.make_batch_progress(len(items)) if items else progress
+
+
+# Interim results: surface each announced image as it lands (per item in batch mode).
+collect_output = _batch.collect_image_line
 
 
 def _find_manifest(output_dir: Path, stdout: str) -> Path | None:
@@ -151,7 +158,12 @@ def parse_result(
     """Normalize into the common envelope using **manifest-status-as-truth** (§8/§15,
     review #4): success is decided by the saved manifest's per-stage status, not by
     scanning for the newest PNG, cross-checked with the exit code.
-    """
+
+    Batch jobs route to the batch-summary parse (their `<pipeline>_batch_*.json` is
+    authoritative; per-item sidecars stay as per-image provenance)."""
+    bm = _batch.find_batch_manifest(output_dir, PIPELINE)
+    if bm is not None:
+        return _batch.parse_batch_result(returncode, stdout, stderr, bm)
     manifest_path = _find_manifest(output_dir, stdout)
     manifest_status: str | None = None
     error: str | None = None

@@ -30,15 +30,23 @@ CONTRACT (the 1-page check, kb-loom-p0 §15):
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from .base import CompletionRecord, JobSpec
 
+try:
+    from .. import model_catalog
+except ImportError:  # pragma: no cover - direct-run convenience
+    import model_catalog  # type: ignore
+
 PIPELINE = "multi"
-# Casting fires the candidate pool only (ideate); clean/polish (batch toggles) are later.
+# The API mode stays `ideate`; build_argv picks the `batch` subcommand when the
+# clean/polish toggles are on (they're params, not a separate mode — one cast, one job).
 WIRED_MODES = ("ideate",)
 SUPPORTED_MODES = ("ideate", "batch")
-WIRED_PARAMS = ("prompt", "num_candidates", "ideation_mode", "width", "height", "seed")
+WIRED_PARAMS = ("prompt", "num_candidates", "ideation_mode",
+                *(p["name"] for p in model_catalog.MULTI_PARAMS))
 # Default ideation preset: `fast` (klein-4b / sd3.5-large-turbo / zimage-turbo) — lighter
 # weights + quicker pools, the better fit for 16 GB + Stage-A free experimentation. The
 # `refined` preset (klein-9b / sd3.5-large / zimage-base) is opt-in per cast.
@@ -77,17 +85,95 @@ def capabilities(roots: list[Path]) -> dict:
 
 
 def progress(line: str) -> float | None:
-    """Coarse progress from the batch's stage prints (no per-candidate event stream)."""
+    """Coarse progress from the batch's stage prints (no per-candidate event stream).
+    Kept for the capabilities contract / fallback; the runner prefers `make_progress`."""
     s = line.strip()
     if "[batch] ideate produced" in s or "[ideate] produced" in s:
         return 0.9
-    if "minted session" in s or "attached to session" in s or "[batch]" in s:
+    # NB the real print is "minted NEW session" (arch_*: open_or_create) — the old
+    # "minted session" substring never matched; "[batch]" caught it in practice.
+    if "minted new session" in s or "attached to session" in s or "[batch]" in s:
         return 0.2
+    return None
+
+
+# Both ideation presets (fast | refined) run the full 3-pipeline lineup (flux2+sd35+zimage).
+_PRESET_PIPELINES = 3
+
+# Per-image completion lines in the merged stdout. Ideate children stream live (their
+# stdout passes through) and print `  Image: <path>`; clean/polish sub-runs are PIPED by
+# the batch driver, so their images surface via its `[batch] clean OK … -> <path>` lines.
+_IMAGE_LINE = re.compile(r"^\s*Image:\s*(.+?\.png)\s*$")
+_BATCH_PASS_LINE = re.compile(r"^\[batch\] (clean|polish) (OK|FAIL)\b(?:.*?->\s*(.+?\.png)\s*$)?")
+
+
+def _pass_units(params: dict) -> tuple[int, int]:
+    """(per-pass candidate count, number of passes) for the progress denominator."""
+    n = max(1, int(params.get("num_candidates", 1))) * _PRESET_PIPELINES
+    passes = 1 + (1 if params.get("clean") else 0) + (1 if params.get("polish") else 0)
+    return n, passes
+
+
+def make_progress(params: dict):
+    """Stateful per-candidate progress (review 2026-06-10): a cast = `num_candidates ×
+    3 pipelines` sequential one-shot subprocesses (× extra clean/polish passes when
+    toggled), and the coarse markers left the bar at 20% for the whole run. Count the
+    per-image completions against the known total → a real fraction. Failures still
+    advance (the next spawn banner / the FAIL line), so nothing freezes the bar."""
+    n, passes = _pass_units(params)
+    total = n * passes
+    state = {"done": 0, "started": 0}
+
+    def _frac() -> float:
+        return min(0.05 + 0.90 * state["done"] / total, 0.95)
+
+    def _progress(line: str) -> float | None:
+        s = line.strip()
+        if "[done] Pipeline completed" in s:
+            # an ideate child finished (clean/polish children are piped, never seen here)
+            state["done"] = min(state["done"] + 1, total)
+            return _frac()
+        if _BATCH_PASS_LINE.match(line):
+            state["done"] = min(state["done"] + 1, total)   # one clean/polish image done
+            return _frac()
+        if "[stage_runner] $" in s:
+            state["started"] += 1
+            return min(0.05 + 0.90 * (state["started"] - 1) / total, 0.95)
+        if "[batch] ideate produced" in s or "[ideate] produced" in s:
+            # ideate pass complete — snap the counter to the pass boundary (failed
+            # candidates never print [done], so don't let them stall the fraction)
+            state["done"] = max(state["done"], n)
+            return _frac() if passes > 1 else 0.95
+        if "minted new session" in s or "attached to session" in s:
+            return 0.02
+        return None
+
+    return _progress
+
+
+def collect_output(line: str) -> str | None:
+    """Interim-result hook (user request 2026-06-10): return the absolute image path when
+    `line` announces a finished image, so the runner can surface the pool **while the cast
+    is still running** instead of only at the end. Matches the ideate children's live
+    `  Image: <path>` prints and the batch driver's `[batch] clean|polish OK … -> <path>`
+    lines. The runner guards the path (must resolve under the project out/)."""
+    m = _IMAGE_LINE.match(line)
+    if m:
+        return m.group(1)
+    m = _BATCH_PASS_LINE.match(line)
+    if m and m.group(2) == "OK" and m.group(3):
+        return m.group(3)
     return None
 
 
 def build_argv(spec: JobSpec, python: str, script: Path) -> list[str]:
     """Typed params → `python -m pipeline.multi.run_pipeline ideate …`.
+
+    Loom always invokes the **`ideate`** subcommand (2026-06-11): clean/polish are
+    orchestrator-chained post-passes now (separate batch img2img jobs over the pool —
+    they stream per item, unlike the worker's piped in-worker passes), so the `batch`
+    subcommand's toggles are never used here. width/height/seed flow through
+    `model_catalog.emit_argv("multi", …)` (post-marked params are skipped there).
 
     `script` is only used by the runner to set cwd (= `script.parents[2]` = `…/src`); the
     module path is fixed. Sessions land under the project (`<project>/_temp/multi_sessions`)
@@ -97,18 +183,15 @@ def build_argv(spec: JobSpec, python: str, script: Path) -> list[str]:
     out_dir = spec.output_dir                       # <project>/out/<job>
     project_dir = out_dir.parents[1]                # <project>
     argv: list[str] = [
-        python, "-m", MODULE, mode,
+        python, "-m", MODULE, "ideate",
         "--prompt", str(p["prompt"]),
         "--num-candidates", str(int(p.get("num_candidates", 1))),
         "--ideation-mode", str(p.get("ideation_mode", DEFAULT_IDEATION_MODE)),
-        "--width", str(p.get("width", 1024)),
-        "--height", str(p.get("height", 1024)),
         "--output-dir", str(out_dir),
         "--intermediate-root", str(out_dir / "_inter"),
         "--sessions-dir", str(project_dir / "_temp" / "multi_sessions"),
     ]
-    if p.get("seed") is not None:
-        argv += ["--seed", str(p["seed"])]
+    argv += model_catalog.emit_argv("multi", p, mode)
     return argv
 
 
@@ -123,8 +206,11 @@ def _find_manifest(output_dir: Path) -> Path | None:
 
 def parse_result(returncode: int, stdout: str, stderr: str, output_dir: Path) -> CompletionRecord:
     """Manifest-as-truth (like zimage), but a multi run yields a **pool**: collect every
-    `ok` candidate's `output_path` from the `ideate` stage. ok = ideate completed + ≥1
-    candidate succeeded + exit 0."""
+    `ok` candidate's `output_path` from the `ideate` stage, plus — when the batch ran with
+    the clean/polish toggles — every ok `cleaned[]`/`polished[]` output (the whole batch is
+    the deliverable; each pass yields its own starrable tile). ok = ideate completed + ≥1
+    candidate succeeded + exit 0 (per-image clean/polish failures are non-fatal, mirroring
+    the worker's own exit logic)."""
     manifest_path = _find_manifest(output_dir)
     outputs: list[str] = []
     manifest_status: str | None = None
@@ -150,6 +236,15 @@ def parse_result(returncode: int, stdout: str, stderr: str, output_dir: Path) ->
                     error = ideate.get("error") or "ideate stage failed"
             else:
                 error = "no ideate stage in multi manifest"
+            # clean/polish passes (batch subcommand): `cleaned[]` / `polished[]` records.
+            for stage_name, key in (("clean", "cleaned"), ("polish", "polished")):
+                st = next((s for s in stages if s.get("name") == stage_name), None)
+                if st is None:
+                    continue
+                for r in (st.get("outputs") or {}).get(key) or []:
+                    op = r.get("output_path")
+                    if r.get("status") == "ok" and op and Path(op).is_file():
+                        outputs.append(op)
         except (json.JSONDecodeError, OSError) as e:
             error = f"multi manifest unreadable: {e}"
     else:

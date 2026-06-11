@@ -22,10 +22,12 @@ from pathlib import Path
 try:
     from . import workspace as ws_mod
     from . import logsetup
+    from . import coverage
     from .workspace import Workspace, new_id, slugify
 except ImportError:  # pragma: no cover - direct-run convenience
     import workspace as ws_mod  # type: ignore
     import logsetup  # type: ignore
+    import coverage  # type: ignore
     from workspace import Workspace, new_id, slugify  # type: ignore
 
 LOG = logsetup.get_logger()
@@ -296,6 +298,21 @@ def set_hero(ws: Workspace, asset_id: str, *, candidate_id: str | None,
     return _write_version(vdir, version)
 
 
+def resolve_hero(ws: Workspace, asset_id: str, version_id: str | None = None):
+    """`(version, hero_entry, hero_abs_path)` for the version's starred hero ★ (the Stage-A
+    pick that seeds Stage-B img2img). Raises `WorkspaceError` if the asset/version is unknown
+    or **no hero is starred yet** (Stage B can't start without one) / its image is missing."""
+    _vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    hero = next((c for c in version.get("casting", []) if c.get("starred")), None)
+    if hero is None:
+        raise ws_mod.WorkspaceError(
+            f"asset {asset_id!r} has no starred hero — cast + star one in Stage A first")
+    path = (_vdir / "casting" / hero["file"]).resolve()
+    if not path.is_file():
+        raise ws_mod.WorkspaceError(f"hero image {hero['file']!r} missing on disk")
+    return version, hero, path
+
+
 def casting_file_path(ws: Workspace, asset_id: str, file: str,
                       version_id: str | None = None) -> Path:
     """Resolve a casting image path for serving (traversal-guarded). Raises if absent."""
@@ -306,4 +323,90 @@ def casting_file_path(ws: Workspace, asset_id: str, file: str,
     path = (base / file).resolve()
     if not path.is_relative_to(base) or not path.is_file():
         raise ws_mod.WorkspaceError(f"no such casting file {file!r}")
+    return path
+
+
+# --- Stage-C curation: keep/cull Stage-B outputs → curated ref_set (M3) ----------
+
+def keep_ref(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
+             coverage_cell: dict, version_id: str | None = None,
+             pipeline: str | None = None, seed: int | None = None,
+             method: str | None = None) -> dict:
+    """Keep a Stage-B candidate into the version's curated `ref_set` (the future LoRA corpus,
+    R107) — the MVP done-line's payload. Idempotent on `source_output`. Each kept image (+ its
+    sidecar manifest) is **copied into the version's `refs/` dir** so a Saved version is
+    self-contained (survives job deletion / out/ pruning), and the entry carries its frozen
+    `coverage_cell` (the P1→P2 contract) so P2 can template-caption it. Raises on an invalid
+    cell / unsafe output / missing source."""
+    coverage.validate_cell(coverage_cell)                  # frozen-contract guard
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    ref_set = version.setdefault("ref_set", [])
+    entry = next((r for r in ref_set if r.get("source_output") == source_output), None)
+    if entry is None:
+        if ".." in source_output or "\\" in source_output:
+            raise ws_mod.WorkspaceError(f"invalid output {source_output!r}")
+        src = (ws.out_dir / source_output).resolve()
+        if not src.is_relative_to(ws.out_dir.resolve()) or not src.is_file():
+            raise ws_mod.WorkspaceError(f"output {source_output!r} not found in out/")
+        ref_id = new_id("ref")
+        rdir = vdir / "refs"
+        rdir.mkdir(parents=True, exist_ok=True)
+        dst = rdir / f"{ref_id}{src.suffix}"
+        shutil.copy2(src, dst)
+        man = src.with_suffix(".json")
+        if man.is_file():
+            shutil.copy2(man, rdir / f"{ref_id}.json")
+        entry = {"id": ref_id, "file": dst.name, "coverage_cell": coverage_cell,
+                 "source_output": source_output, "job_id": job_id, "pipeline": pipeline,
+                 "method": method, "seed": seed, "added_at": _now()}
+        ref_set.append(entry)
+    return _write_version(vdir, version)
+
+
+def remove_ref(ws: Workspace, asset_id: str, *, ref_id: str,
+               version_id: str | None = None) -> dict:
+    """Cull a kept ref (un-keep): drop it from `ref_set` + delete its copied `refs/` image +
+    sidecar. Raises if `ref_id` isn't in the set."""
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    ref_set = version.get("ref_set", [])
+    entry = next((r for r in ref_set if r.get("id") == ref_id), None)
+    if entry is None:
+        raise ws_mod.WorkspaceError(f"ref {ref_id!r} not in ref_set")
+    rdir = vdir / "refs"
+    stem = Path(entry.get("file", "")).stem
+    if stem:
+        for f in (rdir / entry["file"], rdir / f"{stem}.json"):
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
+    version["ref_set"] = [r for r in ref_set if r.get("id") != ref_id]
+    return _write_version(vdir, version)
+
+
+def save_profile(ws: Workspace, asset_id: str, *, prompt_template: str | None = None,
+                 version_id: str | None = None) -> dict:
+    """**Save AssetProfile** (R119): persist the version's editable identity clause
+    (`prompt_template`) + re-stamp `saved_at`. The version is **Saved, not Finalized** — still
+    editable (finalize/lock is M5). Refuses if already finalized (locked → make a new version)."""
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    if version.get("finalized"):
+        raise ws_mod.WorkspaceError(
+            "version is finalized (locked) — create a new version to edit (M5)")
+    if prompt_template is not None:
+        version["prompt_template"] = prompt_template
+    version["saved_at"] = _now()
+    return _write_version(vdir, version)
+
+
+def ref_file_path(ws: Workspace, asset_id: str, file: str,
+                  version_id: str | None = None) -> Path:
+    """Resolve a curated ref image path for serving (traversal-guarded). Raises if absent."""
+    if ".." in file or "/" in file or "\\" in file:
+        raise ws_mod.WorkspaceError(f"invalid ref file {file!r}")
+    vdir, _version = _resolve_version_dir(ws, asset_id, version_id)
+    base = (vdir / "refs").resolve()
+    path = (base / file).resolve()
+    if not path.is_relative_to(base) or not path.is_file():
+        raise ws_mod.WorkspaceError(f"no such ref file {file!r}")
     return path

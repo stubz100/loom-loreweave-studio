@@ -36,6 +36,7 @@ try:
     from .adapters import JobSpec
     from .adapters import zimage as zimage_adapter
     from .adapters import multi as multi_adapter
+    from .adapters import sd35 as sd35_adapter
     from .runner import RUNNER, WORKER_REAP, ADAPTERS, estimate_vram
     from . import projects
     from . import workspace as ws_mod
@@ -44,11 +45,15 @@ try:
     from . import logsetup
     from . import bible
     from . import assets
+    from . import coverage
+    from . import model_catalog
+    from . import recipe
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from adapters import JobSpec  # type: ignore
     from adapters import zimage as zimage_adapter  # type: ignore
     from adapters import multi as multi_adapter  # type: ignore
+    from adapters import sd35 as sd35_adapter  # type: ignore
     from runner import RUNNER, WORKER_REAP, ADAPTERS, estimate_vram  # type: ignore
     import projects  # type: ignore
     import workspace as ws_mod  # type: ignore
@@ -57,6 +62,9 @@ except ImportError:  # pragma: no cover - direct-run convenience
     import logsetup  # type: ignore
     import bible  # type: ignore
     import assets  # type: ignore
+    import coverage  # type: ignore
+    import model_catalog  # type: ignore
+    import recipe  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
 
@@ -86,8 +94,8 @@ class GenerateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    pipeline: Literal["zimage", "multi"] = "zimage"
-    mode: Literal["t2i", "ideate"] = "t2i"
+    pipeline: Literal["zimage", "multi", "sd35"] = "zimage"
+    mode: Literal["t2i", "ideate", "img2img", "inpaint"] = "t2i"
     prompt: str
     count: int = Field(default=3, ge=1, le=MAX_BATCH)
     # P1/M2 multi casting: one cast = ONE job → a pool of num_candidates × pipelines
@@ -103,6 +111,17 @@ class GenerateRequest(BaseModel):
     num_steps: int | None = Field(default=None, ge=1, le=200)
     guidance_scale: float | None = Field(default=None, ge=0.0, le=30.0)
     negative_prompt: str | None = None
+    # P1/M3 Stage-B expansion (img2img/inpaint via zimage/sd35). init_image/mask_image are
+    # output names relative to the active project's out/ (the hero / a prior candidate) —
+    # resolved + traversal-guarded server-side. strength: img2img 0..1 sweep.
+    init_image: str | None = None
+    mask_image: str | None = None
+    strength: float | None = Field(default=None, ge=0.0, le=1.0)
+    # P1/M3 catalog-validated tunables channel: model-specific / long-tail params (e.g. sd35
+    # skip-layer-guidance, prompt-3, dtype; zimage cfg-normalization, attention-backend) keyed
+    # by their catalog name. Validated against GET /models for the chosen pipeline+mode, then
+    # mapped to CLI flags by model_catalog.emit_argv. (Common params stay top-level above.)
+    params: dict = Field(default_factory=dict)
     dry_run: bool = False           # return the argv without running the GPU job (testing)
     # P1/M1: scope a batch to an AssetProfile version (lineage stage + requester); the L1
     # style fragment auto-prepends unless apply_style is unticked (the R104 override).
@@ -177,11 +196,62 @@ class StarRequest(BaseModel):
     starred: bool = True
 
 
+class StageBRequest(BaseModel):
+    """Stage-B expansion (P1/M3, §7.1): expand the starred hero into a coverage-matrix dataset.
+    Picks a recipe `preset`, auto-generates the per-cell prompts (no freeform typing, R107), and
+    fires **one img2img job per cell** from the hero — each carrying its frozen `coverage_cell`
+    (P1→P2). M3 realizes every cell via **img2img** (inpaint background-diversity + true angle
+    coverage need masking/video-sketch/Flux2-spike — later); the cell's preferred method is kept
+    in metadata. `character_clause` defaults to the version's `prompt_template` (R112)."""
+
+    model_config = ConfigDict(extra="forbid")
+    version_id: str | None = None
+    preset: str = recipe.DEFAULT_PRESET
+    character_clause: str | None = None
+    pipeline: Literal["zimage", "sd35"] = "zimage"
+    model_name: str | None = None
+    strength: float = Field(default=0.55, ge=0.0, le=1.0)
+    width: int = Field(default=1024, ge=256, le=2048, multiple_of=16)
+    height: int = Field(default=1024, ge=256, le=2048, multiple_of=16)
+    base_seed: int | None = None
+    apply_style: bool | None = None
+    params: dict = Field(default_factory=dict)
+    dry_run: bool = False
+
+
 class HeroRequest(BaseModel):
     """Set (or clear, `candidate_id=null`) the hero among already-recorded candidates."""
 
     model_config = ConfigDict(extra="forbid")
     candidate_id: str | None = None
+    version_id: str | None = None
+
+
+class KeepRefRequest(BaseModel):
+    """Stage-C curation (M3): keep a completed Stage-B candidate into the version's curated
+    `ref_set`. `job_id` is the Stage-B img2img job (it carries the coverage_cell); `output`
+    selects a specific output if the job produced more than one (img2img = one, so optional)."""
+
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
+    output: str | None = None
+    version_id: str | None = None
+
+
+class CullRefRequest(BaseModel):
+    """Cull (un-keep) a curated ref by its `ref_id`."""
+
+    model_config = ConfigDict(extra="forbid")
+    ref_id: str
+    version_id: str | None = None
+
+
+class SaveProfileRequest(BaseModel):
+    """Save AssetProfile (R119, the MVP done-line): persist the editable identity clause
+    (`prompt_template`). Saved, not Finalized — still editable."""
+
+    model_config = ConfigDict(extra="forbid")
+    prompt_template: str | None = None
     version_id: str | None = None
 
 
@@ -297,10 +367,14 @@ def create_app() -> FastAPI:
             "models_dir": str(CONFIG.models_dir),
             "cors_origins": CONFIG.cors_origins,
             "token_required": ["POST /generate", "POST /jobs/{id}/cancel",
+                               "POST /jobs/{id}/stop",
                                "DELETE /jobs/{id}", "POST /queue/pause",
                                "POST /queue/unpause", "POST /project", "POST /project/open",
+                               "POST /project/close",
                                "POST /project/forget", "PUT /bible/style", "POST /assets",
                                "POST /assets/{id}/casting/star", "POST /assets/{id}/casting/hero",
+                               "POST /assets/{id}/stage-b", "POST /assets/{id}/refs/keep",
+                               "POST /assets/{id}/refs/cull", "POST /assets/{id}/save",
                                "POST /components/fetch", "POST /shutdown"],
             "worker_reap": WORKER_REAP,
             "work_disk_root": str(CONFIG.work_disk_root),
@@ -309,6 +383,54 @@ def create_app() -> FastAPI:
             "log_level": CONFIG.log_level,
             "log_file": str(CONFIG.log_dir / "orchestrator.log"),
         }
+
+    # Chained post-pass defaults (clean = mid-strength fix-up, polish = low-strength finish).
+    _POST_DEFAULTS = {"clean": {"backend": "zimage", "strength": 0.5},
+                      "polish": {"backend": "sd35", "strength": 0.22}}
+
+    def _extract_post_passes(merged: dict, *, dry_run: bool) -> list[dict]:
+        """Pop the clean/polish post-pass params (catalog `post: True`) out of `merged`
+        and build the chained-pass specs the runner consumes (2026-06-11: post-passes
+        work on ANY run — the runner chains one batch img2img job per pass over the
+        parent's outputs). Enforces the opt-in footgun guard (sub-params without their
+        toggle → 422), backend-family consistency of an explicit model (→ 422), and —
+        unless dry_run — the backend weight pre-flight (→ 412) + VRAM admission (→ 422)."""
+        post_names = {p["name"] for p in model_catalog.POST_PARAMS}
+        post = {k: merged.pop(k) for k in list(merged) if k in post_names}
+        passes: list[dict] = []
+        for name in ("clean", "polish"):
+            orphans = sorted(k for k in post if k.startswith(f"{name}_"))
+            if not post.get(name):
+                if orphans:
+                    raise HTTPException(422, f"{orphans} given but {name!r} is off — set "
+                                             f"params.{name}=true to run that pass")
+                continue
+            defaults = _POST_DEFAULTS[name]
+            backend = post.get(f"{name}_backend") or defaults["backend"]
+            model = post.get(f"{name}_model")
+            if model and model_catalog.find_variant(backend, model) is None:
+                raise HTTPException(422, f"{name}_model {model!r} is not a {backend} variant "
+                                         f"— pick a model from the chosen {name}_backend family")
+            if not dry_run:
+                resolved = model or model_catalog.default_model(backend)
+                variant = model_catalog.find_variant(backend, resolved)
+                if variant and not components.image_model_present(variant["repo_id"]):
+                    raise HTTPException(412, {
+                        "error": f"{name} backend model {variant['id']!r} not in cache",
+                        "repo_id": variant["repo_id"], "gated": variant["gated"],
+                        "hint": "fetch it first (gated repos need a HF license + token)"})
+                if estimate_vram(backend) > CONFIG.vram_budget_gb:
+                    raise HTTPException(422, f"{name} backend {backend!r} needs "
+                                             f"~{estimate_vram(backend)} GB VRAM > budget "
+                                             f"{CONFIG.vram_budget_gb} GB")
+            spec = {"pass": name, "backend": backend, "model_name": model,
+                    "strength": post.get(f"{name}_strength", defaults["strength"]),
+                    "prompt": post.get(f"{name}_prompt"),
+                    "negative_prompt": post.get(f"{name}_negative_prompt")}
+            if name == "polish" and post.get("polish_seed") is not None:
+                spec["seed"] = post["polish_seed"]
+            passes.append(spec)
+        return passes
 
     @app.post("/generate")
     def generate(req: GenerateRequest, _auth: None = Depends(require_token)) -> dict:
@@ -320,7 +442,19 @@ def create_app() -> FastAPI:
         adapter = ADAPTERS.get(req.pipeline)
         if adapter is None:
             raise HTTPException(400, f"unknown pipeline {req.pipeline!r}")
-        mode = "ideate" if req.pipeline == "multi" else "t2i"
+        # Resolve the mode: multi is always the casting `ideate`; otherwise honor req.mode
+        # (t2i / img2img / inpaint) but only if the adapter actually wires it (honest contract,
+        # never claim a mode the worker won't accept).
+        if req.pipeline == "multi":
+            mode = "ideate"
+        elif req.mode == "ideate":
+            raise HTTPException(400, "mode 'ideate' is only valid for the multi pipeline")
+        else:
+            mode = req.mode
+        wired = set(getattr(adapter, "WIRED_MODES", ()))
+        if mode not in wired:
+            raise HTTPException(400, f"{req.pipeline} does not wire mode {mode!r} "
+                                     f"(wired: {sorted(wired)})")
         script = adapter.resolve_script(CONFIG.pipeline_roots)
         if script is None:
             raise HTTPException(503, f"{req.pipeline} worker not found in any pipeline root "
@@ -352,22 +486,101 @@ def create_app() -> FastAPI:
 
         base = req.model_dump(exclude={"pipeline", "mode", "dry_run", "count",
                                        "asset_id", "version_id", "stage", "apply_style",
-                                       "num_candidates", "ideation_mode"})
+                                       "num_candidates", "ideation_mode", "params"})
         is_multi = req.pipeline == "multi"
         if is_multi:
+            # Catalog-validated multi tunables: width/height/seed + the clean/polish
+            # post-pass params (extracted below — they chain as separate jobs).
+            if req.params:
+                try:
+                    base.update(model_catalog.validate_params("multi", mode, req.params))
+                except model_catalog.CatalogError as e:
+                    raise HTTPException(422, str(e))
             base["num_candidates"] = req.num_candidates
             base["ideation_mode"] = req.ideation_mode
+            # Preset-aware pre-flight (review follow-up): `multi`'s gated flux2/sd35
+            # checkpoints aren't in the phase weight gate above, so check the SELECTED
+            # ideation preset's weight set here and fail fast — never start the GPU run
+            # only to die inside the subprocess on a missing/unauthorized weight. Skip
+            # for dry_run (a no-GPU argv preview shouldn't require any weight).
+            if not req.dry_run:
+                m_ok, m_missing = components.multi_weights_status(req.ideation_mode)
+                if not m_ok:
+                    raise HTTPException(412, {
+                        "error": f"multi '{req.ideation_mode}' preset is missing weight(s)",
+                        "preset": req.ideation_mode,
+                        "missing": m_missing,
+                        "hint": "accept the gated repo licenses on huggingface.co + set "
+                                "HF_TOKEN, then POST /components/fetch?multi_preset="
+                                f"{req.ideation_mode}",
+                    })
+        else:
+            # Reject an unknown explicit model_name up front (422) — never let a bogus model
+            # reach the worker (where argparse would fail the subprocess after a spawn).
+            try:
+                model_catalog.validate_model(req.pipeline, req.model_name)
+            except model_catalog.CatalogError as e:
+                raise HTTPException(422, str(e))
+            # Catalog-validated tunables channel (M3 step 4b): merge model-specific / long-tail
+            # params (validated vs GET /models for this pipeline+mode) into the flat param set
+            # build_argv reads. The common params stay top-level; these override on key clash.
+            if req.params:
+                try:
+                    base.update(model_catalog.validate_params(req.pipeline, mode, req.params))
+                except model_catalog.CatalogError as e:
+                    raise HTTPException(422, str(e))
+            # Per-model weight pre-flight keyed to the model the worker will ACTUALLY load
+            # (review 2026-06-11): `model_name` is also a catalog param and the params
+            # channel overrides the top-level field on merge, so resolve from the MERGED
+            # set — checking only the explicit/default model let params={model_name:…}
+            # slip an uncached model past the gate. Skip for dry_run (no-GPU preview).
+            if not req.dry_run:
+                chosen = base.get("model_name") or model_catalog.default_model(req.pipeline)
+                variant = model_catalog.find_variant(req.pipeline, chosen)
+                if variant and not components.image_model_present(variant["repo_id"]):
+                    raise HTTPException(412, {
+                        "error": f"{req.pipeline} model {variant['id']!r} not in cache",
+                        "repo_id": variant["repo_id"], "gated": variant["gated"],
+                        "hint": "fetch it first (gated repos need a huggingface.co license "
+                                "accept + HF_TOKEN)",
+                    })
 
-        # L1 style fragment auto-prepend (R104). Per-gen `apply_style` overrides; when it's
+        # Stage-B img2img/inpaint inputs (P1/M3): the worker needs a base image (+ a mask for
+        # inpaint). init_image/mask_image are out/-relative names; resolve + traversal-guard
+        # them to absolute paths the subprocess can read. (dry_run echoes the raw names.)
+        if mode in ("img2img", "inpaint"):
+            if not req.init_image:
+                raise HTTPException(422, f"mode {mode!r} requires init_image")
+            if mode == "inpaint" and not req.mask_image:
+                raise HTTPException(422, "mode 'inpaint' requires mask_image")
+            if not req.dry_run:
+                obase = ws.out_dir.resolve()
+                for key, val in (("init_image", req.init_image), ("mask_image", req.mask_image)):
+                    if not val:
+                        continue
+                    if ".." in val or "\\" in val:
+                        raise HTTPException(400, f"invalid {key} {val!r}")
+                    p = (obase / val).resolve()
+                    if not p.is_relative_to(obase) or not p.is_file():
+                        raise HTTPException(404, f"{key} {val!r} not found in out/")
+                    base[key] = str(p)
+
+        # Clean/polish post-passes (2026-06-11): pulled OUT of the param set — they run
+        # as chained batch img2img jobs after this run completes (works on any pipeline).
+        post_passes = _extract_post_passes(base, dry_run=req.dry_run)
+
+        # L1 style fragment auto-applied (R104). Per-gen `apply_style` overrides; when it's
         # omitted, honor the StoryBible's saved `enabled_default` (review: that flag was
-        # stored but never consulted).
+        # stored but never consulted). **Appended, not prepended** (user decision 2026-06-10,
+        # amends R104's wording): the character/user prompt leads — front tokens dominate,
+        # and the style mostly restates the look the model already renders.
         style = bible.load_style(ws)
         apply_style = req.apply_style if req.apply_style is not None \
             else bool(style.get("enabled_default", True))
         if apply_style:
             fragment = (style.get("fragment") or "").strip()
             if fragment:
-                base["prompt"] = f"{fragment}, {base['prompt']}"
+                base["prompt"] = f"{base['prompt']}, {fragment}"
 
         if req.dry_run:
             spec = JobSpec(pipeline=req.pipeline, mode=mode, params=base, output_dir=ws.out_dir)
@@ -376,6 +589,7 @@ def create_app() -> FastAPI:
                     "count": 1 if is_multi else req.count,
                     "num_candidates": req.num_candidates if is_multi else None,
                     "argv": argv, "prompt": base["prompt"],
+                    "post_passes": post_passes,
                     "requester_id": requester_id, "profile_version_id": profile_version_id,
                     "cwd": str(script.parents[2]), "output_dir": str(ws.out_dir)}
 
@@ -406,7 +620,8 @@ def create_app() -> FastAPI:
             jid = RUNNER.submit(pipeline=req.pipeline, mode=mode, params=params,
                                 batch_id=batch_id, index=i, batch_size=n_jobs,
                                 requester_id=requester_id,          # project or asset version (R98)
-                                profile_version_id=profile_version_id, stage=req.stage)
+                                profile_version_id=profile_version_id, stage=req.stage,
+                                post_passes=post_passes)
             job_ids.append(jid)
         LOG.info("generate: %s %s (%s%s) for %s%s",
                  "cast" if is_multi else "batch", batch_id, req.pipeline,
@@ -438,6 +653,19 @@ def create_app() -> FastAPI:
         if ws is None:
             raise HTTPException(409, "no project open")
         return ws
+
+    def _require_job_owned_by(ws, asset_id: str, version_id: str | None, job: dict) -> str:
+        """Resolve the target version id for `asset_id` and assert the job was produced for it
+        (its `profile_version_id`), so a candidate can only be curated/starred into the version
+        that generated it — never cross-asset. Returns the resolved version id."""
+        try:
+            vid = assets.resolve_version(ws, asset_id, version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+        if job.get("profile_version_id") != vid:
+            raise HTTPException(409, "that job was generated for a different asset/version — "
+                                     "curate/star it into the version that produced it")
+        return vid
 
     @app.get("/bible/style")
     def get_style() -> dict:
@@ -485,6 +713,8 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"no such job {req.job_id!r}")
         if job.get("status") != "done":
             raise HTTPException(409, "can only star a completed (done) candidate")
+        # Scope guard (same as keep): only star a candidate into the version that produced it.
+        vid = _require_job_owned_by(ws, asset_id, req.version_id, job)
         result = job.get("result") or {}
         pool = result.get("output_names") or ([result["output_name"]]
                                               if result.get("output_name") else [])
@@ -509,12 +739,120 @@ def create_app() -> FastAPI:
         try:
             version = assets.star_candidate(
                 ws, asset_id, job_id=req.job_id, source_output=output,
-                version_id=req.version_id, pipeline=pipeline, seed=seed, starred=req.starred)
+                version_id=vid, pipeline=pipeline, seed=seed, starred=req.starred)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(400, str(e))
         LOG.info("casting %s: job %s -> asset %s (%s)",
                  "star" if req.starred else "unstar", req.job_id, asset_id, version["id"])
         return version
+
+    @app.post("/assets/{asset_id}/stage-b")
+    def stage_b(asset_id: str, req: StageBRequest,
+                _auth: None = Depends(require_token)) -> dict:
+        """Stage-B expansion (P1/M3, §7.1): expand the starred hero into a coverage-matrix
+        dataset. Builds the recipe (auto prompts) and fires **one img2img job per cell** from
+        the hero, each carrying its frozen `coverage_cell` (→ Stage-C curation → ref_set → P2).
+        Token-gated; needs an open project + a starred hero. `dry_run` previews without the GPU."""
+        ws = _require_ws()
+        # Hero (Stage-A pick) seeds every img2img cell.
+        try:
+            version, _hero, hero_path = assets.resolve_hero(ws, asset_id, req.version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(409, str(e))
+        vid = version["id"]
+
+        clause = (req.character_clause or version.get("prompt_template") or "").strip()
+        if not clause:
+            raise HTTPException(422, "no character_clause and the version has no prompt_template "
+                                     "— set one (the fixed identity clause for the dataset, R112)")
+
+        # L1 style fragment (R104) applies to every cell prompt unless opted out (the
+        # recipe places it LAST: cell fragment → clause → style, user 2026-06-10).
+        style = bible.load_style(ws)
+        apply_style = req.apply_style if req.apply_style is not None \
+            else bool(style.get("enabled_default", True))
+        style_fragment = (style.get("fragment") or "").strip() if apply_style else ""
+
+        try:
+            built = recipe.build_recipe(req.preset, character_clause=clause,
+                                        style_fragment=style_fragment, base_seed=req.base_seed or 0)
+        except recipe.RecipeError as e:
+            raise HTTPException(422, str(e))
+
+        # Catalog-validate the model + the shared advanced params (img2img) for the whole batch
+        # (unknown model / param → 422 up front, never a per-cell worker failure).
+        try:
+            model_catalog.validate_model(req.pipeline, req.model_name)
+            extra = model_catalog.validate_params(req.pipeline, "img2img", req.params)
+        except model_catalog.CatalogError as e:
+            raise HTTPException(422, str(e))
+        # The EFFECTIVE model for the whole batch: the params-channel value overrides the
+        # top-level field (same precedence as /generate), and everything downstream —
+        # dry-run preview, weight pre-flight, worker params — reads this one resolution
+        # (review 2026-06-11: the pre-flight checked only the explicit/default model, so
+        # params={model_name:…} could slip an uncached model past the gate).
+        model_name = extra.pop("model_name", None) or req.model_name
+        # Clean/polish post-passes chain over the finished dataset too (2026-06-11) —
+        # e.g. polish every kept-worthy cell right after the sweep, cells stay curatable
+        # (their coverage_cell rides along into the pass outputs).
+        post_passes = _extract_post_passes(extra, dry_run=req.dry_run)
+
+        script = ADAPTERS[req.pipeline].resolve_script(CONFIG.pipeline_roots)
+        if script is None:
+            raise HTTPException(503, f"{req.pipeline} worker not found")
+
+        if req.dry_run:
+            # Preview with a single-cell argv (a batch argv would write jobs.json into
+            # out/); the real run is ONE --jobs-file batch job covering every cell.
+            cell0 = built["cells"][0]
+            p0 = {"prompt": cell0["prompt"], "init_image": str(hero_path),
+                  "strength": req.strength, "width": req.width, "height": req.height,
+                  "seed": cell0["seed"], "model_name": model_name, **extra}
+            spec = JobSpec(pipeline=req.pipeline, mode="img2img", params=p0, output_dir=ws.out_dir)
+            return {"dry_run": True, "preset": req.preset, "pipeline": req.pipeline,
+                    "planned_jobs": 1, "items": built["target"],
+                    "kept_target": built["kept_target"], "post_passes": post_passes,
+                    "hero": str(hero_path), "first_cell": cell0,
+                    "first_argv": ADAPTERS[req.pipeline].build_argv(spec, CONFIG.venv_python, script)}
+
+        # Pre-flight: the EFFECTIVE (or default) img2img model must be cached (fail fast, not mid-run).
+        variant = model_catalog.find_variant(
+            req.pipeline, model_name or model_catalog.default_model(req.pipeline))
+        if variant and not components.image_model_present(variant["repo_id"]):
+            raise HTTPException(412, {"error": f"{req.pipeline} model {variant['id']!r} not in cache",
+                                      "repo_id": variant["repo_id"], "gated": variant["gated"],
+                                      "hint": "fetch it first (gated repos need a HF license + token)"})
+        est = estimate_vram(req.pipeline)
+        if est > CONFIG.vram_budget_gb:
+            raise HTTPException(422, f"{req.pipeline} needs ~{est} GB VRAM > budget "
+                                     f"{CONFIG.vram_budget_gb} GB")
+        if GUARD.is_hard_blocked():
+            raise HTTPException(507, f"disk hard-stop — {GUARD.block_reason()}")
+
+        batch_id = "bat_" + uuid.uuid4().hex[:8]
+        cells = built["cells"]
+        # ONE batch job (review 2026-06-10 #1 — the batch-mode worker): the worker loads
+        # the model once and loops every cell (`--jobs-file`), instead of N subprocesses
+        # each paying the full pipeline load. Each item carries its frozen coverage_cell
+        # as opaque `meta`, echoed back per-output (`result.output_meta`) for Stage-C
+        # curation; images stream into the grid as interim results while it runs.
+        items = [{"prompt": c["prompt"], "seed": c["seed"],
+                  "meta": {"coverage_cell": c["coverage_cell"], "method": c["method"]}}
+                 for c in cells]
+        params = {"prompt": f"[dataset {req.preset} · {len(cells)} cells] {clause}",
+                  "init_image": str(hero_path), "strength": req.strength,
+                  "width": req.width, "height": req.height,
+                  "batch_items": items, **extra}
+        if model_name:
+            params["model_name"] = model_name
+        jid = RUNNER.submit(pipeline=req.pipeline, mode="img2img", params=params,
+                            batch_id=batch_id, index=0, batch_size=1,
+                            requester_id=vid, profile_version_id=vid, stage="B",
+                            post_passes=post_passes)
+        LOG.info("stage-b: %s preset=%s -> 1 batch job (%d cells) for %s (hero %s)",
+                 batch_id, req.preset, len(cells), vid, hero_path.name)
+        return {"batch_id": batch_id, "preset": req.preset, "count": 1,
+                "items": len(cells), "job_ids": [jid], "kept_target": built["kept_target"]}
 
     @app.post("/assets/{asset_id}/casting/hero")
     def set_hero(asset_id: str, req: HeroRequest,
@@ -533,6 +871,86 @@ def create_app() -> FastAPI:
         (traversal-guarded). Unauthenticated read (mirrors /outputs)."""
         try:
             path = assets.casting_file_path(_require_ws(), asset_id, file, version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+        return FileResponse(path)
+
+    # --- P1/M3: Stage-C curation (keep/cull → ref_set) + Save AssetProfile ---
+    @app.post("/assets/{asset_id}/refs/keep")
+    def keep_ref(asset_id: str, req: KeepRefRequest,
+                 _auth: None = Depends(require_token)) -> dict:
+        """Keep a completed Stage-B candidate into the version's curated `ref_set` (M3) — copies
+        the image into `refs/` + records its frozen coverage_cell (from the job). Token-gated."""
+        ws = _require_ws()
+        job = RUNNER.get(req.job_id)
+        if job is None:
+            raise HTTPException(404, f"no such job {req.job_id!r}")
+        if job.get("status") != "done":
+            raise HTTPException(409, "can only keep a completed (done) candidate")
+        # Scope guard: the job must belong to the asset/version being curated into — never let a
+        # stale / cross-asset / manual call write Asset A's output into Asset B's ref_set.
+        vid = _require_job_owned_by(ws, asset_id, req.version_id, job)
+        result = job.get("result") or {}
+        pool = result.get("output_names") or ([result["output_name"]]
+                                              if result.get("output_name") else [])
+        if req.output is not None:
+            if req.output not in pool:
+                raise HTTPException(409, f"output {req.output!r} not in job {req.job_id!r}")
+            output = req.output
+        elif len(pool) == 1:
+            output = pool[0]
+        elif not pool:
+            raise HTTPException(409, "candidate job has no output to keep")
+        else:
+            raise HTTPException(409, "multi-output job — specify which `output`")
+        # The frozen coverage_cell: per-job for legacy single-cell jobs; per-OUTPUT
+        # (result.output_meta, echoed from the batch manifest) for batch dataset jobs.
+        ometa = (result.get("output_meta") or {}).get(output) or {}
+        cov = job.get("coverage_cell") or ometa.get("coverage_cell")
+        if not cov:
+            raise HTTPException(422, "output has no coverage_cell — only Stage-B outputs are "
+                                     "curated into the ref_set (cast via /assets/{id}/stage-b)")
+        try:
+            version = assets.keep_ref(
+                ws, asset_id, job_id=req.job_id, source_output=output, coverage_cell=cov,
+                version_id=vid, pipeline=job.get("pipeline"),
+                seed=ometa.get("seed", result.get("seed")),
+                method=ometa.get("method", job.get("mode")))
+        except (ws_mod.WorkspaceError, coverage.CoverageError) as e:
+            raise HTTPException(400, str(e))
+        LOG.info("curate keep: job %s -> asset %s (%d refs)",
+                 req.job_id, asset_id, len(version.get("ref_set", [])))
+        return version
+
+    @app.post("/assets/{asset_id}/refs/cull")
+    def cull_ref(asset_id: str, req: CullRefRequest,
+                 _auth: None = Depends(require_token)) -> dict:
+        """Cull (un-keep) a curated ref by id — drops it from `ref_set` + deletes its refs/
+        copy. Token-gated."""
+        try:
+            return assets.remove_ref(_require_ws(), asset_id, ref_id=req.ref_id,
+                                     version_id=req.version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/assets/{asset_id}/save")
+    def save_profile(asset_id: str, req: SaveProfileRequest,
+                     _auth: None = Depends(require_token)) -> dict:
+        """Save AssetProfile (R119, the MVP done-line): persist the identity clause
+        (`prompt_template`) + re-stamp saved_at. Saved, not Finalized. Token-gated."""
+        try:
+            return assets.save_profile(_require_ws(), asset_id,
+                                       prompt_template=req.prompt_template,
+                                       version_id=req.version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(409, str(e))
+
+    @app.get("/assets/{asset_id}/refs/{file}")
+    def get_ref(asset_id: str, file: str, version_id: str | None = None) -> FileResponse:
+        """Serve a curated ref image from the version's refs/ dir (traversal-guarded).
+        Unauthenticated read (mirrors /outputs + /casting)."""
+        try:
+            path = assets.ref_file_path(_require_ws(), asset_id, file, version_id)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(404, str(e))
         return FileResponse(path)
@@ -563,6 +981,18 @@ def create_app() -> FastAPI:
         except RuntimeError as e:
             raise HTTPException(409, str(e))
 
+    @app.post("/project/close")
+    def close_project(_auth: None = Depends(require_token)) -> dict:
+        """Close the active project (user request 2026-06-10 #2) — the app runs
+        project-less (generate/assets 409) until one is created/opened, and a relaunch
+        won't auto-reopen it. 409 while a job is running. Token-gated."""
+        try:
+            info = projects.close_project()
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+        GUARD.refresh()
+        return info
+
     @app.post("/project/estimate")
     def estimate_project(req: EstimateRequest) -> dict:
         """Footprint estimator (R161/R164): projected PNG-master size + suggested cap.
@@ -575,7 +1005,8 @@ def create_app() -> FastAPI:
     def list_jobs() -> dict:
         st = RUNNER.state()
         return {"jobs": RUNNER.snapshot(), "counts": st["counts"],
-                "paused": st["paused"], "vram_budget_gb": st["vram_budget_gb"],
+                "paused": st["paused"], "pause_reason": st["pause_reason"],
+                "vram_budget_gb": st["vram_budget_gb"],
                 "disk": GUARD.status()}     # live usage + warn/hard for the dock (M6)
 
     @app.get("/disk")
@@ -591,10 +1022,15 @@ def create_app() -> FastAPI:
         return components.launch_report()
 
     @app.post("/components/fetch")
-    def fetch_components(_auth: None = Depends(require_token)) -> dict:
-        """Explicit, on-demand fetch of missing active-phase weights from the manifest
-        (R163, §11.1). Token-gated; never an auto-download. Refreshes the cached report."""
+    def fetch_components(multi_preset: str | None = None,
+                         _auth: None = Depends(require_token)) -> dict:
+        """Explicit, on-demand fetch of missing weights (R163, §11.1). Token-gated; never
+        an auto-download. With `?multi_preset=fast|refined` fetches that `multi` casting
+        preset's (mostly gated) HF weight set instead of the phase-essential manifest
+        weights; otherwise fetches the active-phase manifest weights + refreshes the report."""
         global _LAUNCH
+        if multi_preset is not None:
+            return components.fetch_multi_preset(multi_preset)
         res = components.fetch_missing_weights()
         _LAUNCH = res["report"]
         return res
@@ -630,10 +1066,19 @@ def create_app() -> FastAPI:
 
     @app.post("/jobs/{job_id}/cancel")
     def cancel_job(job_id: str, _auth: None = Depends(require_token)) -> dict:
-        """Cancel a queued/running job (cancel = subprocess kill, §8/§15). Token-gated."""
+        """Cancel a queued/running job (cancel = worker-tree kill, §8/§15). Token-gated."""
         if not RUNNER.cancel(job_id):
             raise HTTPException(409, f"job {job_id!r} is unknown or already finished")
         return {"job_id": job_id, "canceling": True}
+
+    @app.post("/jobs/{job_id}/stop")
+    def stop_job(job_id: str, _auth: None = Depends(require_token)) -> dict:
+        """Gracefully stop a RUNNING **batch** job: the worker finishes the current item,
+        skips the rest, and every already-generated image stays valid (vs cancel = tree
+        kill + partial discard). Token-gated; 409 if the job isn't a running batch."""
+        if not RUNNER.stop_batch(job_id):
+            raise HTTPException(409, f"job {job_id!r} is not a running batch job")
+        return {"job_id": job_id, "stopping": True}
 
     @app.delete("/jobs/{job_id}")
     def delete_job(job_id: str, _auth: None = Depends(require_token)) -> dict:
@@ -650,7 +1095,20 @@ def create_app() -> FastAPI:
     @app.get("/capabilities")
     def capabilities() -> dict:
         """Declared adapter contract — modes/params/presence (§8). Drives the UI."""
-        return {"pipelines": {"zimage": zimage_adapter.capabilities(CONFIG.pipeline_roots)}}
+        return {"pipelines": {
+            "zimage": zimage_adapter.capabilities(CONFIG.pipeline_roots),
+            "multi": multi_adapter.capabilities(CONFIG.pipeline_roots),
+            "sd35": sd35_adapter.capabilities(CONFIG.pipeline_roots),
+        }}
+
+    @app.get("/models")
+    def models() -> dict:
+        """Full model catalog (P1/M3) — every flux2/sd35/zimage variant + every adjustable
+        parameter (incl. ones earlier adapters hardcoded), plus the `multi` casting tunables
+        (clean/polish toggles + sub-params). Drives the UI's model picker + parameter
+        controls; `/generate` validates a request's tunables against it. Unauth read."""
+        return {"catalog_version": model_catalog.CATALOG_VERSION,
+                "models": model_catalog.catalog_for_api()}
 
     @app.get("/outputs/{name:path}")
     def get_output(name: str) -> FileResponse:

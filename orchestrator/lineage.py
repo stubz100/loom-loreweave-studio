@@ -45,14 +45,20 @@ def load_index(ws: Workspace) -> dict:
         return _empty_index()
 
 
-def make_edge(job: dict, *, asset_version: str | None = None,
-              lora_version: str | None = None) -> dict:
-    """Build the lineage edge for a finished job's output (R98 P0 subset)."""
+def make_edges(job: dict, *, asset_version: str | None = None,
+               lora_version: str | None = None) -> list[dict]:
+    """Build the lineage edges for a finished job — **one edge per output** (R98: every
+    generated image is traceable; review 2026-06-10 — a batch/multi job yields N outputs,
+    and recording only `output_name` lost provenance for the other N−1). Keyed by
+    `job_id` + `output_file`; the per-output manifest comes from `output_meta` when the
+    batch recorded one, else the job-level manifest."""
     result = job.get("result") or {}
-    return {
+    names = result.get("output_names") or ([result["output_name"]]
+                                           if result.get("output_name") else [])
+    meta = result.get("output_meta") or {}
+    base = {
         "job_id": job["id"],
         "requester_id": job.get("requester_id", ""),
-        "output_file": result.get("output_name") or "",
         "manifest": result.get("manifest_path"),
         "asset_version": asset_version,
         "lora_version": lora_version,
@@ -62,12 +68,21 @@ def make_edge(job: dict, *, asset_version: str | None = None,
         "stage": job.get("stage"),
         "created_at": _now(),
     }
+    edges = []
+    for n in names:
+        e = {**base, "output_file": n}
+        m = meta.get(n) or {}
+        if m.get("manifest_path"):
+            e["manifest"] = m["manifest_path"]
+        edges.append(e)
+    return edges
 
 
 def remove_edge(ws: Workspace, job_id: str) -> bool:
-    """Drop a job's lineage edge from the index (atomic). Used when a generation is
-    deleted so the index never references a removed output. Returns True if one was
-    removed. Idempotent (absent → False, no write)."""
+    """Drop a job's lineage edge(s) from the index (atomic) — all of them for a
+    multi-output job. Used when a generation is deleted so the index never references
+    a removed output. Returns True if any was removed. Idempotent (absent → False,
+    no write)."""
     index = load_index(ws)
     kept = [e for e in index["edges"] if e.get("job_id") != job_id]
     if len(kept) == len(index["edges"]):
@@ -79,13 +94,13 @@ def remove_edge(ws: Workspace, job_id: str) -> bool:
 
 
 def record_output(ws: Workspace, job: dict, *, asset_version: str | None = None,
-                  lora_version: str | None = None) -> dict:
-    """Append (or replace, on retry) the lineage edge for `job` and persist the index
-    atomically. Idempotent per job_id. Returns the edge."""
-    edge = make_edge(job, asset_version=asset_version, lora_version=lora_version)
+                  lora_version: str | None = None) -> list[dict]:
+    """Append (or replace, on retry) the lineage edges for `job` — one per output —
+    and persist the index atomically. Idempotent per job_id. Returns the edges."""
+    edges = make_edges(job, asset_version=asset_version, lora_version=lora_version)
     index = load_index(ws)
     index["edges"] = [e for e in index["edges"] if e.get("job_id") != job["id"]]
-    index["edges"].append(edge)
+    index["edges"].extend(edges)
     ws_mod.validate(index, "lineage.schema.json")
     ws_mod.atomic_write_json(ws.lineage_index, index)
-    return edge
+    return edges

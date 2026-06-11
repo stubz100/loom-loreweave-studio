@@ -21,12 +21,16 @@ Two kinds of component:
 Active phases default to `{"P0", "P1"}` — both are runnable now (P0 spine + P1's L1/L2
 record layer ships in the UI), so a broken P1 schema *should* block startup, not just be
 reported (review). Override via `LOOM_ACTIVE_PHASES` (comma-separated). This pulls in only
-the **code** components for the active phases; P1 declares no *weight* in `models.json`
-yet, so `/generate` stays ungated until `multi`'s weight lands (M2).
+the **code** components for the active phases; P1 declares no phase-scoped *weight* in
+`models.json`, so the phase gate (`weights_ok`) stays zimage-only. `multi`'s casting
+weights (M2) are **preset-scoped, not phase-scoped** — checked per selected ideation
+preset at `/generate` (`multi_weights_status`, from the `multi_presets` block), so they
+don't over-gate startup; see the preset-aware section below.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import tempfile
@@ -126,7 +130,8 @@ def _check_workspace_io() -> tuple[bool, str]:
         return False, f"workspace I/O broken: {e}"
 
 
-_P1_SCHEMAS = ("story.schema.json", "profile.schema.json", "version.schema.json")
+_P1_SCHEMAS = ("story.schema.json", "profile.schema.json", "version.schema.json",
+               "coverage_cell.schema.json")
 
 
 def _check_p1_records() -> tuple[bool, str]:
@@ -148,6 +153,9 @@ def _check_p1_records() -> tuple[bool, str]:
         ws_mod.validate({"schema_version": 1, "id": "ver_000000", "name": "v1_base",
                          "finalized": False, "saved_at": "t", "prompt_template": "",
                          "ref_set": [], "casting": []}, "version.schema.json")
+        ws_mod.validate({"shot_size": "waist_up", "angle": "profile_left",
+                         "expression": "neutral", "background": "market"},
+                        "coverage_cell.schema.json")
         return True, "P1 record schemas load + validate"
     except Exception as e:  # noqa: BLE001
         return False, f"P1 record support broken: {e}"
@@ -275,6 +283,128 @@ def weights_ok() -> tuple[bool, list[str]]:
     missing = [e.get("id", "?") for e in models
                if str(e.get("phase", "")).upper() in active and not _weight_present(e)[0]]
     return (not missing, missing)
+
+
+# --- preset-aware multi weights (NOT phase-scoped) ------------------------------
+# The `multi` casting pipeline pulls a different trio of (mostly HF-gated) checkpoints
+# per ideation preset (`fast`|`refined`; see pipeline/multi IDEATION_PRESETS). These
+# are intentionally kept OUT of the phase-scoped `models` list / `weights_ok()` —
+# folding them in would force every preset's gated weights onto every rig at launch
+# (over-gating). Instead `/generate` checks just the SELECTED preset at cast time and
+# fails fast (412) rather than dying inside the GPU subprocess (review follow-up).
+
+def _hf_cache_probe(repo_id: str, probe: str) -> bool:
+    """Best-effort presence: is `probe` (a representative file) cached for `repo_id`?
+    A cache hit means the repo was at least fetched; not a deep integrity check."""
+    if not repo_id:
+        return False
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        hit = try_to_load_from_cache(repo_id, probe or "config.json")
+        return isinstance(hit, str) and os.path.exists(hit)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def image_model_present(repo_id: str) -> bool:
+    """Is a diffusers image-model variant (a sd35/zimage catalog model) cached? Probes
+    `model_index.json` (the standalone Stage-B weight check, keyed to the chosen model —
+    closes the gap that the multi-only preset gate left for standalone zimage/sd35)."""
+    return _hf_cache_probe(repo_id, "model_index.json")
+
+
+def multi_preset_weights(preset: str) -> list[dict]:
+    """The HF weight entries the `multi` pipeline needs for an ideation preset, read
+    from models.json's `multi_presets` block (separate from the phase `models` list).
+    Unknown preset → []."""
+    try:
+        data = _load_models_manifest()
+    except ManifestError:
+        return []
+    presets = data.get("multi_presets") or {}
+    return [e for e in (presets.get(preset) or []) if isinstance(e, dict)]
+
+
+@functools.lru_cache(maxsize=1)
+def _needs_fp8_workaround() -> bool:
+    """Faithful mirror of flux2/stage1_load_models._needs_fp8_workaround: FP8 Qwen3 text
+    encoders need a DTensor path unavailable on **Windows ROCm**, so the flux2 loader
+    falls back to the non-FP8 Qwen3 repo there (the RX 9070 XT target). We replicate the
+    same test so the gate checks the EXACT repo that will load. Cached + torch-import is
+    lazy (the gate doesn't otherwise need torch); any import failure ⇒ assume non-ROCm."""
+    if os.name != "nt":
+        return False
+    try:
+        import torch
+        return getattr(torch.version, "hip", None) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _entry_resolve_repo(e: dict) -> str:
+    """The EXACT repo this entry needs on this platform. For the flux2 Klein text encoder
+    that's the non-FP8 `repo_id` on Windows ROCm and the `fp8_repo_id` elsewhere — mirroring
+    flux2's `_load_text_encoder_safe`, so the gate + fetch target what actually loads."""
+    fp8 = e.get("fp8_repo_id")
+    if fp8 and not _needs_fp8_workaround():
+        return fp8
+    return e.get("repo_id", "")
+
+
+def _entry_present(e: dict) -> bool:
+    """Is the platform-resolved repo for this entry cached?"""
+    return _hf_cache_probe(_entry_resolve_repo(e), e.get("probe", "config.json"))
+
+
+def multi_weights_status(preset: str) -> tuple[bool, list[dict]]:
+    """(ok, missing[]) for a `multi` ideation preset. Each missing entry carries
+    id/repo_id/gated/pipeline so the API/UI can tell the user exactly what to accept
+    (the gated repos) + fetch — `repo_id` is the **platform-resolved** repo (the exact one
+    that will load), so a ROCm rig is told about the non-FP8 Qwen3 it actually needs. Best-
+    effort cache probe — covers the gated checkpoints that make a cast die without HF access
+    (the M2 failure mode). **Fails closed**: a preset with no configured weight set (unknown,
+    or dropped from models.json) returns not-ok so the 412 pre-flight can't be silently
+    disabled by a manifest edit."""
+    entries = multi_preset_weights(preset)
+    if not entries:
+        return (False, [{"id": None, "repo_id": None, "gated": False, "pipeline": None,
+                         "error": f"no weight set configured for multi preset {preset!r}"}])
+    missing = [
+        {"id": e.get("id"), "repo_id": _entry_resolve_repo(e),
+         "gated": bool(e.get("gated")), "pipeline": e.get("pipeline")}
+        for e in entries if not _entry_present(e)
+    ]
+    return (not missing, missing)
+
+
+def fetch_multi_preset(preset: str) -> dict:
+    """Explicit, on-demand fetch of a `multi` ideation preset's HF weights
+    (snapshot_download per repo, with the configured HF_TOKEN for the gated ones).
+    Mirrors fetch_missing_weights but for the preset set. NOTE: gated repos still
+    require the user to have accepted the license on huggingface.co first — a 401/403
+    surfaces here as a per-repo error (a token alone can't bypass license acceptance)."""
+    entries = multi_preset_weights(preset)
+    if not entries:
+        return {"preset": preset, "results": [], "error": f"unknown preset {preset!r}"}
+    token = CONFIG.hf_token
+    results: list[dict] = []
+    for e in entries:
+        repo_id = _entry_resolve_repo(e)   # the exact repo this platform loads
+        if _entry_present(e):
+            results.append({"id": e.get("id"), "repo_id": repo_id,
+                            "fetched": True, "detail": "already cached"})
+            continue
+        try:
+            from huggingface_hub import snapshot_download
+            snapshot_download(repo_id, token=token)
+            results.append({"id": e.get("id"), "repo_id": repo_id,
+                            "fetched": _entry_present(e),
+                            "gated": bool(e.get("gated"))})
+        except Exception as ex:  # noqa: BLE001 - report per-repo, don't crash the endpoint
+            results.append({"id": e.get("id"), "repo_id": repo_id, "fetched": False,
+                            "gated": bool(e.get("gated")), "error": str(ex)})
+    ok, missing = multi_weights_status(preset)
+    return {"preset": preset, "results": results, "ok": ok, "missing": missing}
 
 
 def gate() -> dict:

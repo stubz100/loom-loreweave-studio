@@ -81,7 +81,15 @@ def _resolve_pipeline_roots() -> list[Path]:
     env = _get("LOOM_PIPELINES_DIR")
     if env:
         roots.append(Path(env).resolve())
-    roots.append(APP_REPO_ROOT / "pipelines")            # vendored (preferred)
+    roots.append(APP_REPO_ROOT / "pipelines")            # vendored flat (zimage; file-path invoked)
+    # Vendored `multi` casting stack (P1/M2). `multi` is module-invoked
+    # (`-m pipeline.multi.run_pipeline`) and its stage_runner self-locates flux2/sd35/
+    # zimage + the flux2 lib by paths relative to its own file, so the vendored copy
+    # mirrors the monorepo's `src/pipeline/` + sibling `flux2/src/` layout EXACTLY —
+    # the registered root is the inner `…/src/pipeline` so parents[2] == `…/src` (the
+    # cwd that makes the module import + the self-location resolve, unedited). This is
+    # what makes a clone runnable for `multi` without the parent monorepo (R162).
+    roots.append(APP_REPO_ROOT / "pipelines" / "multistack" / "src" / "pipeline")
     roots.append(_resolve_src_root() / "pipeline")       # parent monorepo (dev fallback)
     return roots
 

@@ -13,7 +13,35 @@
     "saved_at": { "type": "string" },
     "prompt_template": { "type": "string" },
     "anchor_ref": { "type": ["string", "null"] },
-    "ref_set": { "type": "array", "items": { "type": "string" } },
+    "ref_set": {
+      "type": "array",
+      "description": "Stage-C curated refs (the future LoRA corpus). Each item carries its frozen coverage_cell (P1→P2 contract, P1-16) so P2's template captioner can caption it. Promoted string→object in P1/M3 (mirrors casting[]); legacy empty ref_sets are unaffected.",
+      "items": {
+        "type": "object",
+        "required": ["id", "file", "coverage_cell"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^ref_[0-9a-f]{6}$" },
+          "file": { "type": "string" },
+          "coverage_cell": {
+            "type": "object",
+            "required": ["shot_size", "angle", "expression", "background"],
+            "additionalProperties": false,
+            "properties": {
+              "shot_size": { "type": "string", "enum": ["face_closeup", "portrait", "waist_up", "full_body"] },
+              "angle": { "type": "string", "enum": ["front", "three_quarter_left", "three_quarter_right", "profile_left", "profile_right", "back"] },
+              "expression": { "type": "string", "enum": ["neutral", "smile", "serious", "sad", "surprised"] },
+              "background": { "type": "string" }
+            }
+          },
+          "source_output": { "type": "string" },
+          "job_id": { "type": "string" },
+          "pipeline": { "type": ["string", "null"] },
+          "method": { "type": ["string", "null"] },
+          "seed": { "type": ["integer", "null"] },
+          "added_at": { "type": "string" }
+        }
+      }
+    },
     "casting": {
       "type": "array",
       "items": {

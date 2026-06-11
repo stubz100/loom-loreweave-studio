@@ -492,6 +492,15 @@ class JobRunner:
             threading.Thread(target=self._kill_tree, args=(proc,), daemon=True).start()
         return True
 
+    # Injected completion hook (M4 review — durable anchor verification). Class-level
+    # default so the process-wide singleton works without an __init__ change.
+    _observer = None
+
+    def set_completion_observer(self, fn) -> None:
+        """Register a best-effort `fn(job_snapshot)` fired after every OK job finalizes
+        (after lineage + pass-chaining). One observer; the API layer owns the glue."""
+        self._observer = fn
+
     def stop_batch(self, job_id: str) -> bool:
         """Gracefully stop a RUNNING batch job (a job whose params carry `batch_items`):
         drop a `STOP` file into its out dir — the worker finishes the current item, marks
@@ -850,6 +859,14 @@ class JobRunner:
                     self._submit_chained(job_snapshot)
                 except Exception as e:  # noqa: BLE001
                     _warn(f"post-pass chain failed for {job_id}: {e}")
+            # Completion observer (M4 review): an injected, best-effort hook the API layer
+            # uses to persist facts derived from a finished job (anchor verification) —
+            # keeps the runner asset-agnostic (same injection pattern as the disk gate).
+            if self._observer is not None:
+                try:
+                    self._observer(job_snapshot)
+                except Exception as e:  # noqa: BLE001
+                    _warn(f"completion observer failed for {job_id}: {e}")
 
     def _submit_chained(self, parent: dict) -> None:
         """Submit the FIRST remaining post-pass of `parent` as a chained **batch img2img

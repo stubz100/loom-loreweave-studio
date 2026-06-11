@@ -538,6 +538,11 @@ export default function App() {
     setStage("A");
     setBulkSel(new Set());
     setFilterShot(""); setFilterAngle(""); setFilterExpr("");
+    // Stage-B controls are PER-ASSET decisions — carrying them across assets leaks state
+    // (review 2026-06-11: realize="mixed" without this asset's matte → 422; an explicit
+    // identity override would shadow the server's verified-anchor auto behavior).
+    setRealize("img2img");
+    setIdentityOn(null);
     void refreshCasting(asset);
     void refreshJobs(); // refresh jobs so the derived asset grid is current
   };
@@ -562,9 +567,11 @@ export default function App() {
 
   // M4 review (Medium): the anchor is VERIFIED once a done+ok identity job for this
   // version ran after it was (re-)picked — the worker hard-fails on a faceless anchor,
-  // so a successful run is the proof. Gates the checkbox's auto-on (server enforces too).
+  // so a successful run is the proof. Durable stamp first (verified_at survives queue
+  // pruning); live job scan as instant feedback between version refreshes.
   const anchorVerified = useMemo(() => {
     if (!activeAsset || !anchorInfo) return false;
+    if (anchorInfo.verified_at) return true;
     return Object.values(jobs).some((j) =>
       j.pipeline === "identity" && j.status === "done"
       && j.requester_id === activeAsset.active_version
@@ -588,6 +595,12 @@ export default function App() {
     }
     return null;
   }, [jobs, activeAsset]);
+
+  // If the mask disappears (matte job deleted, asset switched), "mixed" can't run —
+  // downgrade instead of letting the next Generate 422 (review 2026-06-11).
+  useEffect(() => {
+    if (realize === "mixed" && !bgMask) setRealize("img2img");
+  }, [realize, bgMask]);
 
   // M4: pick the selected output as the version's face anchor / clear it (R94).
   const onSetAnchor = async (jobId: string, output?: string) => {

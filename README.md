@@ -32,7 +32,13 @@ ungated `sd3.5-medium`; `GET /models` + a catalog-validated `params` channel), *
 (`POST /assets/{id}/stage-b` → **one batch img2img job**: the worker loads the model once and
 loops every recipe cell via `--jobs-file`; per-output `coverage_cell` in `result.output_meta`), and
 **Stage-C curation → Save AssetProfile** (keep/cull → `ref_set`, Saved-not-Finalized) with the A·B·C
-bootstrap-strip UI. Next: M4 (face/identity anchor). Spec:
+bootstrap-strip UI. **M3 ACCEPTED 2026-06-11** (user GPU sign-off). **M3.5** — BiRefNet matting →
+hero **bg mask** + `realize="mixed"` Stage-B expansion (inpaint cells repaint the background around
+the held subject — the background-diversity axis). **M4** — face **anchor** (`POST
+/assets/{id}/anchor`) + the **identity-lock pass** (inswapper swap to the anchor, chained after
+Stage-B, default-on once the anchor is verified; clean/polish/identity run as **chained
+post-passes** on any pipeline). **P1-12** — curation throughput (persistent reject list, bulk
+keep/reject, keyboard k/x/space, coverage filters). Next: M5 (profile versioning). Spec:
 > [`kb-loom-p1.md`](../../.github/copilot/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:
 > [`kb-loom-p1-imp.md`](../../.github/copilot/kb-loom-p1-imp.md) (P0 spine:

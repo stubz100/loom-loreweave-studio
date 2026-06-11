@@ -92,6 +92,26 @@ def test_reject_kept_output_409_and_keep_unrejects(client):
     assert rk2.json()["rejected"] == []
 
 
+def test_reject_contract_requires_done_and_coverage_cell(client):
+    """Review 2026-06-11 Low: /refs/reject mirrors keep's Stage-C contract — only
+    completed, coverage-bearing dataset outputs land in the cull record."""
+    from orchestrator.runner import RUNNER
+    ws = RUNNER.workspace
+    a, jid, names = _asset_with_stage_b_job(ws)
+    RUNNER.jobs[jid]["status"] = "running"
+    r = client.post(f"/assets/{a['id']}/refs/reject",
+                    json={"job_id": jid, "output": names[0]})
+    assert r.status_code == 409 and "done" in r.text
+    RUNNER.jobs[jid]["status"] = "done"
+    # an owned, done output WITHOUT a coverage_cell (not a dataset cell) → 422
+    extra = "job_cur01/extra.png"
+    (ws.out_dir / "job_cur01" / "extra.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    RUNNER.jobs[jid]["result"]["output_names"].append(extra)
+    r2 = client.post(f"/assets/{a['id']}/refs/reject",
+                     json={"job_id": jid, "output": extra})
+    assert r2.status_code == 422 and "coverage_cell" in r2.text
+
+
 def test_reject_scope_and_membership_guards(client):
     from orchestrator.runner import RUNNER
     ws = RUNNER.workspace

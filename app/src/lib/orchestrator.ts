@@ -318,6 +318,10 @@ export interface AnchorInfo {
   source_output?: string;
   job_id?: string;
   set_at: string;
+  /** Durable verification stamp (M4 review): a done identity job proved this anchor
+   * has a detectable face. Survives queue pruning; a re-pick clears it. */
+  verified_at?: string;
+  verified_by_job?: string;
 }
 
 export interface ProfileVersion {

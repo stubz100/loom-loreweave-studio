@@ -231,6 +231,44 @@ def test_stage_b_identity_default_on_and_appended_last(client):
     assert ident["anchor"].replace("\\", "/").endswith("/faces/anchor.png")
 
 
+def test_anchor_verification_is_durable(client):
+    """M5-prep review (Medium): the verification fact must survive queue pruning — the
+    runner's completion observer stamps verified_at/verified_by_job on version.anchor,
+    and default-on reads the stamp first (job history only as fallback)."""
+    from orchestrator import assets
+    from orchestrator.runner import RUNNER
+    ws = RUNNER.workspace
+    a = _asset_with_hero_and_anchor(client, ws)
+    jid = _verify_anchor(ws, a)
+    assert RUNNER._observer is not None             # wired by the lifespan
+    RUNNER._observer(RUNNER.jobs[jid])              # what finalize fires on ok jobs
+    detail = assets.get_asset(ws, a["id"])
+    v = next(x for x in detail["versions"] if x["id"] == a["active_version"])
+    assert v["anchor"]["verified_at"] and v["anchor"]["verified_by_job"] == jid
+    # prune the verifying job — default-on STILL engages (the durable stamp)
+    RUNNER.jobs.pop(jid, None)
+    r = client.post(f"/assets/{a['id']}/stage-b",
+                    json={"preset": "npc_lite", "character_clause": "x", "dry_run": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["identity"] is True
+
+
+def test_stage_b_lazily_promotes_legacy_verification(client):
+    """A verification that predates the durable stamp (only in job history) is promoted
+    to version.anchor on the next stage-b check — then survives pruning too."""
+    from orchestrator import assets
+    from orchestrator.runner import RUNNER
+    ws = RUNNER.workspace
+    a = _asset_with_hero_and_anchor(client, ws)
+    jid = _verify_anchor(ws, a)                     # history only — no observer call
+    r = client.post(f"/assets/{a['id']}/stage-b",
+                    json={"preset": "npc_lite", "character_clause": "x", "dry_run": True})
+    assert r.status_code == 200 and r.json()["identity"] is True
+    detail = assets.get_asset(ws, a["id"])
+    v = next(x for x in detail["versions"] if x["id"] == a["active_version"])
+    assert v["anchor"]["verified_at"] and v["anchor"]["verified_by_job"] == jid
+
+
 def test_stage_b_identity_repick_invalidates_verification(client):
     """Re-picking the anchor (same faces/anchor.png path, NEW content) must reset the
     computed verification — only runs started AFTER the re-pick count."""

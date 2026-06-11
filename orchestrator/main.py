@@ -313,6 +313,25 @@ def require_token(x_loom_token: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="missing or invalid X-Loom-Token")
 
 
+def _persist_anchor_verification(job: dict) -> None:
+    """Runner completion observer (M4 review, Medium): the moment an identity job
+    finishes OK, stamp `verified_at`/`verified_by_job` on the version's anchor — DURABLE,
+    so deleting/pruning the verifying job never silently un-verifies a good anchor
+    (default-on identity reads this fact first, job history only as fallback)."""
+    if job.get("pipeline") != "identity" or not (job.get("result") or {}).get("ok"):
+        return
+    ws = RUNNER.workspace
+    vid = job.get("profile_version_id")
+    anchor_image = (job.get("params") or {}).get("anchor_image")
+    if not (ws and vid and anchor_image):
+        return
+    try:
+        assets.mark_anchor_verified(ws, vid, anchor_path=str(anchor_image),
+                                    job_id=job.get("id", ""))
+    except Exception as e:  # noqa: BLE001 - observer is best-effort, never fail the job
+        logsetup.get_logger().warning("anchor verification persist failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Start the worker, then re-open the last project (M5: the queue is per-project, so
@@ -365,6 +384,9 @@ async def lifespan(app: FastAPI):
     projects.resolve_startup()
     # Disk guard (M6): gate the worker's dispatch on the hard-stop, then start polling.
     RUNNER.set_disk_gate(GUARD.is_hard_blocked)
+    # Anchor verification (M4 review): persist the fact the moment an identity job
+    # succeeds — durable on version.anchor, independent of queue history/pruning.
+    RUNNER.set_completion_observer(_persist_anchor_verification)
     GUARD.start()
     log.info("ready at %s", CONFIG.base_url)
     print(f"LOOM_ORCH_READY url={CONFIG.base_url} token={CONFIG.token}", flush=True)
@@ -905,15 +927,27 @@ def create_app() -> FastAPI:
         anchor_path = assets.anchor_file_path(ws, asset_id, req.version_id)
         anchor_ok = False
         if anchor_path is not None:
-            set_at = (anchor_rec or {}).get("set_at") or ""
-            target = str(anchor_path)
-            anchor_ok = any(
-                j.get("pipeline") == "identity" and j.get("status") == "done"
-                and j.get("profile_version_id") == vid
-                and (j.get("params") or {}).get("anchor_image") == target
-                and (j.get("result") or {}).get("ok")
-                and (j.get("created_at") or "") >= set_at
-                for j in list(RUNNER.jobs.values()))
+            # Durable fact first (review 2026-06-11: queue history can be pruned — the
+            # persisted stamp keeps Saved profiles identity-ready); job-history scan as
+            # fallback for runs that finished before the stamp existed, promoted lazily.
+            anchor_ok = bool((anchor_rec or {}).get("verified_at"))
+            if not anchor_ok:
+                set_at = (anchor_rec or {}).get("set_at") or ""
+                target = str(anchor_path)
+                proof = next(
+                    (j for j in list(RUNNER.jobs.values())
+                     if j.get("pipeline") == "identity" and j.get("status") == "done"
+                     and j.get("profile_version_id") == vid
+                     and (j.get("params") or {}).get("anchor_image") == target
+                     and (j.get("result") or {}).get("ok")
+                     and (j.get("created_at") or "") >= set_at), None)
+                if proof is not None:
+                    anchor_ok = True
+                    try:
+                        assets.mark_anchor_verified(ws, vid, anchor_path=target,
+                                                    job_id=proof.get("id", ""))
+                    except ws_mod.WorkspaceError:
+                        pass                      # promotion is best-effort
         identity_note = None
         if req.identity is not None:
             want_identity = req.identity
@@ -1204,6 +1238,8 @@ def create_app() -> FastAPI:
         job = RUNNER.get(req.job_id)
         if job is None:
             raise HTTPException(404, f"no such job {req.job_id!r}")
+        if job.get("status") != "done":
+            raise HTTPException(409, "can only reject a completed (done) candidate")
         vid = _require_job_owned_by(ws, asset_id, req.version_id, job)
         result = job.get("result") or {}
         pool = result.get("output_names") or ([result["output_name"]]
@@ -1212,6 +1248,13 @@ def create_app() -> FastAPI:
         if not output or output not in pool:
             raise HTTPException(409, f"output {req.output!r} is not one of job "
                                      f"{req.job_id!r}'s outputs")
+        # Same Stage-C contract as refs/keep (review 2026-06-11 Low: the endpoint claimed
+        # Stage-B candidates but accepted anything owned) — only coverage-bearing dataset
+        # outputs belong in the cull record.
+        ometa = (result.get("output_meta") or {}).get(output) or {}
+        if not (job.get("coverage_cell") or ometa.get("coverage_cell")):
+            raise HTTPException(422, "output has no coverage_cell — only Stage-B dataset "
+                                     "outputs are rejected (the Stage-C cull list)")
         try:
             return assets.reject_output(ws, asset_id, source_output=output,
                                         version_id=vid, rejected=req.rejected)

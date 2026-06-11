@@ -21,7 +21,9 @@
         "file": { "type": "string" },
         "source_output": { "type": "string" },
         "job_id": { "type": "string" },
-        "set_at": { "type": "string" }
+        "set_at": { "type": "string" },
+        "verified_at": { "type": "string" },
+        "verified_by_job": { "type": "string" }
       }
     },
     "ref_set": {

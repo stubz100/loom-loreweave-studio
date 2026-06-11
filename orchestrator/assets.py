@@ -362,6 +362,40 @@ def clear_anchor(ws: Workspace, asset_id: str, version_id: str | None = None) ->
     return _write_version(vdir, version)
 
 
+def mark_anchor_verified(ws: Workspace, version_id: str, *, anchor_path: str,
+                         job_id: str) -> bool:
+    """Persist the anchor-verification fact on `version.anchor` (M4 review: the computed
+    check read RUNNER job history, so deleting/pruning the verifying job silently
+    un-verified a perfectly good anchor — Saved profiles must keep their identity-lock
+    readiness, M5+). Looks the version up by id (the runner-side caller only knows the
+    job's `profile_version_id`), confirms the verified file is STILL the current anchor
+    (a re-pick mid-run must not inherit the old run's credit), stamps
+    `verified_at`/`verified_by_job`. Idempotent; returns True when the fact is durable."""
+    for adir, profile in _iter_profiles(ws):
+        if version_id not in profile.get("versions", []):
+            continue
+        found = _find_version(adir, version_id)
+        if found is None:
+            return False
+        vdir, version = found
+        anchor = version.get("anchor")
+        if not anchor or not anchor.get("file"):
+            return False
+        current = (vdir / "faces" / anchor["file"]).resolve()
+        try:
+            if str(current) != str(Path(anchor_path).resolve()):
+                return False
+        except OSError:
+            return False
+        if anchor.get("verified_at"):
+            return True                              # already durable
+        anchor["verified_at"] = _now()
+        anchor["verified_by_job"] = job_id
+        _write_version(vdir, version)
+        return True
+    return False
+
+
 def anchor_file_path(ws: Workspace, asset_id: str,
                      version_id: str | None = None) -> Path | None:
     """Absolute path of the version's anchor image, or None when unset/missing."""

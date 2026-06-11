@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelJob,
   castingUrl,
+  refUrl,
   closeProject,
   createAsset,
   createProject,
@@ -129,6 +130,11 @@ export default function App() {
   const [rejected, setRejected] = useState<string[]>([]);
   // M5 — the asset's version records (the selector reads name/finalized per id).
   const [versionList, setVersionList] = useState<ProfileVersion[]>([]);
+  // M5 (F2) — the new-version modal: name + PARENT picker (copy from ANY prior version,
+  // R59 — the prompt-only flow could only copy the active one).
+  const [showNewVersion, setShowNewVersion] = useState(false);
+  const [newVerName, setNewVerName] = useState("");
+  const [newVerParent, setNewVerParent] = useState("");
   const [filterShot, setFilterShot] = useState("");
   const [filterAngle, setFilterAngle] = useState("");
   const [filterExpr, setFilterExpr] = useState("");
@@ -555,16 +561,21 @@ export default function App() {
     void refreshAssets();
   };
 
-  const onCreateVersion = async () => {
+  const onCreateVersion = () => {
     if (!activeAsset) return;
-    const name = window.prompt(
-      "New version name (full copy of the active version — refs, casting, anchor):",
-      "");
-    if (name === null) return;
+    setNewVerName("");
+    setNewVerParent(activeAsset.active_version);   // default parent = active (R59: any)
+    setShowNewVersion(true);
+  };
+
+  const onCreateVersionConfirm = async () => {
+    if (!activeAsset) return;
     setError(null);
     try {
-      const res = await createVersion(activeAsset.id, name.trim() || undefined);
+      const res = await createVersion(activeAsset.id, newVerName.trim() || undefined,
+                                      newVerParent || undefined);
       log.info("version:", res.version.id, `(${res.version.name}) copied — now active`);
+      setShowNewVersion(false);
       await _switchToVersion(res.profile.active_version);
     } catch (e) {
       log.error("create version failed:", e);
@@ -911,7 +922,7 @@ export default function App() {
   // tile per candidate; everything else is one tile per job. A still-RUNNING cast
   // streams its interim candidates (partial_outputs) as tiles the moment each lands
   // (user request 2026-06-10), plus one placeholder tile for the in-flight remainder.
-  type Cell = { key: string; job?: Job; output?: string; interim?: boolean };
+  type Cell = { key: string; job?: Job; output?: string; interim?: boolean; refItem?: RefItem };
   const cells: Cell[] = gridIds.flatMap((id) => {
     const job = jobs[id];
     const names = job?.result?.output_names;
@@ -932,16 +943,27 @@ export default function App() {
   // cell's coverage comes from per-output meta (batch jobs) or the job field (legacy).
   const rejectedSet = new Set(rejected);
   const covOf = (c: Cell) =>
-    (c.output ? c.job?.result?.output_meta?.[c.output]?.coverage_cell : undefined)
+    c.refItem?.coverage_cell
+    ?? (c.output ? c.job?.result?.output_meta?.[c.output]?.coverage_cell : undefined)
     ?? c.job?.coverage_cell ?? undefined;
-  const stageCells = stage !== "C" ? cells : cells.filter((c) => {
-    if (!showRejected && c.output && rejectedSet.has(c.output)) return false;
-    const cov = covOf(c);
-    if (filterShot && cov?.shot_size !== filterShot) return false;
-    if (filterAngle && cov?.angle !== filterAngle) return false;
-    if (filterExpr && cov?.expression !== filterExpr) return false;
-    return true;
-  });
+  // M5 review (F1): a copied version's ref_set is DURABLE (refs/ files) but has no
+  // generation jobs for the new version id — synthesize tiles for kept refs whose
+  // source output isn't already on the grid, served from refs/ via refUrl. They render
+  // kept (✓ → cull works through the ref id) so "copy parent, then edit" is real.
+  const jobOutputs = new Set(cells.map((c) => c.output).filter(Boolean));
+  const durableRefCells: Cell[] = (stage === "C" && activeAsset)
+    ? refSet.filter((r) => !r.source_output || !jobOutputs.has(r.source_output))
+        .map((r) => ({ key: `ref:${r.id}`, refItem: r }))
+    : [];
+  const stageCells = stage !== "C" ? cells
+    : [...durableRefCells, ...cells].filter((c) => {
+        if (!showRejected && c.output && rejectedSet.has(c.output)) return false;
+        const cov = covOf(c);
+        if (filterShot && cov?.shot_size !== filterShot) return false;
+        if (filterAngle && cov?.angle !== filterAngle) return false;
+        if (filterExpr && cov?.expression !== filterExpr) return false;
+        return true;
+      });
 
   // Bulk keep/reject over the selected cell keys (per-item isolation: one 409 — e.g. a
   // pre-lock tile — doesn't abort the sweep; authoritative state refreshed once at the end).
@@ -967,6 +989,11 @@ export default function App() {
     if (errs.length) setError(`${errs.length} item(s) failed — first: ${errs[0]}`);
   };
 
+  // M5 (F3): a finalized version is server-locked — the UI must FEEL read-only too
+  // (mutating controls hidden/disabled, not error-prone).
+  const activeVersionLocked =
+    versionList.find((v) => v.id === activeAsset?.active_version)?.finalized ?? false;
+
   // Keyboard curation (P1-12): arrows move the selection, k = keep, x = toggle reject,
   // space = toggle bulk-select. Stage C only; the grid div is focusable.
   const onGridKey = (e: React.KeyboardEvent) => {
@@ -982,6 +1009,7 @@ export default function App() {
       setSelected(stageCells[next].key);
       return;
     }
+    if (activeVersionLocked) return;     // finalized = read-only (arrows still navigate)
     const cur = stageCells[idx];
     if (!cur?.job || cur.job.status !== "done") return;
     if (e.key === "k") {
@@ -1280,10 +1308,12 @@ export default function App() {
                     alt="face anchor"
                     title={`set ${anchorInfo.set_at} from ${anchorInfo.source_output ?? "?"}`}
                   />
-                  <button className="ghost" onClick={onClearAnchor}
-                          title="clear the anchor (opt this version out of the identity lock)">
-                    ✕
-                  </button>
+                  {!activeVersionLocked && (
+                    <button className="ghost" onClick={onClearAnchor}
+                            title="clear the anchor (opt this version out of the identity lock)">
+                      ✕
+                    </button>
+                  )}
                 </>
               )}
             </div>
@@ -1455,7 +1485,7 @@ export default function App() {
                 kept {refSet.length} · rejected {rejected.length} · showing{" "}
                 {stageCells.length}/{cells.length}
               </span>
-              {bulkSel.size > 0 && (
+              {bulkSel.size > 0 && !activeVersionLocked && (
                 <>
                   <button className="proj-btn" onClick={() => void onBulk("keep")}
                           disabled={busy} title="keep every selected tile into the ref set">
@@ -1467,6 +1497,11 @@ export default function App() {
                   </button>
                   <button className="ghost" onClick={() => setBulkSel(new Set())}>clear</button>
                 </>
+              )}
+              {activeVersionLocked && (
+                <span className="muted" title="finalized = locked (R60): curation is read-only — create a new version to change the set">
+                  🔒 read-only (finalized)
+                </span>
               )}
               <span className="muted" title="click the grid first so it has keyboard focus">
                 keys: ←→↑↓ move · k keep · x reject · space select
@@ -1481,12 +1516,15 @@ export default function App() {
                 className="style-frag"
                 placeholder="prompt template (identity clause saved into the AssetProfile)…"
                 value={promptTemplate}
+                disabled={activeVersionLocked}
                 onChange={(e) => setPromptTemplate(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") onSaveProfile(); }}
               />
               <button className="proj-btn" onClick={onSaveProfile}
-                      disabled={conn !== "online" || !project?.open}>
-                Save AssetProfile
+                      disabled={conn !== "online" || !project?.open || activeVersionLocked}
+                      title={activeVersionLocked
+                        ? "finalized = locked (R60) — create a new version to edit" : ""}>
+                Save AssetProfile{activeVersionLocked ? " 🔒" : ""}
               </button>
             </div>
           )}
@@ -1566,6 +1604,9 @@ export default function App() {
             {stageCells.map((c) => (
               <GridCell
                 key={c.key}
+                refSrc={c.refItem && activeAsset
+                  ? refUrl(activeAsset.id, c.refItem.file) : undefined}
+                locked={activeVersionLocked}
                 job={c.job}
                 output={c.output}
                 interim={c.interim ?? false}
@@ -1577,10 +1618,11 @@ export default function App() {
                 isHero={!!c.output && starredOutputs.has(c.output)}
                 onStar={() => c.job && onStar(c.job.id, c.output)}
                 curating={stage === "C"}
-                isKept={!!c.output && keptByOutput.has(c.output)}
+                isKept={c.refItem ? true : (!!c.output && keptByOutput.has(c.output))}
                 onKeep={() => c.job && onKeep(c.job.id, c.output)}
                 onCull={() => {
-                  const rid = c.output ? keptByOutput.get(c.output) : undefined;
+                  const rid = c.refItem?.id
+                    ?? (c.output ? keptByOutput.get(c.output) : undefined);
                   if (rid) onCull(rid);
                 }}
                 isRejected={!!c.output && rejectedSet.has(c.output)}
@@ -1599,7 +1641,7 @@ export default function App() {
         <aside className="inspector">
           <div className="rail-head">INSPECTOR</div>
           {!selJob && <div className="muted">Select an image to see job details + lineage.</div>}
-          {selJob && activeAsset && selJob.status === "done" && (
+          {selJob && activeAsset && selJob.status === "done" && !activeVersionLocked && (
             <button
               className="ghost"
               onClick={() => void onSetAnchor(selJob.id, selOutput)}
@@ -1652,6 +1694,42 @@ export default function App() {
           </button>
         )}
       </footer>
+      {showNewVersion && activeAsset && (
+        <div className="modal-overlay" onClick={() => setShowNewVersion(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="rail-head">NEW VERSION — copy-on-create (R50/R58/R59)</div>
+            <div className="modal-label">name (optional — e.g. "scar", "winter_outfit"):</div>
+            <input
+              className="prompt"
+              autoFocus
+              value={newVerName}
+              placeholder={`v${versionList.length + 1}`}
+              onChange={(e) => setNewVerName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") void onCreateVersionConfirm(); }}
+            />
+            <div className="modal-label">
+              parent — the new version is a FULL copy of it (refs, casting, face anchor);
+              any prior version works, finalized included:
+            </div>
+            <select value={newVerParent} onChange={(e) => setNewVerParent(e.target.value)}>
+              {versionList.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}{v.finalized ? " 🔒" : ""}
+                  {v.id === activeAsset.active_version ? " (active)" : ""}
+                </option>
+              ))}
+            </select>
+            <div className="modal-actions">
+              <button className="proj-btn" onClick={() => setShowNewVersion(false)}>
+                Cancel
+              </button>
+              <button className="modal-run" onClick={() => void onCreateVersionConfirm()}>
+                Create ▶
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {preview && (
         <div className="modal-overlay" onClick={() => { setPreview(null); pendingRunRef.current = null; }}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -1788,6 +1866,8 @@ function GridCell({
   onReject,
   bulkSelected = false,
   onToggleBulk,
+  refSrc,
+  locked = false,
 }: {
   job?: Job;
   output?: string;
@@ -1807,6 +1887,10 @@ function GridCell({
   onReject?: (flag: boolean) => void;
   bulkSelected?: boolean;
   onToggleBulk?: () => void;
+  /** durable ref tile (M5): served from the version's refs/ dir — no job behind it. */
+  refSrc?: string;
+  /** the active version is finalized (R60) — hide every mutating control. */
+  locked?: boolean;
 }) {
   const status = job?.status ?? "queued";
   // For a multi candidate, `output` is this tile's specific image; else the job's single output.
@@ -1819,23 +1903,28 @@ function GridCell({
   // Stage-B images were cropped into the fixed 16:9 cell). Fallback = the t2i default.
   const w = Number(job?.params?.width) || 1280;
   const h = Number(job?.params?.height) || 720;
+  // Durable ref tiles (M5, F1): a copied version's kept refs have no job behind them —
+  // they render from refs/ as kept (cull works through the ref id), always "done".
+  const isRef = !!refSrc;
   // Interim tiles (a running cast's already-landed candidates) show their image early.
-  const showImg = !!name && (done || interim);
+  const showImg = (!!name && (done || interim)) || isRef;
   // M4 review (High): a done job with PENDING post-passes is not the end of its chain —
   // these are pre-clean/pre-polish/pre-IDENTITY-LOCK images. Mark them and don't offer
   // keep ✓ (the terminal pass job's tiles are the curatable ones; the API enforces too).
   const pendingPasses = (job?.post_passes ?? []).map((p) => p.pass);
   const preLock = done && pendingPasses.length > 0;
+  const curable = curating && (done || isRef) && !preLock && !locked;
   return (
     <div
-      className={`cell ${selected ? "sel" : ""} ${isHero ? "hero" : ""} ${isKept ? "kept" : ""} ${isRejected ? "rejected" : ""} ${bulkSelected ? "bulksel-on" : ""} st-${status}`}
+      className={`cell ${selected ? "sel" : ""} ${isHero ? "hero" : ""} ${isKept ? "kept" : ""} ${isRejected ? "rejected" : ""} ${bulkSelected ? "bulksel-on" : ""} st-${isRef ? "done" : status}`}
       style={{ aspectRatio: `${w} / ${h}` }}
       role="button"
       tabIndex={0}
       onClick={onClick}
     >
       {showImg ? (
-        <img src={outputUrl(name!)} alt={job?.id} />
+        <img src={isRef ? refSrc : outputUrl(name!)} alt={isRef ? "curated ref" : job?.id}
+             title={isRef ? "curated ref (durable copy in the version's refs/)" : undefined} />
       ) : (
         <span className="cell-status">
           {status === "queued" && "queued…"}
@@ -1850,7 +1939,7 @@ function GridCell({
           <div className="bar" style={{ width: `${Math.round(prog * 100)}%` }} />
         </div>
       )}
-      {active && !interim && (
+      {active && !interim && !isRef && (
         <button
           className="cancel"
           title="cancel"
@@ -1874,7 +1963,7 @@ function GridCell({
           🗑
         </button>
       )}
-      {castable && done && onStar && (
+      {castable && done && onStar && !locked && (
         <button
           className={`star ${isHero ? "on" : ""}`}
           title={isHero ? "the hero ★ — click to un-star" : "star as hero (save into casting)"}
@@ -1894,7 +1983,7 @@ function GridCell({
           ⏳ {pendingPasses.join("→")}
         </span>
       )}
-      {curating && done && !preLock && (onKeep || onCull) && (
+      {curable && (onKeep || onCull) && (
         <button
           className={`keep ${isKept ? "on" : ""}`}
           title={isKept ? "kept ✓ — click to cull from the ref set" : "keep ✓ into the curated ref set"}
@@ -1907,7 +1996,7 @@ function GridCell({
           {isKept ? "✓" : "+"}
         </button>
       )}
-      {curating && done && onReject && !isKept && (
+      {curable && !isRef && onReject && !isKept && (
         <button
           className={`reject ${isRejected ? "on" : ""}`}
           title={isRejected ? "rejected — click to un-reject (↩)" : "reject ✕ (persistent cull-from-view; reversible)"}
@@ -1919,7 +2008,7 @@ function GridCell({
           {isRejected ? "↩" : "✕"}
         </button>
       )}
-      {curating && done && onToggleBulk && (
+      {curable && !isRef && onToggleBulk && (
         <button
           className={`bulksel ${bulkSelected ? "on" : ""}`}
           title="select for bulk keep/reject (or press space on the focused tile)"

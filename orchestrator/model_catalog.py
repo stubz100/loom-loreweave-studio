@@ -178,6 +178,34 @@ def _catalog() -> dict:
             ],
             "modes": ["t2i", "img2img", "inpaint"],
         },
+        # ── birefnet (postproc: subject matting — P1/M3.5, first postproc-class) ──
+        "birefnet": {
+            "loom_access": "standalone postproc adapter — hero subject matte → the Stage-B "
+                           "background-inpaint mask (realize=\"mixed\").",
+            "variants": [
+                {"id": "birefnet", "repo_id": "ZhengPeng7/BiRefNet", "gated": False,
+                 "defaults": {"resolution": 1024},
+                 "note": "MIT; general 1024 matting — the loom default. Transformers repo "
+                         "(trust_remote_code; probe config.json, NOT model_index.json)"},
+                {"id": "birefnet-hr", "repo_id": "ZhengPeng7/BiRefNet_HR", "gated": False,
+                 "defaults": {"resolution": 2048},
+                 "note": "MIT; high-res 2048 variant (slower; promoted hi-res refs)"},
+            ],
+            "params": [
+                {"name": "model_name", "flag": "--model-name", "type": "enum", "default": "birefnet"},
+                {"name": "resolution", "flag": "--resolution", "type": "int", "default": None,
+                 "min": 256, "max": 2048, "note": "inference square; defaults to the variant's native"},
+                {"name": "threshold", "flag": "--threshold", "type": "float", "default": 0.5,
+                 "min": 0.0, "max": 1.0, "note": "subject binarization for the bg mask"},
+                {"name": "dilate_px", "flag": "--dilate-px", "type": "int", "default": 12,
+                 "min": 0, "max": 64, "note": "grow the protected subject region (edge safety)"},
+                {"name": "feather_px", "flag": "--feather-px", "type": "int", "default": 0,
+                 "min": 0, "max": 64, "note": "soften the bg mask outward (0 = hard edge)"},
+                {"name": "dtype", "flag": "--dtype", "type": "enum", "default": "float32",
+                 "choices": ["float32", "float16"]},
+            ],
+            "modes": ["matte"],
+        },
     }
 
 

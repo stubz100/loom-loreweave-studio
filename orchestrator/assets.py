@@ -326,6 +326,53 @@ def casting_file_path(ws: Workspace, asset_id: str, file: str,
     return path
 
 
+# --- M4: face anchor (R94) — the chosen face image the identity pass locks to -----
+
+def set_anchor(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
+               version_id: str | None = None) -> dict:
+    """Pick `source_output` (an out/-relative image from an owned job — ownership is the
+    caller's scope guard, like refs/keep) as the version's **face anchor** (R94): copied
+    into the version's `faces/anchor.png` so a Saved version is self-contained. Re-picking
+    overwrites (per-version, re-pickable — scar/tattoo)."""
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    if ".." in source_output or "\\" in source_output:
+        raise ws_mod.WorkspaceError(f"invalid output {source_output!r}")
+    src = (ws.out_dir / source_output).resolve()
+    if not src.is_relative_to(ws.out_dir.resolve()) or not src.is_file():
+        raise ws_mod.WorkspaceError(f"output {source_output!r} not found in out/")
+    fdir = vdir / "faces"
+    fdir.mkdir(parents=True, exist_ok=True)
+    dst = fdir / f"anchor{src.suffix}"
+    shutil.copy2(src, dst)
+    version["anchor"] = {"file": dst.name, "source_output": source_output,
+                         "job_id": job_id, "set_at": _now()}
+    return _write_version(vdir, version)
+
+
+def clear_anchor(ws: Workspace, asset_id: str, version_id: str | None = None) -> dict:
+    """Opt the version out of the face anchor (R93). The copied file is removed too."""
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    anchor = version.get("anchor")
+    if anchor and anchor.get("file"):
+        try:
+            (vdir / "faces" / anchor["file"]).unlink(missing_ok=True)
+        except OSError:
+            pass                                     # record-of-truth is version.json
+    version["anchor"] = None
+    return _write_version(vdir, version)
+
+
+def anchor_file_path(ws: Workspace, asset_id: str,
+                     version_id: str | None = None) -> Path | None:
+    """Absolute path of the version's anchor image, or None when unset/missing."""
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    anchor = version.get("anchor")
+    if not anchor or not anchor.get("file"):
+        return None
+    path = (vdir / "faces" / anchor["file"]).resolve()
+    return path if path.is_file() else None
+
+
 # --- Stage-C curation: keep/cull Stage-B outputs → curated ref_set (M3) ----------
 
 def keep_ref(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,

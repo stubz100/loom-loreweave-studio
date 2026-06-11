@@ -56,5 +56,15 @@
       {"id": "sd35-large", "repo_id": "stabilityai/stable-diffusion-3.5-large", "probe": "model_index.json", "gated": true, "pipeline": "sd35"},
       {"id": "zimage-base", "repo_id": "Tongyi-MAI/Z-Image", "probe": "model_index.json", "gated": false, "pipeline": "zimage"}
     ]
+  },
+  "_postproc_doc": "Tool-scoped weight sets for the postproc-class adapters (P1/M3.5+). DELIBERATELY NOT in the phase-scoped `models` list (same rationale as multi_presets): folding a postproc weight into `weights_ok` would gate ALL of /generate on a tool the run may never use. Instead the tool's endpoint (e.g. POST /assets/{id}/stage-b/matte) checks ITS OWN set at request time and fails fast (412) with a fetch hint. Probe = a representative cached file; BiRefNet is a *transformers* repo (trust_remote_code, custom arch in-repo), so the probe is config.json — it has no model_index.json.",
+  "postproc": {
+    "birefnet": [
+      {"id": "birefnet", "repo_id": "ZhengPeng7/BiRefNet", "probe": "config.json", "gated": false, "pipeline": "birefnet", "note": "MIT; general 1024 subject matting (~0.9 GB) — the default variant"},
+      {"id": "birefnet-hr", "repo_id": "ZhengPeng7/BiRefNet_HR", "probe": "config.json", "gated": false, "pipeline": "birefnet", "note": "MIT; high-res 2048 variant (~0.9 GB). Entry ids mirror the catalog variant ids — the matte endpoint's gate is VARIANT-aware (checks only the chosen one)"}
+    ],
+    "identity": [
+      {"id": "inswapper-128", "repo_id": "ezioruan/inswapper_128.onnx", "probe": "inswapper_128.onnx", "gated": false, "pipeline": "identity", "note": "⚠ InsightFace RESEARCH/NON-COMMERCIAL (HF mirror, ~530 MB) — the M4 identity-lock swapper (spike: anchor cos 0.105→0.870). The buffalo_l detector/embedder pack is NOT gated here: the worker auto-downloads it on first run to $LOOM_INSIGHTFACE_ROOT (default <HF_HOME>/insightface)"}
+    ]
   }
 }

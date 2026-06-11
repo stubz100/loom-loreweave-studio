@@ -39,12 +39,14 @@ export interface Health {
 }
 
 /** Per-output metadata for batch jobs (parallel to output_names) — each Stage-B image's
- * frozen coverage_cell + its own seed, echoed from the worker's batch manifest. */
+ * frozen coverage_cell + its own seed, echoed from the worker's batch manifest.
+ * Postproc jobs (M3.5 birefnet) carry the artifact `role` instead (matte/cutout/bgmask). */
 export interface OutputMeta {
   coverage_cell?: CoverageCell;
   seed?: number | null;
   index?: number;
   method?: string | null;
+  role?: string;
 }
 
 export interface JobResult {
@@ -310,14 +312,39 @@ export interface RefItem {
   added_at?: string;
 }
 
+/** M4 face anchor (R94): the version's chosen face image, copied into faces/. */
+export interface AnchorInfo {
+  file: string;
+  source_output?: string;
+  job_id?: string;
+  set_at: string;
+}
+
 export interface ProfileVersion {
   id: string;
   name: string;
   finalized: boolean;
   prompt_template: string;
   anchor_ref?: string | null;
+  anchor?: AnchorInfo | null;
   ref_set: RefItem[];
   casting: CastingCandidate[];
+}
+
+/** Set the version's face anchor from an owned job output (M4, R94). */
+export function setAnchor(assetId: string, jobId: string, output?: string, versionId?: string) {
+  return postAsset(assetId, "anchor", { job_id: jobId, output: output ?? null, version_id: versionId ?? null });
+}
+
+/** Clear the face anchor (opt the version out of the identity lock, R93). */
+export function clearAnchor(assetId: string, versionId?: string) {
+  return postAsset(assetId, "anchor", { job_id: null, version_id: versionId ?? null });
+}
+
+/** Serve the version's anchor image. */
+export function anchorUrl(assetId: string, versionId?: string): string {
+  const q = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
+  return `${orchestratorUrl()}/assets/${assetId}/anchor/file${q}`;
 }
 
 export interface AssetDetail {
@@ -378,6 +405,27 @@ export interface StageBRequest {
   apply_style?: boolean;
   params?: Record<string, unknown>;
   dry_run?: boolean;
+  /** M3.5 — "mixed" realizes inpaint-method cells against the hero's bg mask
+   * (background diversity); needs `bg_mask` (a *_bgmask.png from a matte job). */
+  realize?: "img2img" | "mixed";
+  bg_mask?: string | null;
+  inpaint_strength?: number;
+  /** M4 — identity-lock pass (R93): omit = on when the version has an anchor;
+   * false = opt out; true = require (422 without an anchor). */
+  identity?: boolean;
+  identity_min_det_score?: number;
+}
+
+/** Matte the version's hero ★ (M3.5): one birefnet job → matte / cutout / bg mask. */
+export async function matteHero(assetId: string, versionId?: string, params?: Record<string, unknown>):
+    Promise<{ job_id: string; batch_id: string; hero: string }> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/stage-b/matte`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ version_id: versionId ?? null, params: params ?? {} }),
+  });
+  if (!res.ok) throw new Error(`matte ${res.status}: ${await res.text()}`);
+  return await res.json();
 }
 
 async function postAsset(assetId: string, path: string, body: unknown): Promise<ProfileVersion> {
@@ -407,8 +455,10 @@ export interface StageBPreview {
   dry_run: true;
   preset: string;
   pipeline: string;
-  planned_jobs: number;     // 1 — the whole recipe runs as a single batch job
-  items?: number;           // cells in that batch (model loads once)
+  planned_jobs: number;     // 1, or 2 under realize="mixed" (img2img + inpaint batches)
+  items?: number;           // cells across the batch job(s) (model loads once per job)
+  split?: Record<string, number>;   // cells per mode, e.g. { img2img: 9, inpaint: 8 }
+  realize?: "img2img" | "mixed";
   post_passes?: PostPassSpec[];
   kept_target: number[];
   hero: string;

@@ -37,6 +37,8 @@ try:
     from .adapters import zimage as zimage_adapter
     from .adapters import multi as multi_adapter
     from .adapters import sd35 as sd35_adapter
+    from .adapters import birefnet as birefnet_adapter
+    from .adapters import identity as identity_adapter
     from .runner import RUNNER, WORKER_REAP, ADAPTERS, estimate_vram
     from . import projects
     from . import workspace as ws_mod
@@ -54,6 +56,8 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import zimage as zimage_adapter  # type: ignore
     from adapters import multi as multi_adapter  # type: ignore
     from adapters import sd35 as sd35_adapter  # type: ignore
+    from adapters import birefnet as birefnet_adapter  # type: ignore
+    from adapters import identity as identity_adapter  # type: ignore
     from runner import RUNNER, WORKER_REAP, ADAPTERS, estimate_vram  # type: ignore
     import projects  # type: ignore
     import workspace as ws_mod  # type: ignore
@@ -217,6 +221,36 @@ class StageBRequest(BaseModel):
     apply_style: bool | None = None
     params: dict = Field(default_factory=dict)
     dry_run: bool = False
+    # M3.5 — mixed realization (background-diversity axis, §7.1): inpaint-method cells
+    # repaint the BACKGROUND around the held subject. Needs the hero's bg mask (an
+    # out/-relative name from a `birefnet` matte job — POST /assets/{id}/stage-b/matte).
+    realize: Literal["img2img", "mixed"] = "img2img"
+    bg_mask: str | None = None
+    inpaint_strength: float = Field(default=0.95, ge=0.0, le=1.0)
+    # M4 — identity-lock pass (R93): None = ON when the version has a face anchor
+    # (default-when-available), False = opt out, True = require (422 without an anchor).
+    identity: bool | None = None
+    identity_min_det_score: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class AnchorRequest(BaseModel):
+    """Set (job_id+output) or clear (job_id=None) the version's face anchor (R94)."""
+
+    model_config = ConfigDict(extra="forbid")
+    version_id: str | None = None
+    job_id: str | None = None
+    output: str | None = None        # out/-relative image name (defaults to the job's primary)
+
+
+class MatteRequest(BaseModel):
+    """Matte the version's hero ★ (M3.5): one `birefnet` job → matte / cutout / bg mask.
+    The bg mask feeds `realize="mixed"` Stage-B expansion. `params` = the catalog channel
+    for the birefnet tunables (threshold/dilate_px/…)."""
+
+    model_config = ConfigDict(extra="forbid")
+    version_id: str | None = None
+    params: dict = Field(default_factory=dict)
+    dry_run: bool = False
 
 
 class HeroRequest(BaseModel):
@@ -373,7 +407,8 @@ def create_app() -> FastAPI:
                                "POST /project/close",
                                "POST /project/forget", "PUT /bible/style", "POST /assets",
                                "POST /assets/{id}/casting/star", "POST /assets/{id}/casting/hero",
-                               "POST /assets/{id}/stage-b", "POST /assets/{id}/refs/keep",
+                               "POST /assets/{id}/stage-b", "POST /assets/{id}/stage-b/matte",
+                               "POST /assets/{id}/anchor", "POST /assets/{id}/refs/keep",
                                "POST /assets/{id}/refs/cull", "POST /assets/{id}/save",
                                "POST /components/fetch", "POST /shutdown"],
             "worker_reap": WORKER_REAP,
@@ -775,15 +810,58 @@ def create_app() -> FastAPI:
 
         try:
             built = recipe.build_recipe(req.preset, character_clause=clause,
-                                        style_fragment=style_fragment, base_seed=req.base_seed or 0)
+                                        style_fragment=style_fragment, base_seed=req.base_seed or 0,
+                                        realize=req.realize)
         except recipe.RecipeError as e:
             raise HTTPException(422, str(e))
 
-        # Catalog-validate the model + the shared advanced params (img2img) for the whole batch
-        # (unknown model / param → 422 up front, never a per-cell worker failure).
+        # M3.5 — mixed realization needs the hero's BG MASK (white = repaint background,
+        # subject protected). PROVENANCE, not just existence (review 2026-06-11 High): the
+        # name must be the `role == "bgmask"` output of a **completed birefnet job for THIS
+        # version** — any other file under out/ (a stale mask, another asset's mask, the
+        # matte/cutout sibling, a hand-dropped PNG) would silently poison the Stage-B/P2
+        # corpus. (dry_run echoes the name unchecked — it's a no-GPU preview.)
+        bg_mask_abs: str | None = None
+        if req.realize == "mixed":
+            if not req.bg_mask:
+                raise HTTPException(422, "realize='mixed' needs bg_mask — matte the hero first "
+                                         "(POST /assets/{id}/stage-b/matte) and pass its "
+                                         "*_bgmask.png output name (out/-relative)")
+            if ".." in req.bg_mask or "\\" in req.bg_mask:
+                raise HTTPException(400, f"invalid bg_mask {req.bg_mask!r}")
+            if req.dry_run:
+                bg_mask_abs = req.bg_mask
+            else:
+                src = next((j for j in list(RUNNER.jobs.values())
+                            if j.get("pipeline") == "birefnet" and j.get("status") == "done"
+                            and j.get("profile_version_id") == vid
+                            and req.bg_mask in ((j.get("result") or {}).get("output_names") or [])),
+                           None)
+                if src is None:
+                    raise HTTPException(422, f"bg_mask {req.bg_mask!r} is not an output of a "
+                                             "completed birefnet matte job for this version — "
+                                             "matte the hero first (POST /assets/{id}/stage-b/matte)")
+                ometa = ((src.get("result") or {}).get("output_meta") or {}).get(req.bg_mask) or {}
+                if ometa.get("role") != "bgmask":
+                    raise HTTPException(422, f"bg_mask {req.bg_mask!r} has role "
+                                             f"{ometa.get('role') or 'unknown'!r} — pass the "
+                                             "*_bgmask.png artifact (role 'bgmask'), not the "
+                                             "matte/cutout sibling")
+                obase = ws.out_dir.resolve()
+                p = (obase / req.bg_mask).resolve()
+                if not p.is_relative_to(obase) or not p.is_file():
+                    raise HTTPException(404, f"bg_mask {req.bg_mask!r} not found in out/")
+                bg_mask_abs = str(p)
+
+        # Catalog-validate the model + the shared advanced params for the whole batch
+        # (unknown model / param → 422 up front, never a per-cell worker failure). Under
+        # mixed realization the one params channel feeds BOTH jobs, so it must be valid
+        # for both modes (img2img + inpaint).
         try:
             model_catalog.validate_model(req.pipeline, req.model_name)
             extra = model_catalog.validate_params(req.pipeline, "img2img", req.params)
+            if req.realize == "mixed":
+                model_catalog.validate_params(req.pipeline, "inpaint", req.params)
         except model_catalog.CatalogError as e:
             raise HTTPException(422, str(e))
         # The EFFECTIVE model for the whole batch: the params-channel value overrides the
@@ -797,20 +875,57 @@ def create_app() -> FastAPI:
         # (their coverage_cell rides along into the pass outputs).
         post_passes = _extract_post_passes(extra, dry_run=req.dry_run)
 
+        # M4 — identity-lock pass (R86/R93): swap every cell's face to the version's
+        # anchor (spike: anchor cos 0.105→0.870, CPU). ON by default once an anchor
+        # exists; opt-out with identity=false; identity=true without an anchor → 422.
+        # Appended LAST so the lock is the final word (a later polish would re-diffuse
+        # the swapped face). No-face cells (back views) pass through unchanged.
+        anchor_path = assets.anchor_file_path(ws, asset_id, req.version_id)
+        want_identity = req.identity if req.identity is not None else (anchor_path is not None)
+        if want_identity:
+            if anchor_path is None:
+                raise HTTPException(422, "identity pass needs a face anchor — pick one first "
+                                         "(POST /assets/{id}/anchor with a face image output)")
+            if not req.dry_run:
+                i_ok, i_missing = components.postproc_weights_status("identity")
+                if not i_ok:
+                    raise HTTPException(412, {
+                        "error": "identity-lock weight(s) missing", "missing": i_missing,
+                        "hint": "POST /components/fetch?postproc=identity "
+                                "(inswapper_128 — research/non-commercial license)"})
+            post_passes = post_passes + [{
+                "pass": "identity", "backend": "identity",
+                "anchor": str(anchor_path),
+                "min_det_score": req.identity_min_det_score,
+            }]
+
         script = ADAPTERS[req.pipeline].resolve_script(CONFIG.pipeline_roots)
         if script is None:
             raise HTTPException(503, f"{req.pipeline} worker not found")
 
+        # Realization groups (M3.5): img2img sweep cells + (mixed only) inpaint cells that
+        # repaint the background around the held subject. Each group = ONE batch job.
+        cells = built["cells"]
+        if req.realize == "mixed":
+            i2i_cells = [c for c in cells if c["method"] != "inpaint"]
+            inp_cells = [c for c in cells if c["method"] == "inpaint"]
+            groups = [g for g in (("img2img", i2i_cells, req.strength),
+                                  ("inpaint", inp_cells, req.inpaint_strength)) if g[1]]
+        else:
+            groups = [("img2img", cells, req.strength)]
+        split = {mode: len(gcells) for mode, gcells, _ in groups}
+
         if req.dry_run:
             # Preview with a single-cell argv (a batch argv would write jobs.json into
-            # out/); the real run is ONE --jobs-file batch job covering every cell.
+            # out/); the real run is ONE --jobs-file batch job per realization group.
             cell0 = built["cells"][0]
             p0 = {"prompt": cell0["prompt"], "init_image": str(hero_path),
                   "strength": req.strength, "width": req.width, "height": req.height,
                   "seed": cell0["seed"], "model_name": model_name, **extra}
             spec = JobSpec(pipeline=req.pipeline, mode="img2img", params=p0, output_dir=ws.out_dir)
             return {"dry_run": True, "preset": req.preset, "pipeline": req.pipeline,
-                    "planned_jobs": 1, "items": built["target"],
+                    "planned_jobs": len(groups), "items": built["target"], "split": split,
+                    "realize": req.realize, "bg_mask": req.bg_mask,
                     "kept_target": built["kept_target"], "post_passes": post_passes,
                     "hero": str(hero_path), "first_cell": cell0,
                     "first_argv": ADAPTERS[req.pipeline].build_argv(spec, CONFIG.venv_python, script)}
@@ -830,29 +945,129 @@ def create_app() -> FastAPI:
             raise HTTPException(507, f"disk hard-stop — {GUARD.block_reason()}")
 
         batch_id = "bat_" + uuid.uuid4().hex[:8]
-        cells = built["cells"]
-        # ONE batch job (review 2026-06-10 #1 — the batch-mode worker): the worker loads
-        # the model once and loops every cell (`--jobs-file`), instead of N subprocesses
-        # each paying the full pipeline load. Each item carries its frozen coverage_cell
-        # as opaque `meta`, echoed back per-output (`result.output_meta`) for Stage-C
-        # curation; images stream into the grid as interim results while it runs.
-        items = [{"prompt": c["prompt"], "seed": c["seed"],
-                  "meta": {"coverage_cell": c["coverage_cell"], "method": c["method"]}}
-                 for c in cells]
-        params = {"prompt": f"[dataset {req.preset} · {len(cells)} cells] {clause}",
-                  "init_image": str(hero_path), "strength": req.strength,
-                  "width": req.width, "height": req.height,
-                  "batch_items": items, **extra}
-        if model_name:
-            params["model_name"] = model_name
-        jid = RUNNER.submit(pipeline=req.pipeline, mode="img2img", params=params,
+        # ONE batch job per realization group (review 2026-06-10 #1 — the batch-mode
+        # worker): the worker loads the model once and loops every cell (`--jobs-file`).
+        # Each item carries its frozen coverage_cell as opaque `meta`, echoed back
+        # per-output (`result.output_meta`) for Stage-C curation; images stream into the
+        # grid as interim results. Mixed realization (M3.5) adds a SECOND batch job: the
+        # inpaint-method cells repaint the background (white bg mask) around the held
+        # subject — identity-safe, restores the §7.1 background-diversity axis.
+        job_ids: list[str] = []
+        for gmode, gcells, gstrength in groups:
+            items = [{"prompt": c["prompt"], "seed": c["seed"],
+                      "meta": {"coverage_cell": c["coverage_cell"], "method": c["method"]}}
+                     for c in gcells]
+            params = {"prompt": f"[dataset {req.preset} · {len(gcells)} {gmode} cells] {clause}",
+                      "init_image": str(hero_path), "strength": gstrength,
+                      "width": req.width, "height": req.height,
+                      "batch_items": items, **extra}
+            if gmode == "inpaint":
+                params["mask_image"] = bg_mask_abs
+            if model_name:
+                params["model_name"] = model_name
+            job_ids.append(RUNNER.submit(
+                pipeline=req.pipeline, mode=gmode, params=params,
+                batch_id=batch_id, index=len(job_ids), batch_size=len(groups),
+                requester_id=vid, profile_version_id=vid, stage="B",
+                post_passes=post_passes))
+        LOG.info("stage-b: %s preset=%s realize=%s -> %d batch job(s) %s for %s (hero %s)",
+                 batch_id, req.preset, req.realize, len(job_ids), split, vid, hero_path.name)
+        return {"batch_id": batch_id, "preset": req.preset, "count": len(job_ids),
+                "items": len(cells), "split": split, "realize": req.realize,
+                "job_ids": job_ids, "kept_target": built["kept_target"]}
+
+    @app.post("/assets/{asset_id}/stage-b/matte")
+    def stage_b_matte(asset_id: str, req: MatteRequest,
+                      _auth: None = Depends(require_token)) -> dict:
+        """Matte the version's hero ★ (M3.5, first postproc-class job): one `birefnet`
+        run → subject matte + RGBA cutout + the **background-inpaint mask** that
+        `realize="mixed"` Stage-B expansion consumes. Weight pre-flight is TOOL-scoped
+        (412 + fetch hint — never folded into the phase gate; same posture as the multi
+        presets). Token-gated; `dry_run` previews the argv without the GPU."""
+        ws = _require_ws()
+        try:
+            version, _hero, hero_path = assets.resolve_hero(ws, asset_id, req.version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(409, str(e))
+        vid = version["id"]
+        try:
+            extra = model_catalog.validate_params("birefnet", "matte", req.params)
+        except model_catalog.CatalogError as e:
+            raise HTTPException(422, str(e))
+        script = ADAPTERS["birefnet"].resolve_script(CONFIG.pipeline_roots)
+        if script is None:
+            raise HTTPException(503, "birefnet worker not found in any pipeline root")
+        params = {"input_image": str(hero_path), **extra}
+        if req.dry_run:
+            spec = JobSpec(pipeline="birefnet", mode="matte", params=params,
+                           output_dir=ws.out_dir)
+            return {"dry_run": True, "pipeline": "birefnet", "hero": str(hero_path),
+                    "argv": ADAPTERS["birefnet"].build_argv(spec, CONFIG.venv_python, script)}
+        # Variant-aware weight gate (review 2026-06-11 Medium): probe the repo the worker
+        # will ACTUALLY load — params.model_name="birefnet-hr" must not clear a gate that
+        # only checked the default variant and then die mid-worker on the missing HR repo.
+        chosen = extra.get("model_name") or model_catalog.default_model("birefnet")
+        ok, missing = components.postproc_weights_status("birefnet", chosen)
+        if not ok:
+            raise HTTPException(412, {
+                "error": f"birefnet matting weight(s) missing for variant {chosen!r}",
+                "missing": missing,
+                "hint": f"POST /components/fetch?postproc=birefnet&postproc_variant={chosen} "
+                        "(ungated, ~0.9 GB)"})
+        if estimate_vram("birefnet") > CONFIG.vram_budget_gb:
+            raise HTTPException(422, f"birefnet needs ~{estimate_vram('birefnet')} GB VRAM "
+                                     f"> budget {CONFIG.vram_budget_gb} GB")
+        if GUARD.is_hard_blocked():
+            raise HTTPException(507, f"disk hard-stop — {GUARD.block_reason()}")
+        batch_id = "bat_" + uuid.uuid4().hex[:8]
+        jid = RUNNER.submit(pipeline="birefnet", mode="matte", params=params,
                             batch_id=batch_id, index=0, batch_size=1,
-                            requester_id=vid, profile_version_id=vid, stage="B",
-                            post_passes=post_passes)
-        LOG.info("stage-b: %s preset=%s -> 1 batch job (%d cells) for %s (hero %s)",
-                 batch_id, req.preset, len(cells), vid, hero_path.name)
-        return {"batch_id": batch_id, "preset": req.preset, "count": 1,
-                "items": len(cells), "job_ids": [jid], "kept_target": built["kept_target"]}
+                            requester_id=vid, profile_version_id=vid, stage="B")
+        LOG.info("stage-b matte: %s for %s (hero %s)", jid, vid, hero_path.name)
+        return {"job_id": jid, "batch_id": batch_id, "hero": str(hero_path)}
+
+    @app.post("/assets/{asset_id}/anchor")
+    def set_anchor(asset_id: str, req: AnchorRequest,
+                   _auth: None = Depends(require_token)) -> dict:
+        """Set or clear the version's **face anchor** (M4, R94). Set: `job_id` + an
+        `output` of that job (defaults to its primary) — ownership-guarded like
+        refs/keep, then copied into the version's `faces/` dir (self-contained). Clear:
+        `job_id=null`. The anchor drives the Stage-B identity-lock pass (R93:
+        default-on once present). Token-gated."""
+        ws = _require_ws()
+        if req.job_id is None:
+            try:
+                return assets.clear_anchor(ws, asset_id, req.version_id)
+            except ws_mod.WorkspaceError as e:
+                raise HTTPException(404, str(e))
+        job = RUNNER.get(req.job_id)
+        if job is None or job.get("status") != "done":
+            raise HTTPException(404, f"no completed job {req.job_id!r}")
+        _require_job_owned_by(ws, asset_id, req.version_id, job)   # never cross-asset
+        result = job.get("result") or {}
+        output = req.output or result.get("output_name")
+        names = result.get("output_names") or ([result["output_name"]]
+                                               if result.get("output_name") else [])
+        if not output or output not in names:
+            raise HTTPException(422, f"output {output!r} is not one of job "
+                                     f"{req.job_id!r}'s outputs")
+        try:
+            return assets.set_anchor(ws, asset_id, job_id=req.job_id,
+                                     source_output=output, version_id=req.version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/assets/{asset_id}/anchor/file")
+    def get_anchor(asset_id: str, version_id: str | None = None) -> FileResponse:
+        """Serve the version's anchor image (unauthenticated read, mirrors /outputs)."""
+        ws = _require_ws()
+        try:
+            path = assets.anchor_file_path(ws, asset_id, version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+        if path is None:
+            raise HTTPException(404, "no anchor set for this version")
+        return FileResponse(path)
 
     @app.post("/assets/{asset_id}/casting/hero")
     def set_hero(asset_id: str, req: HeroRequest,
@@ -1023,14 +1238,19 @@ def create_app() -> FastAPI:
 
     @app.post("/components/fetch")
     def fetch_components(multi_preset: str | None = None,
+                         postproc: str | None = None,
+                         postproc_variant: str | None = None,
                          _auth: None = Depends(require_token)) -> dict:
         """Explicit, on-demand fetch of missing weights (R163, §11.1). Token-gated; never
         an auto-download. With `?multi_preset=fast|refined` fetches that `multi` casting
-        preset's (mostly gated) HF weight set instead of the phase-essential manifest
-        weights; otherwise fetches the active-phase manifest weights + refreshes the report."""
+        preset's (mostly gated) HF weight set; with `?postproc=birefnet[&postproc_variant=…]`
+        a postproc tool's set (M3.5 — variant-scoped so asking for the default never pulls
+        the HR model); otherwise the active-phase manifest weights + refreshes the report."""
         global _LAUNCH
         if multi_preset is not None:
             return components.fetch_multi_preset(multi_preset)
+        if postproc is not None:
+            return components.fetch_postproc(postproc, postproc_variant)
         res = components.fetch_missing_weights()
         _LAUNCH = res["report"]
         return res
@@ -1099,6 +1319,8 @@ def create_app() -> FastAPI:
             "zimage": zimage_adapter.capabilities(CONFIG.pipeline_roots),
             "multi": multi_adapter.capabilities(CONFIG.pipeline_roots),
             "sd35": sd35_adapter.capabilities(CONFIG.pipeline_roots),
+            "birefnet": birefnet_adapter.capabilities(CONFIG.pipeline_roots),
+            "identity": identity_adapter.capabilities(CONFIG.pipeline_roots),
         }}
 
     @app.get("/models")

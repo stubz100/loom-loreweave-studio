@@ -41,6 +41,8 @@ try:
     from .adapters import zimage as zimage_adapter
     from .adapters import multi as multi_adapter
     from .adapters import sd35 as sd35_adapter
+    from .adapters import birefnet as birefnet_adapter
+    from .adapters import identity as identity_adapter
     from .config import CONFIG
     from . import lineage
     from . import workspace as ws_mod
@@ -52,13 +54,16 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import zimage as zimage_adapter  # type: ignore
     from adapters import multi as multi_adapter  # type: ignore
     from adapters import sd35 as sd35_adapter  # type: ignore
+    from adapters import birefnet as birefnet_adapter  # type: ignore
+    from adapters import identity as identity_adapter  # type: ignore
     from config import CONFIG  # type: ignore
     import lineage  # type: ignore
     import workspace as ws_mod  # type: ignore
     from workspace import Workspace, new_id  # type: ignore
     from logsetup import get_logger  # type: ignore
 
-ADAPTERS = {"zimage": zimage_adapter, "multi": multi_adapter, "sd35": sd35_adapter}
+ADAPTERS = {"zimage": zimage_adapter, "multi": multi_adapter, "sd35": sd35_adapter,
+            "birefnet": birefnet_adapter, "identity": identity_adapter}
 SCHEMA_VERSION = 1
 LOG = get_logger()
 
@@ -148,7 +153,8 @@ def _assign_to_kill_job(proc: subprocess.Popen) -> None:
 # multi runs its pipelines one-at-a-time as isolated subprocesses (VRAM isolation), so the
 # peak is a single pipeline (flux2-klein ~ the largest), not the sum — admission vs 16 GB.
 # sd35 (Stage-B img2img/inpaint) with cpu_offload + T5 peaks ~13 GB on the 16 GB rig.
-VRAM_ESTIMATES = {"zimage": 11.0, "multi": 14.0, "sd35": 13.0}
+VRAM_ESTIMATES = {"zimage": 11.0, "multi": 14.0, "sd35": 13.0, "birefnet": 4.0,
+                  "identity": 1.0}   # onnxruntime CPU — effectively no VRAM
 DEFAULT_VRAM_GB = 8.0
 MAX_OOM_RETRIES = 1
 _OOM_MARKERS = (
@@ -872,13 +878,22 @@ class JobRunner:
         spec, rest = passes[0], passes[1:]
         meta_map = result.get("output_meta") or {}
         pparams = parent.get("params") or {}
+        # M4: the identity pass is a face-LOCK over the outputs (inswapper to the
+        # version's anchor) — batch-shaped like clean/polish but a different worker
+        # vocabulary: items carry `input` (no prompt/init_image) + the anchor rides the
+        # shared params. Backend is the `identity` adapter (mode "lock", CPU).
+        is_identity = spec.get("pass") == "identity"
         items: list[dict] = []
         for n in names:
             m = meta_map.get(n) or {}
-            item: dict = {
-                "prompt": spec.get("prompt") or m.get("prompt") or pparams.get("prompt") or "",
-                "init_image": str((ws.out_dir / n).resolve()),
-            }
+            abs_path = str((ws.out_dir / n).resolve())
+            if is_identity:
+                item: dict = {"input": abs_path}
+            else:
+                item = {
+                    "prompt": spec.get("prompt") or m.get("prompt") or pparams.get("prompt") or "",
+                    "init_image": abs_path,
+                }
             seed = spec.get("seed", m.get("seed", pparams.get("seed")))
             if seed is not None:
                 item["seed"] = seed
@@ -886,19 +901,29 @@ class JobRunner:
             if carry:
                 item["meta"] = carry            # curation survives the pass (Stage-B)
             items.append(item)
-        params: dict = {
-            "prompt": f"[{spec['pass']} pass of {parent['id']} · {len(items)} image(s)]",
-            "batch_items": items,
-            "width": pparams.get("width", 1024),
-            "height": pparams.get("height", 1024),
-        }
-        if spec.get("strength") is not None:
-            params["strength"] = spec["strength"]
+        if is_identity:
+            params: dict = {
+                "prompt": f"[identity pass of {parent['id']} · {len(items)} image(s)]",
+                "batch_items": items,
+                "anchor_image": spec["anchor"],
+                "min_det_score": spec.get("min_det_score", 0.5),
+            }
+            backend, mode = "identity", "lock"
+        else:
+            params = {
+                "prompt": f"[{spec['pass']} pass of {parent['id']} · {len(items)} image(s)]",
+                "batch_items": items,
+                "width": pparams.get("width", 1024),
+                "height": pparams.get("height", 1024),
+            }
+            if spec.get("strength") is not None:
+                params["strength"] = spec["strength"]
+            if spec.get("negative_prompt"):
+                params["negative_prompt"] = spec["negative_prompt"]
+            backend, mode = spec["backend"], "img2img"
         if spec.get("model_name"):
             params["model_name"] = spec["model_name"]
-        if spec.get("negative_prompt"):
-            params["negative_prompt"] = spec["negative_prompt"]
-        jid = self.submit(pipeline=spec["backend"], mode="img2img", params=params,
+        jid = self.submit(pipeline=backend, mode=mode, params=params,
                           batch_id=parent.get("batch_id", ""), index=0, batch_size=1,
                           requester_id=parent.get("requester_id", "sandbox"),
                           profile_version_id=parent.get("profile_version_id"),
@@ -906,7 +931,7 @@ class JobRunner:
                           post_passes=rest,
                           chained_from=parent["id"], pass_name=spec["pass"])
         LOG.info("chained %s pass for %s -> %s (%d image(s), backend %s)",
-                 spec["pass"], parent["id"], jid, len(items), spec["backend"])
+                 spec["pass"], parent["id"], jid, len(items), backend)
 
 
 # Process-wide singleton.

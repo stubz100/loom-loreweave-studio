@@ -27,6 +27,13 @@ MONOREPO = Path(__file__).resolve().parents[4]
     ("zimage/run_pipeline.py", ["pipelines/zimage/run_pipeline.py",
                                 "pipelines/multistack/src/pipeline/zimage/run_pipeline.py"]),
     ("sd35/run_pipeline.py", ["pipelines/multistack/src/pipeline/sd35/run_pipeline.py"]),
+    # M3.5: the birefnet matting worker + the postproc manifest lib it imports
+    ("postproc/_common.py", ["pipelines/multistack/src/pipeline/postproc/_common.py"]),
+    ("postproc/birefnet/run_pipeline.py",
+     ["pipelines/multistack/src/pipeline/postproc/birefnet/run_pipeline.py"]),
+    # M4: the identity-lock worker (inswapper to the version's anchor)
+    ("postproc/identity/run_pipeline.py",
+     ["pipelines/multistack/src/pipeline/postproc/identity/run_pipeline.py"]),
 ])
 def test_vendored_workers_match_monorepo_source(rel, copies):
     """The batch mode landed in the monorepo first (R162); every vendored copy must be a

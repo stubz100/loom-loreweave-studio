@@ -13,6 +13,17 @@
     "saved_at": { "type": "string" },
     "prompt_template": { "type": "string" },
     "anchor_ref": { "type": ["string", "null"] },
+    "anchor": {
+      "type": ["object", "null"],
+      "description": "M4 face anchor (R94): the chosen detailed-face image, copied into the version's faces/ dir (self-contained, survives job deletion). Per-version and re-pickable (scar/tattoo). Feeds the Stage-B identity-lock pass (R93: on by default once present, opt-out).",
+      "required": ["file", "set_at"],
+      "properties": {
+        "file": { "type": "string" },
+        "source_output": { "type": "string" },
+        "job_id": { "type": "string" },
+        "set_at": { "type": "string" }
+      }
+    },
     "ref_set": {
       "type": "array",
       "description": "Stage-C curated refs (the future LoRA corpus). Each item carries its frozen coverage_cell (P1→P2 contract, P1-16) so P2's template captioner can caption it. Promoted string→object in P1/M3 (mirrors casting[]); legacy empty ref_sets are unaffected.",

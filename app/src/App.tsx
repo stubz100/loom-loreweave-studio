@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelJob,
   castingUrl,
@@ -28,6 +28,10 @@ import {
   unpauseQueue,
   stageB,
   stageBPreview,
+  matteHero,
+  setAnchor,
+  clearAnchor,
+  anchorUrl,
   keepRef,
   cullRef,
   saveProfile,
@@ -48,6 +52,7 @@ import {
   type ProjectInfo,
   type ProjectListEntry,
   type RecipePreset,
+  type AnchorInfo,
   type RefItem,
   type StageBPreview,
   type StageBRequest,
@@ -100,6 +105,13 @@ export default function App() {
   const [stageBModel, setStageBModel] = useState("");   // "" = the worker default variant
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [stageBStrength, setStageBStrength] = useState(0.55);
+  // M3.5 — cell realization: img2img-only, or mixed (inpaint cells repaint the background
+  // around the held subject; needs the hero's bg mask from a birefnet matte job).
+  const [realize, setRealize] = useState<"img2img" | "mixed">("img2img");
+  // M4 — face anchor (R94) + identity-lock pass (R93). null = auto (on when an anchor
+  // exists); the checkbox writes an explicit true/false override.
+  const [anchorInfo, setAnchorInfo] = useState<AnchorInfo | null>(null);
+  const [identityOn, setIdentityOn] = useState<boolean | null>(null);
   const [characterClause, setCharacterClause] = useState("");
   const [promptTemplate, setPromptTemplate] = useState("");
   const [refSet, setRefSet] = useState<RefItem[]>([]);
@@ -484,6 +496,7 @@ export default function App() {
       setCasting([]);
       setRefSet([]);
       setPromptTemplate("");
+      setAnchorInfo(null);
       return;
     }
     try {
@@ -492,9 +505,11 @@ export default function App() {
       setCasting(v?.casting ?? []);
       setRefSet(v?.ref_set ?? []);
       setPromptTemplate(v?.prompt_template ?? "");
+      setAnchorInfo(v?.anchor ?? null);
     } catch {
       setCasting([]);
       setRefSet([]);
+      setAnchorInfo(null);
     }
   };
 
@@ -524,6 +539,65 @@ export default function App() {
   // Stage-B expansion: build the coverage-matrix dataset (one img2img job per cell from the hero).
   const hasHero = casting.some((c) => c.starred);
 
+  // M3.5: the newest done matte job's bg mask for this version — enables realize="mixed".
+  // Selected by the artifact's output_meta.role (the adapter's contract), NOT a filename
+  // suffix (review 2026-06-11 Low: naming changes must not break mask discovery).
+  const bgMask = useMemo(() => {
+    if (!activeAsset) return null;
+    const done = Object.values(jobs)
+      .filter((j) => j.pipeline === "birefnet" && j.status === "done"
+        && j.requester_id === activeAsset.active_version)
+      .sort((a, b) => ((a.created_at ?? "") < (b.created_at ?? "") ? -1 : 1));
+    for (let i = done.length - 1; i >= 0; i--) {
+      const r = done[i].result;
+      const m = (r?.output_names ?? []).find((n) => r?.output_meta?.[n]?.role === "bgmask");
+      if (m) return m;
+    }
+    return null;
+  }, [jobs, activeAsset]);
+
+  // M4: pick the selected output as the version's face anchor / clear it (R94).
+  const onSetAnchor = async (jobId: string, output?: string) => {
+    if (!activeAsset) return;
+    setError(null);
+    try {
+      const version = await setAnchor(activeAsset.id, jobId, output);
+      setAnchorInfo(version.anchor ?? null);
+      log.info("anchor:", "set from", output ?? jobId, "→ identity pass available");
+    } catch (e) {
+      log.error("set anchor failed:", e);
+      setError(String(e));
+    }
+  };
+
+  const onClearAnchor = async () => {
+    if (!activeAsset) return;
+    try {
+      const version = await clearAnchor(activeAsset.id);
+      setAnchorInfo(version.anchor ?? null);
+      setIdentityOn(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  // Matte the hero (BiRefNet): one queued job → matte + cutout + the bg-inpaint mask.
+  const onMatteHero = async () => {
+    if (!activeAsset || !hasHero) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await matteHero(activeAsset.id);
+      log.info("matte:", res.job_id, "→ subject matte / cutout / bg mask from the hero ★");
+      void refreshJobs();
+    } catch (e) {
+      log.error("matte failed:", e);
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const buildStageBBody = (): StageBRequest => {
     // Drawer mapping: width/height → top-level (API-validated), the catalog "seed"
     // control = the recipe's base_seed (per-cell seeds derive from it), rest → params.
@@ -533,6 +607,9 @@ export default function App() {
       pipeline: stageBPipeline,
       model_name: stageBModel || undefined,
       strength: stageBStrength,
+      realize,
+      ...(realize === "mixed" ? { bg_mask: bgMask ?? undefined } : {}),
+      ...(identityOn !== null ? { identity: identityOn } : {}),   // omit = auto (R93)
       character_clause: characterClause.trim() || undefined,
       apply_style: applyStyle,
       ...(top.width !== undefined ? { width: top.width as number } : {}),
@@ -557,7 +634,7 @@ export default function App() {
     try {
       const res = await stageB(activeAsset.id, body);
       log.info("stage-b:", res.batch_id,
-               `${recipePreset} → 1 batch job (${res.items ?? "?"} cells, model loads once)`,
+               `${recipePreset} → ${res.count} batch job(s) (${res.items ?? "?"} cells)`,
                `(keep ~${res.kept_target.join("–")})`);
       setStage("C"); // jump to curation as candidates stream in
       void refreshJobs();
@@ -961,6 +1038,21 @@ export default function App() {
                   title={`${c.pipeline ?? "?"} · seed ${c.seed ?? "?"} — saved in casting/`}
                 />
               ))}
+              {anchorInfo && (
+                <>
+                  <span className="style-label">⚓ face anchor (identity lock):</span>
+                  <img
+                    className="hero-thumb"
+                    src={`${anchorUrl(activeAsset.id)}?_=${encodeURIComponent(anchorInfo.set_at)}`}
+                    alt="face anchor"
+                    title={`set ${anchorInfo.set_at} from ${anchorInfo.source_output ?? "?"}`}
+                  />
+                  <button className="ghost" onClick={onClearAnchor}
+                          title="clear the anchor (opt this version out of the identity lock)">
+                    ✕
+                  </button>
+                </>
+              )}
             </div>
           )}
           {activeAsset && stage === "B" && (
@@ -998,6 +1090,37 @@ export default function App() {
                 strength
                 <input type="number" min={0.1} max={1} step={0.05} value={stageBStrength}
                        onChange={(e) => setStageBStrength(clamp(parseFloat(e.target.value || "0.55"), 0.1, 1))} />
+              </label>
+              <label title="cell realization (M3.5): img2img only, or mixed — inpaint-method cells repaint the BACKGROUND around the held subject (background diversity; needs a hero matte)">
+                realize
+                <select value={realize}
+                        onChange={(e) => setRealize(e.target.value as "img2img" | "mixed")}>
+                  <option value="img2img">img2img</option>
+                  <option value="mixed" disabled={!bgMask}>
+                    mixed{bgMask ? "" : " (matte first)"}
+                  </option>
+                </select>
+              </label>
+              <button
+                className="ghost"
+                onClick={onMatteHero}
+                disabled={conn !== "online" || !project?.open || !hasHero || busy}
+                title="matte the hero ★ (BiRefNet): subject matte + cutout + the background-inpaint mask that `mixed` realization uses"
+              >
+                {bgMask ? "Matte ✓" : "Matte hero"}
+              </button>
+              <label
+                title={anchorInfo
+                  ? "identity-lock pass (M4): swap every cell's face to the ⚓ anchor after generation (no-face cells pass through)"
+                  : "set a ⚓ face anchor first (select a face image → '⚓ anchor' in the inspector)"}
+              >
+                ⚓ identity
+                <input
+                  type="checkbox"
+                  checked={identityOn ?? Boolean(anchorInfo)}
+                  disabled={!anchorInfo}
+                  onChange={(e) => setIdentityOn(e.target.checked)}
+                />
               </label>
               <input
                 className="prompt"
@@ -1180,6 +1303,15 @@ export default function App() {
         <aside className="inspector">
           <div className="rail-head">INSPECTOR</div>
           {!selJob && <div className="muted">Select an image to see job details + lineage.</div>}
+          {selJob && activeAsset && selJob.status === "done" && (
+            <button
+              className="ghost"
+              onClick={() => void onSetAnchor(selJob.id, selOutput)}
+              title="use this image as the version's ⚓ face anchor (M4, R94) — the Stage-B identity pass locks every cell's face to it"
+            >
+              ⚓ set as face anchor
+            </button>
+          )}
           {selJob && <Inspector job={selJob} output={selOutput} />}
         </aside>
       </div>
@@ -1233,8 +1365,10 @@ export default function App() {
                 <dl>
                   <dt>recipe</dt>
                   <dd>
-                    {preview.preset} → <b>1 batch job · {preview.items ?? "?"} cells</b>{" "}
-                    (model loads once; keep ~{preview.kept_target.join("–")})
+                    {preview.preset} → <b>{preview.planned_jobs} batch job{preview.planned_jobs > 1 ? "s" : ""} · {preview.items ?? "?"} cells</b>{" "}
+                    {preview.split && Object.keys(preview.split).length > 1
+                      ? `(${Object.entries(preview.split).map(([m, n]) => `${n} ${m}`).join(" + ")}; keep ~${preview.kept_target.join("–")})`
+                      : `(model loads once; keep ~${preview.kept_target.join("–")})`}
                   </dd>
                   <dt>pipeline</dt><dd>{preview.pipeline}</dd>
                   <dt>hero</dt><dd className="mono">{preview.hero.split(/[\\/]/).pop()}</dd>

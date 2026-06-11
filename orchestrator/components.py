@@ -407,6 +407,76 @@ def fetch_multi_preset(preset: str) -> dict:
     return {"preset": preset, "results": results, "ok": ok, "missing": missing}
 
 
+# --- tool-scoped postproc weights (NOT phase-scoped; P1/M3.5) --------------------
+# Same posture as the multi presets: a postproc tool's weights are checked at ITS
+# endpoint (412 + fetch hint), never folded into `weights_ok` — a missing matting
+# model must not gate unrelated generation.
+
+def postproc_weights(tool: str) -> list[dict]:
+    """The HF weight entries a postproc tool needs, from models.json's `postproc` block.
+    Unknown tool → []."""
+    try:
+        data = _load_models_manifest()
+    except ManifestError:
+        return []
+    block = data.get("postproc") or {}
+    return [e for e in (block.get(tool) or []) if isinstance(e, dict)]
+
+
+def postproc_weights_status(tool: str, variant_id: str | None = None) -> tuple[bool, list[dict]]:
+    """(ok, missing[]) for a postproc tool. **Variant-aware** (review 2026-06-11 Medium):
+    with `variant_id` only that catalog variant's entry is checked — the gate must probe
+    the repo the worker will ACTUALLY load (`birefnet-hr` could clear a default-only gate
+    and die mid-worker). **Fails closed** — a tool/variant with no configured weight entry
+    returns not-ok, so the 412 pre-flight can't be silently disabled by a manifest edit
+    (mirrors multi_weights_status)."""
+    entries = postproc_weights(tool)
+    if variant_id is not None:
+        entries = [e for e in entries if e.get("id") == variant_id]
+    if not entries:
+        which = f"{tool!r} variant {variant_id!r}" if variant_id else repr(tool)
+        return (False, [{"id": variant_id, "repo_id": None, "gated": False, "pipeline": tool,
+                         "error": f"no weight set configured for postproc tool {which}"}])
+    missing = [
+        {"id": e.get("id"), "repo_id": _entry_resolve_repo(e),
+         "gated": bool(e.get("gated")), "pipeline": e.get("pipeline")}
+        for e in entries if not _entry_present(e)
+    ]
+    return (not missing, missing)
+
+
+def fetch_postproc(tool: str, variant_id: str | None = None) -> dict:
+    """Explicit, on-demand fetch of a postproc tool's HF weights (snapshot_download —
+    mirrors fetch_multi_preset; BiRefNet is ungated so no token/license dance). With
+    `variant_id` only that variant's repo is fetched (don't pull the 2048 HR model when
+    the default was asked for)."""
+    entries = postproc_weights(tool)
+    if variant_id is not None:
+        entries = [e for e in entries if e.get("id") == variant_id]
+    if not entries:
+        which = f"{tool!r} variant {variant_id!r}" if variant_id else repr(tool)
+        return {"tool": tool, "results": [], "error": f"unknown postproc tool {which}"}
+    token = CONFIG.hf_token
+    results: list[dict] = []
+    for e in entries:
+        repo_id = _entry_resolve_repo(e)
+        if _entry_present(e):
+            results.append({"id": e.get("id"), "repo_id": repo_id,
+                            "fetched": True, "detail": "already cached"})
+            continue
+        try:
+            from huggingface_hub import snapshot_download
+            snapshot_download(repo_id, token=token)
+            results.append({"id": e.get("id"), "repo_id": repo_id,
+                            "fetched": _entry_present(e),
+                            "gated": bool(e.get("gated"))})
+        except Exception as ex:  # noqa: BLE001 - report per-repo, don't crash the endpoint
+            results.append({"id": e.get("id"), "repo_id": repo_id, "fetched": False,
+                            "gated": bool(e.get("gated")), "error": str(ex)})
+    ok, missing = postproc_weights_status(tool, variant_id)
+    return {"tool": tool, "results": results, "ok": ok, "missing": missing}
+
+
 def gate() -> dict:
     """Run the launch gate. Raise `LaunchError` if a phase-essential **code** component
     is missing (refuse to start). A missing phase-essential **weight** does NOT raise —

@@ -44,6 +44,8 @@ try:
     from .adapters import birefnet as birefnet_adapter
     from .adapters import identity as identity_adapter
     from .adapters import face_restore as face_restore_adapter
+    from .adapters import ltxv as ltxv_adapter
+    from .adapters import frame_harvest as frame_harvest_adapter
     from .config import CONFIG
     from . import lineage
     from . import workspace as ws_mod
@@ -58,6 +60,8 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import birefnet as birefnet_adapter  # type: ignore
     from adapters import identity as identity_adapter  # type: ignore
     from adapters import face_restore as face_restore_adapter  # type: ignore
+    from adapters import ltxv as ltxv_adapter  # type: ignore
+    from adapters import frame_harvest as frame_harvest_adapter  # type: ignore
     from config import CONFIG  # type: ignore
     import lineage  # type: ignore
     import workspace as ws_mod  # type: ignore
@@ -66,7 +70,8 @@ except ImportError:  # pragma: no cover - direct-run convenience
 
 ADAPTERS = {"zimage": zimage_adapter, "multi": multi_adapter, "sd35": sd35_adapter,
             "birefnet": birefnet_adapter, "identity": identity_adapter,
-            "face_restore": face_restore_adapter}
+            "face_restore": face_restore_adapter, "ltxv": ltxv_adapter,
+            "frame_harvest": frame_harvest_adapter}
 SCHEMA_VERSION = 1
 LOG = get_logger()
 
@@ -157,7 +162,9 @@ def _assign_to_kill_job(proc: subprocess.Popen) -> None:
 # peak is a single pipeline (flux2-klein ~ the largest), not the sum — admission vs 16 GB.
 # sd35 (Stage-B img2img/inpaint) with cpu_offload + T5 peaks ~13 GB on the 16 GB rig.
 VRAM_ESTIMATES = {"zimage": 11.0, "multi": 14.0, "sd35": 13.0, "birefnet": 4.0,
-                  "identity": 1.0, "face_restore": 1.0}   # onnx CPU — effectively no VRAM
+                  "identity": 1.0, "face_restore": 1.0,   # onnx CPU — effectively no VRAM
+                  "ltxv": 12.0,                           # 2B + T5-XXL w/ model offload
+                  "frame_harvest": 1.0}                   # OpenCV CPU
 DEFAULT_VRAM_GB = 8.0
 MAX_OOM_RETRIES = 1
 _OOM_MARKERS = (
@@ -898,11 +905,12 @@ class JobRunner:
         spec, rest = passes[0], passes[1:]
         meta_map = result.get("output_meta") or {}
         pparams = parent.get("params") or {}
-        # M4/M6: the identity + restore passes are image→image FIXES over the outputs
-        # (no diffusion backbone) — batch-shaped like clean/polish but a different worker
-        # vocabulary: items carry `input` (no prompt/init_image); the pass tunables ride
-        # the shared params (identity: the anchor; restore: the blend).
-        io_pass = spec.get("pass") in ("identity", "restore")
+        # M4/M6/M7: the identity + restore + harvest passes are file→file operations over
+        # the outputs (no diffusion backbone) — batch-shaped like clean/polish but a
+        # different worker vocabulary: items carry `input` (no prompt/init_image); the
+        # pass tunables ride the shared params (identity: the anchor; restore: the blend;
+        # harvest: every/max_frames).
+        io_pass = spec.get("pass") in ("identity", "restore", "harvest")
         items: list[dict] = []
         for n in names:
             m = meta_map.get(n) or {}
@@ -918,6 +926,11 @@ class JobRunner:
             if seed is not None:
                 item["seed"] = seed
             carry = {k: m[k] for k in ("coverage_cell", "method", "index") if k in m}
+            if not carry and parent.get("coverage_cell"):
+                # M7: a video-sketch parent has no per-output meta (one mp4) — the
+                # sketch's TARGET cell is the job-level field; harvested frames inherit
+                # it so curation/keep work exactly like recipe cells.
+                carry = {"coverage_cell": parent["coverage_cell"]}
             if carry:
                 item["meta"] = carry            # curation survives the pass (Stage-B)
             items.append(item)
@@ -935,6 +948,10 @@ class JobRunner:
                 params["anchor_image"] = spec["anchor"]
                 params["min_det_score"] = spec.get("min_det_score", 0.5)
                 backend, mode = "identity", "lock"
+            elif spec["pass"] == "harvest":
+                params["every"] = spec.get("every", 6)
+                params["max_frames"] = spec.get("max_frames", 24)
+                backend, mode = "frame_harvest", "harvest"
             else:
                 params["blend"] = spec.get("blend", 0.8)
                 backend, mode = "face_restore", "restore"

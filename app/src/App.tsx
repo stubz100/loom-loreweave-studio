@@ -30,6 +30,7 @@ import {
   stageB,
   stageBPreview,
   matteHero,
+  sketchHero,
   setAnchor,
   clearAnchor,
   deriveFacePortrait,
@@ -131,6 +132,13 @@ export default function App() {
   const [rejected, setRejected] = useState<string[]>([]);
   // M5 — the asset's version records (the selector reads name/finalized per id).
   const [versionList, setVersionList] = useState<ProfileVersion[]>([]);
+  // M7 — video-sketch harvest controls (target cell + motion + harvest density).
+  const [skShot, setSkShot] = useState("waist_up");
+  const [skAngle, setSkAngle] = useState("profile_left");
+  const [skExpr, setSkExpr] = useState("neutral");
+  const [skMotion, setSkMotion] = useState("");
+  const [skEvery, setSkEvery] = useState(6);
+  const [skMax, setSkMax] = useState(24);
   // M5 (F2) — the new-version modal: name + PARENT picker (copy from ANY prior version,
   // R59 — the prompt-only flow could only copy the active one).
   const [showNewVersion, setShowNewVersion] = useState(false);
@@ -716,6 +724,30 @@ export default function App() {
     } catch (e) {
       log.error("derive portrait failed:", e);
       setError(String(e));
+    }
+  };
+
+  // M7: fire a cell-targeted video sketch from the hero — the chained harvest's frames
+  // stream into the grid carrying the target cell (curate them like recipe cells).
+  const onSketch = async () => {
+    if (!activeAsset || !hasHero) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await sketchHero(activeAsset.id, {
+        shot_size: skShot, angle: skAngle, expression: skExpr,
+        motion_prompt: skMotion.trim() || null,
+        every: skEvery, max_frames: skMax,
+        ...(characterClause.trim() ? { character_clause: characterClause.trim() } : {}),
+      });
+      log.info("sketch:", res.job_id,
+               `→ ${skShot}/${skAngle}/${skExpr} — harvest streams the frames`);
+      void refreshJobs();
+    } catch (e) {
+      log.error("sketch failed:", e);
+      setError(String(e));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -1435,6 +1467,56 @@ export default function App() {
               </button>
             </div>
           )}
+          {activeAsset && stage === "B" && (
+            <div className="generate-bar sketch-bar">
+              <span className="style-label"
+                    title="M7 video-sketch harvest (R11): a cheap low-res motion sketch from the hero ★, aimed at ONE coverage cell; the chained harvest extracts stills carrying that cell — pose/angle coverage img2img can't reach">
+                🎬 sketch
+              </span>
+              <label title="target angle the motion should reach">
+                angle
+                <select value={skAngle} onChange={(e) => setSkAngle(e.target.value)}>
+                  {COV_ANGLES.map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </label>
+              <label title="target shot size">
+                shot
+                <select value={skShot} onChange={(e) => setSkShot(e.target.value)}>
+                  {COV_SHOT_SIZES.map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </label>
+              <label title="target expression">
+                expr
+                <select value={skExpr} onChange={(e) => setSkExpr(e.target.value)}>
+                  {COV_EXPRESSIONS.map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </label>
+              <input
+                className="prompt"
+                placeholder="motion prompt (optional — e.g. 'turns slowly to the left, then looks back')…"
+                value={skMotion}
+                onChange={(e) => setSkMotion(e.target.value)}
+              />
+              <label className="n" title="harvest every k-th frame">
+                every
+                <input type="number" min={1} max={60} value={skEvery}
+                       onChange={(e) => setSkEvery(clamp(parseInt(e.target.value || "6", 10), 1, 60))} />
+              </label>
+              <label className="n" title="max harvested frames per sketch">
+                frames
+                <input type="number" min={1} max={120} value={skMax}
+                       onChange={(e) => setSkMax(clamp(parseInt(e.target.value || "24", 10), 1, 120))} />
+              </label>
+              <button
+                onClick={() => void onSketch()}
+                disabled={conn !== "online" || !project?.open || !hasHero || busy ||
+                          disk?.blocked === true}
+                title={hasHero ? "fire the sketch — the video is an intermediate; its harvested frames stream in as curatable tiles" : "star a hero in Stage A first"}
+              >
+                🎬 Sketch ▶
+              </button>
+            </div>
+          )}
           {activeAsset && stage === "B" && showParamsB && (
             <div className="generate-bar params-bar">
               <ParamControls
@@ -1932,14 +2014,17 @@ function GridCell({
   // Durable ref tiles (M5, F1): a copied version's kept refs have no job behind them —
   // they render from refs/ as kept (cull works through the ref id), always "done".
   const isRef = !!refSrc;
+  // M7: a video-sketch output is an INTERMEDIATE (its harvested frames are the refs) —
+  // render a 🎬 placeholder, never curation controls.
+  const isVideo = !!name && /\.(mp4|webm|mov)$/i.test(name);
   // Interim tiles (a running cast's already-landed candidates) show their image early.
-  const showImg = (!!name && (done || interim)) || isRef;
+  const showImg = (!!name && !isVideo && (done || interim)) || isRef;
   // M4 review (High): a done job with PENDING post-passes is not the end of its chain —
   // these are pre-clean/pre-polish/pre-IDENTITY-LOCK images. Mark them and don't offer
   // keep ✓ (the terminal pass job's tiles are the curatable ones; the API enforces too).
   const pendingPasses = (job?.post_passes ?? []).map((p) => p.pass);
   const preLock = done && pendingPasses.length > 0;
-  const curable = curating && (done || isRef) && !preLock && !locked;
+  const curable = curating && (done || isRef) && !preLock && !locked && !isVideo;
   return (
     <div
       className={`cell ${selected ? "sel" : ""} ${isHero ? "hero" : ""} ${isKept ? "kept" : ""} ${isRejected ? "rejected" : ""} ${bulkSelected ? "bulksel-on" : ""} st-${isRef ? "done" : status}`}
@@ -1957,7 +2042,7 @@ function GridCell({
           {status === "running" && "generating…"}
           {status === "failed" && "✕ failed"}
           {status === "canceled" && "⊘ canceled"}
-          {status === "done" && "—"}
+          {status === "done" && (isVideo ? "🎬 video sketch (frames follow ⤵)" : "—")}
         </span>
       )}
       {status === "running" && !interim && (

@@ -37,6 +37,12 @@ MONOREPO = Path(__file__).resolve().parents[4]
     # M6: the GFPGAN-onnx face-restore worker
     ("postproc/face_restore/run_pipeline.py",
      ["pipelines/multistack/src/pipeline/postproc/face_restore/run_pipeline.py"]),
+    # M7: the ltxv video worker + the frame-harvest extractor
+    ("ltxv/run_pipeline.py", ["pipelines/multistack/src/pipeline/ltxv/run_pipeline.py"]),
+    ("ltxv/stage1_load_pipeline.py",
+     ["pipelines/multistack/src/pipeline/ltxv/stage1_load_pipeline.py"]),
+    ("postproc/frame_harvest/run_pipeline.py",
+     ["pipelines/multistack/src/pipeline/postproc/frame_harvest/run_pipeline.py"]),
 ])
 def test_vendored_workers_match_monorepo_source(rel, copies):
     """The batch mode landed in the monorepo first (R162); every vendored copy must be a

@@ -40,6 +40,8 @@ try:
     from .adapters import birefnet as birefnet_adapter
     from .adapters import identity as identity_adapter
     from .adapters import face_restore as face_restore_adapter
+    from .adapters import ltxv as ltxv_adapter
+    from .adapters import frame_harvest as frame_harvest_adapter
     from .runner import RUNNER, WORKER_REAP, ADAPTERS, estimate_vram
     from . import projects
     from . import workspace as ws_mod
@@ -60,6 +62,8 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import birefnet as birefnet_adapter  # type: ignore
     from adapters import identity as identity_adapter  # type: ignore
     from adapters import face_restore as face_restore_adapter  # type: ignore
+    from adapters import ltxv as ltxv_adapter  # type: ignore
+    from adapters import frame_harvest as frame_harvest_adapter  # type: ignore
     from runner import RUNNER, WORKER_REAP, ADAPTERS, estimate_vram  # type: ignore
     import projects  # type: ignore
     import workspace as ws_mod  # type: ignore
@@ -257,6 +261,25 @@ class RejectRefRequest(BaseModel):
     output: str | None = None
     version_id: str | None = None
     rejected: bool = True
+
+
+class SketchRequest(BaseModel):
+    """M7 — video-sketch harvest (R11/§4.1): a cheap low-res `ltxv` i2v motion sketch
+    from the hero ★, AIMED at a target coverage cell; a chained `frame_harvest` pass
+    extracts stills carrying that cell — multi-angle/pose coverage without 3D."""
+
+    model_config = ConfigDict(extra="forbid")
+    version_id: str | None = None
+    shot_size: str = "waist_up"
+    angle: str = "profile_left"
+    expression: str = "neutral"
+    motion_prompt: str | None = None
+    character_clause: str | None = None
+    every: int = Field(default=6, ge=1, le=60)
+    max_frames: int = Field(default=24, ge=1, le=120)
+    apply_style: bool | None = None
+    params: dict = Field(default_factory=dict)
+    dry_run: bool = False
 
 
 class DeriveAnchorRequest(BaseModel):
@@ -473,6 +496,7 @@ def create_app() -> FastAPI:
                                "POST /project/forget", "PUT /bible/style", "POST /assets",
                                "POST /assets/{id}/casting/star", "POST /assets/{id}/casting/hero",
                                "POST /assets/{id}/stage-b", "POST /assets/{id}/stage-b/matte",
+                               "POST /assets/{id}/stage-b/sketch",
                                "POST /assets/{id}/anchor", "POST /assets/{id}/anchor/derive",
                                "POST /assets/{id}/versions",
                                "POST /assets/{id}/versions/{vid}/finalize",
@@ -1200,6 +1224,80 @@ def create_app() -> FastAPI:
         except ws_mod.WorkspaceError as e:
             raise HTTPException(400, str(e))
 
+    @app.post("/assets/{asset_id}/stage-b/sketch")
+    def stage_b_sketch(asset_id: str, req: SketchRequest,
+                       _auth: None = Depends(require_token)) -> dict:
+        """M7 — video-sketch harvest: ONE `ltxv` i2v job from the hero ★ (the target
+        coverage cell rides as the job's first-class field) + a chained `frame_harvest`
+        pass whose extracted stills inherit that cell — they stream into the Stage-B grid
+        and curate exactly like recipe cells. Token-gated; `dry_run` previews the argv."""
+        ws = _require_ws()
+        try:
+            version, _hero, hero_path = assets.resolve_hero(ws, asset_id, req.version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(409, str(e))
+        vid = version["id"]
+        cell = {"shot_size": req.shot_size, "angle": req.angle,
+                "expression": req.expression, "background": ""}
+        try:
+            coverage.validate_cell(cell)
+        except coverage.CoverageError as e:
+            raise HTTPException(422, str(e))
+        clause = (req.character_clause or version.get("prompt_template") or "").strip()
+        if not clause:
+            raise HTTPException(422, "no character_clause and the version has no "
+                                     "prompt_template — set one (R112)")
+        try:
+            extra = model_catalog.validate_params("ltxv", "i2v", req.params)
+        except model_catalog.CatalogError as e:
+            raise HTTPException(422, str(e))
+        model_name = extra.pop("model_name", None)
+        # Prompt order (user 2026-06-10): cell fragment leads → clause → motion → style.
+        style = bible.load_style(ws)
+        apply_style = req.apply_style if req.apply_style is not None \
+            else bool(style.get("enabled_default", True))
+        fragment = (style.get("fragment") or "").strip() if apply_style else ""
+        motion = (req.motion_prompt or "").strip() or \
+            "slow steady camera, the character turns and moves naturally"
+        prompt = ", ".join(p for p in
+                           (recipe._cell_prompt_fragment(cell), clause, motion, fragment)
+                           if p)
+        script = ADAPTERS["ltxv"].resolve_script(CONFIG.pipeline_roots)
+        if script is None:
+            raise HTTPException(503, "ltxv worker not found in any pipeline root")
+        harvest_spec = {"pass": "harvest", "backend": "frame_harvest",
+                        "every": req.every, "max_frames": req.max_frames}
+        params = {"prompt": prompt, "init_image": str(hero_path), **extra}
+        if model_name:
+            params["model_name"] = model_name
+        if req.dry_run:
+            spec = JobSpec(pipeline="ltxv", mode="i2v", params=params,
+                           output_dir=ws.out_dir)
+            return {"dry_run": True, "pipeline": "ltxv", "cell": cell, "prompt": prompt,
+                    "post_passes": [harvest_spec], "hero": str(hero_path),
+                    "argv": ADAPTERS["ltxv"].build_argv(spec, CONFIG.venv_python, script)}
+        chosen = model_name or model_catalog.default_model("ltxv")
+        variant = model_catalog.find_variant("ltxv", chosen)
+        if variant and not components.image_model_present(variant["repo_id"]):
+            raise HTTPException(412, {
+                "error": f"ltxv model {variant['id']!r} not in cache",
+                "repo_id": variant["repo_id"], "gated": variant["gated"],
+                "hint": "fetch it first (ungated diffusers repo)"})
+        if estimate_vram("ltxv") > CONFIG.vram_budget_gb:
+            raise HTTPException(422, f"ltxv needs ~{estimate_vram('ltxv')} GB VRAM "
+                                     f"> budget {CONFIG.vram_budget_gb} GB")
+        if GUARD.is_hard_blocked():
+            raise HTTPException(507, f"disk hard-stop — {GUARD.block_reason()}")
+        jid = RUNNER.submit(pipeline="ltxv", mode="i2v", params=params,
+                            batch_id="bat_" + uuid.uuid4().hex[:8], index=0, batch_size=1,
+                            requester_id=vid, profile_version_id=vid, stage="B",
+                            coverage_cell=cell, post_passes=[harvest_spec])
+        LOG.info("stage-b sketch: %s cell=%s/%s/%s for %s (hero %s)",
+                 jid, cell["shot_size"], cell["angle"], cell["expression"], vid,
+                 hero_path.name)
+        return {"job_id": jid, "cell": cell, "prompt": prompt,
+                "harvest": {"every": req.every, "max_frames": req.max_frames}}
+
     @app.post("/assets/{asset_id}/anchor/derive")
     def derive_anchor(asset_id: str, req: DeriveAnchorRequest,
                       _auth: None = Depends(require_token)) -> dict:
@@ -1346,6 +1444,11 @@ def create_app() -> FastAPI:
             raise HTTPException(409, "candidate job has no output to keep")
         else:
             raise HTTPException(409, "multi-output job — specify which `output`")
+        # M7: the sketch VIDEO carries the job-level cell but is not a ref — only its
+        # harvested FRAMES are (the chained frame_harvest tiles).
+        if output.lower().endswith((".mp4", ".webm", ".mov")):
+            raise HTTPException(422, "videos are not refs — curate the harvested frames "
+                                     "(the chained frame_harvest tiles), not the sketch")
         # The frozen coverage_cell: per-job for legacy single-cell jobs; per-OUTPUT
         # (result.output_meta, echoed from the batch manifest) for batch dataset jobs.
         ometa = (result.get("output_meta") or {}).get(output) or {}
@@ -1584,6 +1687,8 @@ def create_app() -> FastAPI:
             "birefnet": birefnet_adapter.capabilities(CONFIG.pipeline_roots),
             "identity": identity_adapter.capabilities(CONFIG.pipeline_roots),
             "face_restore": face_restore_adapter.capabilities(CONFIG.pipeline_roots),
+            "ltxv": ltxv_adapter.capabilities(CONFIG.pipeline_roots),
+            "frame_harvest": frame_harvest_adapter.capabilities(CONFIG.pipeline_roots),
         }}
 
     @app.get("/models")

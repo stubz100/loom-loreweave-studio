@@ -178,6 +178,53 @@ def _catalog() -> dict:
             ],
             "modes": ["t2i", "img2img", "inpaint"],
         },
+        # ── ltxv (video sketch — P1/M7: i2v from the hero → chained frame harvest) ──
+        "ltxv": {
+            "loom_access": "Stage-B video-sketch harvest (M7): cheap low-res i2v motion "
+                           "from the hero ★, then a chained frame_harvest pass extracts "
+                           "stills — multi-angle/pose coverage without 3D (R11).",
+            "variants": [
+                {"id": "2b_0.9.7_distilled", "repo_id": "Lightricks/LTX-Video-0.9.7-distilled",
+                 "gated": False, "defaults": {"num_steps": 8, "guidance_scale": 1.0},
+                 "note": "DEFAULT — 2B distilled (CFG off, 4–10 steps); 704×480 native; "
+                         "⚠ needs offload=model on 16 GB (T5-XXL text encoder)"},
+                {"id": "2b_0.9.7_dev", "repo_id": "Lightricks/LTX-Video-0.9.7-dev",
+                 "gated": False, "defaults": {"num_steps": 30, "guidance_scale": 5.0},
+                 "note": "2B non-distilled — quality reference, full CFG"},
+                {"id": "2b_0.9.5", "repo_id": "Lightricks/LTX-Video-0.9.5",
+                 "gated": False, "defaults": {"num_steps": 30, "guidance_scale": 5.0},
+                 "note": "older stable fallback"},
+                {"id": "13b_0.9.8_distilled", "repo_id": "Lightricks/LTX-Video-0.9.8-13B-distilled",
+                 "gated": False, "defaults": {"num_steps": 8, "guidance_scale": 1.0},
+                 "note": "13B distilled — headline quality, heavy"},
+            ],
+            "params": [
+                {"name": "model_name", "flag": "--variant", "type": "enum",
+                 "default": "2b_0.9.7_distilled",
+                 "note": "the worker calls this --variant (not --model-name)"},
+                {"name": "width", "flag": "--width", "type": "int", "default": 704,
+                 "min": 256, "max": 1280, "step": 32, "note": "low-res sketch — 704×480 native"},
+                {"name": "height", "flag": "--height", "type": "int", "default": 480,
+                 "min": 256, "max": 1280, "step": 32},
+                {"name": "seed", "flag": "--seed", "type": "int", "default": None},
+                {"name": "num_frames", "flag": "--num-frames", "type": "int", "default": 121,
+                 "min": 9, "max": 257, "note": "~5 s at 24 fps"},
+                {"name": "fps", "flag": "--fps", "type": "int", "default": 24, "min": 8, "max": 30},
+                {"name": "num_steps", "flag": "--steps", "type": "int", "default": None,
+                 "note": "distilled 4–10; dev/0.9.5 ~30 (variant default when unset)"},
+                {"name": "guidance_scale", "flag": "--guidance-scale", "type": "float",
+                 "default": None, "min": 0.0, "max": 15.0,
+                 "note": "distilled variants need 1.0 (CFG off)"},
+                {"name": "negative_prompt", "flag": "--negative-prompt", "type": "str",
+                 "default": None},
+                {"name": "offload", "flag": "--offload", "type": "enum", "default": None,
+                 "choices": ["model", "sequential", "none"],
+                 "note": "leave unset → variant default ('model' — required on 16 GB)"},
+                {"name": "init_image", "flag": "--init-image", "type": "image",
+                 "default": None, "modes": ["i2v"]},
+            ],
+            "modes": ["i2v"],
+        },
         # ── birefnet (postproc: subject matting — P1/M3.5, first postproc-class) ──
         "birefnet": {
             "loom_access": "standalone postproc adapter — hero subject matte → the Stage-B "

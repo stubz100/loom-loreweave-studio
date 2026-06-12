@@ -23,12 +23,14 @@ _SOURCES = {
     "zimage": (_MULTISTACK / "src" / "pipeline" / "zimage" / "stage1_load_pipeline.py", r'"(zimage-[a-z0-9]+)"\s*:\s*\{'),
     "birefnet": (_MULTISTACK / "src" / "pipeline" / "postproc" / "birefnet" / "run_pipeline.py",
                  r'"(birefnet(?:-[a-z0-9]+)?)"\s*:\s*\{'),
+    "ltxv": (_MULTISTACK / "src" / "pipeline" / "ltxv" / "stage1_load_pipeline.py",
+             r'"((?:2b|13b)_[0-9.]+(?:_[a-z]+)?)"\s*:\s*\{'),
 }
 
 
-def test_catalog_has_four_pipelines():
-    # birefnet joined at M3.5 — the first postproc-class pipeline (subject matting)
-    assert set(mc.pipelines()) == {"flux2", "sd35", "zimage", "birefnet"}
+def test_catalog_has_five_pipelines():
+    # birefnet joined at M3.5 (postproc-class); ltxv at M7 (video sketch)
+    assert set(mc.pipelines()) == {"flux2", "sd35", "zimage", "birefnet", "ltxv"}
 
 
 def test_variants_well_formed():
@@ -109,7 +111,7 @@ def test_validate_model_rejects_unknown_allows_known_and_none():
         mc.validate_model("zimage", "bogus-model")
 
 
-@pytest.mark.parametrize("pipeline", ["flux2", "sd35", "zimage", "birefnet"])
+@pytest.mark.parametrize("pipeline", ["flux2", "sd35", "zimage", "birefnet", "ltxv"])
 def test_catalog_variants_match_vendored_source(pipeline):
     """Drift guard: the catalog's variant ids == the *_MODEL_INFO keys in the vendored worker
     source. If a pipeline adds/renames a model, this fails until the catalog is updated."""

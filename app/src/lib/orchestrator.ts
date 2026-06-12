@@ -488,6 +488,23 @@ export interface StageBRequest {
   identity_min_det_score?: number;
 }
 
+/** M7 — video-sketch harvest: one ltxv i2v job from the hero ★ aimed at a target
+ * coverage cell; a chained frame_harvest pass extracts stills carrying that cell. */
+export async function sketchHero(assetId: string, body: {
+  version_id?: string; shot_size?: string; angle?: string; expression?: string;
+  motion_prompt?: string | null; character_clause?: string | null;
+  every?: number; max_frames?: number;
+  params?: Record<string, unknown>;
+}): Promise<{ job_id: string; cell: CoverageCell; prompt: string }> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/stage-b/sketch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`sketch ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
 /** Matte the version's hero ★ (M3.5): one birefnet job → matte / cutout / bg mask. */
 export async function matteHero(assetId: string, versionId?: string, params?: Record<string, unknown>):
     Promise<{ job_id: string; batch_id: string; hero: string }> {

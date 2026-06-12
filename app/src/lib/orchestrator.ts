@@ -47,6 +47,12 @@ export interface OutputMeta {
   index?: number;
   method?: string | null;
   role?: string;
+  /** identity pass (M4): "locked" | "no_face_passthrough" + the measured anchor cosine. */
+  identity?: string;
+  anchor_cos?: number;
+  /** restore pass (M6): "restored" | "no_face_passthrough" | "portrait_crop" + face count. */
+  restore?: string;
+  faces?: number;
 }
 
 export interface JobResult {
@@ -353,6 +359,21 @@ export function setAnchor(assetId: string, jobId: string, output?: string, versi
 /** Clear the face anchor (opt the version out of the identity lock, R93). */
 export function clearAnchor(assetId: string, versionId?: string) {
   return postAsset(assetId, "anchor", { job_id: null, version_id: versionId ?? null });
+}
+
+/** M6.1: derive a restored 512² face PORTRAIT from an owned output (a better anchor
+ * base than a small face in a full-body shot); anchor the resulting tile. */
+export async function deriveFacePortrait(assetId: string, jobId: string, output?: string,
+                                         versionId?: string):
+    Promise<{ job_id: string; source_output: string }> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/anchor/derive`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ job_id: jobId, output: output ?? null,
+                           version_id: versionId ?? null }),
+  });
+  if (!res.ok) throw new Error(`derive portrait ${res.status}: ${await res.text()}`);
+  return await res.json();
 }
 
 /** Serve the version's anchor image. */

@@ -32,6 +32,7 @@ import {
   matteHero,
   setAnchor,
   clearAnchor,
+  deriveFacePortrait,
   anchorUrl,
   keepRef,
   rejectOutput,
@@ -698,6 +699,22 @@ export default function App() {
       setAnchorInfo(version.anchor ?? null);
       setIdentityOn(null);
     } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  // M6.1: derive a restored 512² face portrait from the selected output — the resulting
+  // tile is a normal job output, so "⚓ set as face anchor" picks it up.
+  const onDerivePortrait = async (jobId: string, output?: string) => {
+    if (!activeAsset) return;
+    setError(null);
+    try {
+      const res = await deriveFacePortrait(activeAsset.id, jobId, output);
+      log.info("portrait:", res.job_id, "← face crop of", res.source_output,
+               "— anchor the result when it lands");
+      void refreshJobs();
+    } catch (e) {
+      log.error("derive portrait failed:", e);
       setError(String(e));
     }
   };
@@ -1642,13 +1659,22 @@ export default function App() {
           <div className="rail-head">INSPECTOR</div>
           {!selJob && <div className="muted">Select an image to see job details + lineage.</div>}
           {selJob && activeAsset && selJob.status === "done" && !activeVersionLocked && (
-            <button
-              className="ghost"
-              onClick={() => void onSetAnchor(selJob.id, selOutput)}
-              title="use this image as the version's ⚓ face anchor (M4, R94) — the Stage-B identity pass locks every cell's face to it"
-            >
-              ⚓ set as face anchor
-            </button>
+            <>
+              <button
+                className="ghost"
+                onClick={() => void onSetAnchor(selJob.id, selOutput)}
+                title="use this image as the version's ⚓ face anchor (M4, R94) — the Stage-B identity pass locks every cell's face to it"
+              >
+                ⚓ set as face anchor
+              </button>
+              <button
+                className="ghost"
+                onClick={() => void onDerivePortrait(selJob.id, selOutput)}
+                title="derive a restored 512² face PORTRAIT from this image (GFPGAN crop of the largest face) — a much better anchor base than a small face in a full-body shot; anchor the resulting tile"
+              >
+                ✨ face portrait
+              </button>
+            </>
           )}
           {selJob && <Inspector job={selJob} output={selOutput} />}
         </aside>
@@ -2066,6 +2092,15 @@ function Inspector({ job, output }: { job: Job; output?: string }) {
         <div className="muted insp-cov">
           cell: {cell.shot_size} · {cell.angle} · {cell.expression}
           {cell.background ? ` · ${cell.background}` : ""}
+        </div>
+      )}
+      {ometa && (ometa.identity || ometa.restore || ometa.anchor_cos != null) && (
+        <div className="muted insp-cov">
+          {ometa.identity ? `identity: ${ometa.identity}` : ""}
+          {ometa.anchor_cos != null ? ` (anchor cos ${ometa.anchor_cos})` : ""}
+          {ometa.identity && ometa.restore ? " · " : ""}
+          {ometa.restore ? `restore: ${ometa.restore}` : ""}
+          {ometa.faces != null ? ` (${ometa.faces} face${ometa.faces === 1 ? "" : "s"})` : ""}
         </div>
       )}
       {typeof p.prompt === "string" && (

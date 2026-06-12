@@ -925,6 +925,11 @@ class JobRunner:
             params: dict = {
                 "prompt": f"[{spec['pass']} pass of {parent['id']} · {len(items)} image(s)]",
                 "batch_items": items,
+                # Display metadata only (the io workers don't read dims): the grid derives
+                # the tile aspect from job params — without these a 1024² pass output
+                # rendered in a 1280×720 tile (user finding 2026-06-12).
+                "width": pparams.get("width", 1024),
+                "height": pparams.get("height", 1024),
             }
             if spec["pass"] == "identity":
                 params["anchor_image"] = spec["anchor"]

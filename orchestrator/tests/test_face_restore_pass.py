@@ -115,7 +115,7 @@ def test_submit_chained_restore_builds_io_job(client):
     parent = {
         "id": "job_respar01", "batch_id": "bat_r1", "requester_id": "ver_r",
         "profile_version_id": "ver_r", "stage": "B",
-        "params": {"prompt": "p", "seed": 4},
+        "params": {"prompt": "p", "seed": 4, "width": 1280, "height": 720},
         "post_passes": [{"pass": "restore", "backend": "face_restore", "blend": 0.7}],
         "result": {"output_names": ["job_respar01/a.png"],
                    "output_meta": {"job_respar01/a.png": {"coverage_cell": _CELL,
@@ -127,6 +127,9 @@ def test_submit_chained_restore_builds_io_job(client):
     j = chained[0]
     assert j["pipeline"] == "face_restore" and j["mode"] == "restore"
     assert j["pass"] == "restore" and j["params"]["blend"] == 0.7
+    # display dims carried from the parent (user finding 2026-06-12: io-pass tiles
+    # rendered 16:9 regardless of the actual image)
+    assert j["params"]["width"] == 1280 and j["params"]["height"] == 720
     items = j["params"]["batch_items"]
     assert items[0]["input"].replace("\\", "/").endswith("job_respar01/a.png")
     assert "prompt" not in items[0] and "init_image" not in items[0]
@@ -169,6 +172,53 @@ def test_parse_result_reads_batch_manifest(tmp_path):
 def test_resolve_script_finds_vendored_worker():
     p = face_restore.resolve_script(CONFIG.pipeline_roots)
     assert p is not None and "face_restore" in str(p)
+
+
+def test_build_argv_portrait_mode_flag(tmp_path):
+    """mode 'portrait' rides into inputs.json — the worker outputs the restored aligned
+    512² crop of the largest face instead of the in-place fix (M6.1 anchor derivation)."""
+    for mode, want in (("portrait", True), ("restore", False)):
+        out = tmp_path / mode
+        out.mkdir()
+        spec = JobSpec(pipeline="face_restore", mode=mode,
+                       params={"batch_items": [{"input": "F:/x.png"}]}, output_dir=out)
+        face_restore.build_argv(spec, "python", Path("x/run_pipeline.py"))
+        payload = json.loads((out / "inputs.json").read_text(encoding="utf-8"))
+        assert payload["portrait"] is want
+
+
+def test_derive_anchor_endpoint_queues_portrait_job(client, monkeypatch):
+    """M6.1 (user idea): derive a dedicated face portrait from an owned output — the
+    result is a normal Stage-A job output, so the existing ⚓ anchor flow picks it up."""
+    from orchestrator import assets
+    from orchestrator.runner import RUNNER
+    monkeypatch.setattr(components, "postproc_weights_status",
+                        lambda tool, variant=None: (True, []))
+    ws = RUNNER.workspace
+    RUNNER.pause()
+    a = assets.create_asset(ws, name="PortraitAsset")["profile"]
+    out = ws.out_dir / "job_full01"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "fullbody.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    jid = RUNNER.submit(pipeline="zimage", mode="t2i", params={"prompt": "p"},
+                        batch_id="bat_p", index=0, batch_size=1,
+                        requester_id=a["active_version"],
+                        profile_version_id=a["active_version"], stage="A")
+    RUNNER.jobs[jid]["status"] = "done"
+    RUNNER.jobs[jid]["result"] = {"ok": True, "output_name": "job_full01/fullbody.png",
+                                  "output_names": ["job_full01/fullbody.png"]}
+    r = client.post(f"/assets/{a['id']}/anchor/derive", json={"job_id": jid})
+    assert r.status_code == 200, r.text
+    job = RUNNER.get(r.json()["job_id"])
+    assert job["pipeline"] == "face_restore" and job["mode"] == "portrait"
+    assert job["params"]["batch_items"][0]["input"].replace("\\", "/").endswith(
+        "job_full01/fullbody.png")
+    assert job["params"]["width"] == 512 and job["params"]["height"] == 512
+    assert job["stage"] == "A" and job["requester_id"] == a["active_version"]
+    # ownership guard: another asset can't derive from this job
+    b = assets.create_asset(ws, name="OtherPortrait")["profile"]
+    r2 = client.post(f"/assets/{b['id']}/anchor/derive", json={"job_id": jid})
+    assert r2.status_code == 409, r2.text
 
 
 def test_fetch_postproc_is_single_file_for_filename_entries(monkeypatch):

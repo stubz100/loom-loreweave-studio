@@ -259,6 +259,19 @@ class RejectRefRequest(BaseModel):
     rejected: bool = True
 
 
+class DeriveAnchorRequest(BaseModel):
+    """M6.1 (user idea, R94): derive a dedicated face PORTRAIT from an owned output —
+    the restored, aligned 512² crop of the largest face. A far better anchor base than a
+    small face inside a full-body shot; the result is a normal job output, so the
+    existing '⚓ set as face anchor' picks it up."""
+
+    model_config = ConfigDict(extra="forbid")
+    version_id: str | None = None
+    job_id: str
+    output: str | None = None
+    blend: float = Field(default=0.8, ge=0.0, le=1.0)
+
+
 class AnchorRequest(BaseModel):
     """Set (job_id+output) or clear (job_id=None) the version's face anchor (R94)."""
 
@@ -460,7 +473,8 @@ def create_app() -> FastAPI:
                                "POST /project/forget", "PUT /bible/style", "POST /assets",
                                "POST /assets/{id}/casting/star", "POST /assets/{id}/casting/hero",
                                "POST /assets/{id}/stage-b", "POST /assets/{id}/stage-b/matte",
-                               "POST /assets/{id}/anchor", "POST /assets/{id}/versions",
+                               "POST /assets/{id}/anchor", "POST /assets/{id}/anchor/derive",
+                               "POST /assets/{id}/versions",
                                "POST /assets/{id}/versions/{vid}/finalize",
                                "POST /assets/{id}/versions/activate",
                                "POST /assets/{id}/refs/keep",
@@ -1185,6 +1199,47 @@ def create_app() -> FastAPI:
             return assets.set_active_version(_require_ws(), asset_id, req.version_id)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(400, str(e))
+
+    @app.post("/assets/{asset_id}/anchor/derive")
+    def derive_anchor(asset_id: str, req: DeriveAnchorRequest,
+                      _auth: None = Depends(require_token)) -> dict:
+        """M6.1 — queue a face-PORTRAIT derivation (face_restore mode `portrait`) from an
+        owned output: aligned 512² crop of the largest face, GFPGAN-restored. Lands in the
+        Stage-A grid; anchor it with '⚓ set as face anchor'. Ownership-guarded;
+        tool-scoped weight 412. Token-gated."""
+        ws = _require_ws()
+        job = RUNNER.get(req.job_id)
+        if job is None or job.get("status") != "done":
+            raise HTTPException(404, f"no completed job {req.job_id!r}")
+        vid = _require_job_owned_by(ws, asset_id, req.version_id, job)
+        result = job.get("result") or {}
+        pool = result.get("output_names") or ([result["output_name"]]
+                                              if result.get("output_name") else [])
+        output = req.output or (pool[0] if len(pool) == 1 else None)
+        if not output or output not in pool:
+            raise HTTPException(409, f"output {req.output!r} is not one of job "
+                                     f"{req.job_id!r}'s outputs")
+        obase = ws.out_dir.resolve()
+        src = (obase / output).resolve()
+        if not src.is_relative_to(obase) or not src.is_file():
+            raise HTTPException(404, f"output {output!r} not found in out/")
+        ok, missing = components.postproc_weights_status("face_restore")
+        if not ok:
+            raise HTTPException(412, {
+                "error": "face-restore weight(s) missing", "missing": missing,
+                "hint": "POST /components/fetch?postproc=face_restore"})
+        if GUARD.is_hard_blocked():
+            raise HTTPException(507, f"disk hard-stop — {GUARD.block_reason()}")
+        params = {"prompt": f"[face portrait of {output}]",
+                  "batch_items": [{"input": str(src), "seed": 0,
+                                   "meta": {"source_output": output}}],
+                  "blend": req.blend, "min_det_score": 0.5,
+                  "width": 512, "height": 512}        # display dims (512² crop)
+        jid = RUNNER.submit(pipeline="face_restore", mode="portrait", params=params,
+                            batch_id="bat_" + uuid.uuid4().hex[:8], index=0, batch_size=1,
+                            requester_id=vid, profile_version_id=vid, stage="A")
+        LOG.info("anchor derive: %s from %s for %s", jid, output, vid)
+        return {"job_id": jid, "source_output": output}
 
     @app.post("/assets/{asset_id}/anchor")
     def set_anchor(asset_id: str, req: AnchorRequest,

@@ -19,8 +19,11 @@ from . import _batch
 from .base import CompletionRecord, JobSpec
 
 PIPELINE = "face_restore"
-SUPPORTED_MODES = ("restore",)
-WIRED_MODES = ("restore",)
+# "restore" = in-place fix (paste-back); "portrait" = the restored ALIGNED 512² crop of
+# the largest face — the M6.1 face-portrait derivation (a better anchor base than a small
+# face inside a full-body shot, R94).
+SUPPORTED_MODES = ("restore", "portrait")
+WIRED_MODES = ("restore", "portrait")
 WIRED_PARAMS = ("batch_items", "blend", "min_det_score", "model_name")
 
 
@@ -57,6 +60,7 @@ def build_argv(spec: JobSpec, python: str, script: Path) -> list[str]:
         "blend": p.get("blend", 0.8),
         "min_det_score": p.get("min_det_score", 0.5),
         "model_name": p.get("model_name") or "gfpgan-1.4",
+        "portrait": spec.mode == "portrait",
         "items": p["batch_items"],
     }
     inputs_path = spec.output_dir / "inputs.json"

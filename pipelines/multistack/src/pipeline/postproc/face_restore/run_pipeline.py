@@ -72,9 +72,8 @@ def _load_stack(model_name: str):
     return app, sess
 
 
-def _restore_face(img, face, sess, blend: float):
-    """Align → GFPGAN → blend → feathered inverse-affine paste-back. Returns the image
-    with this face restored in place."""
+def _restored_crop(img, face, sess, blend: float):
+    """Align → GFPGAN → blend. Returns (blended 512² BGR float32, the align matrix M)."""
     import cv2
     import numpy as np
     from insightface.utils import face_align
@@ -91,6 +90,16 @@ def _restore_face(img, face, sess, blend: float):
     restored = (y[:, :, ::-1] * 255).astype(np.float32)  # →BGR
 
     blended = blend * restored + (1.0 - blend) * crop.astype(np.float32)
+    return blended, M
+
+
+def _restore_face(img, face, sess, blend: float):
+    """Align → GFPGAN → blend → feathered inverse-affine paste-back. Returns the image
+    with this face restored in place."""
+    import cv2
+    import numpy as np
+
+    blended, M = _restored_crop(img, face, sess, blend)
 
     mask = np.full((_CANONICAL, _CANONICAL), 255, np.uint8)
     edge = 16
@@ -115,6 +124,10 @@ def run_batch(inputs_file: str, output_dir: str) -> int:
     blend = float(spec.get("blend", 0.8))
     min_det = float(spec.get("min_det_score", 0.5))
     model_name = spec.get("model_name") or "gfpgan-1.4"
+    # Portrait mode (loom M6.1, R94): output = the restored ALIGNED 512² crop of the
+    # LARGEST face — a dedicated face-portrait derivation (e.g. a better identity-anchor
+    # base than a small face inside a full-body shot), not an in-place fix.
+    portrait = bool(spec.get("portrait"))
     if not items:
         print("[batch-error] inputs file has no items")
         return 2
@@ -156,7 +169,16 @@ def run_batch(inputs_file: str, output_dir: str) -> int:
             if img is None:
                 raise ValueError(f"unreadable image: {in_path}")
             faces = [f for f in app.get(img) if float(f.det_score) >= min_det]
-            if not faces:
+            if portrait:
+                if not faces:
+                    raise ValueError("no detectable face — portrait derivation needs one")
+                face = max(faces, key=lambda f: float(
+                    (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])))
+                blended, _m = _restored_crop(img, face, sess, blend)
+                cv2.imwrite(str(out_path), blended.clip(0, 255).astype("uint8"))
+                meta["restore"] = "portrait_crop"
+                meta["faces"] = 1
+            elif not faces:
                 shutil.copy2(in_path, out_path)
                 meta["restore"] = "no_face_passthrough"
             else:
@@ -184,7 +206,8 @@ def run_batch(inputs_file: str, output_dir: str) -> int:
 
     status = "stopped" if stopped else ("completed" if n_ok else "failed")
     manifest = {
-        "kind": "jobs_batch", "pipeline": "face_restore", "mode": "restore",
+        "kind": "jobs_batch", "pipeline": "face_restore",
+        "mode": "portrait" if portrait else "restore",
         "status": status, "count": len(items),
         "ok": n_ok, "failed": n_fail, "skipped": n_skip,
         "model_name": model_name, "blend": blend, "min_det_score": min_det,
@@ -210,6 +233,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-det-score", type=float, default=0.5)
     parser.add_argument("--model-name", default="gfpgan-1.4",
                         choices=sorted(RESTORE_MODEL_INFO))
+    parser.add_argument("--portrait", action="store_true",
+                        help="output the restored ALIGNED 512 crop of the largest face "
+                             "(face-portrait derivation) instead of the in-place fix")
     parser.add_argument("--device", default="cpu", help="orchestrator symmetry; onnx CPU")
     args = parser.parse_args(argv)
 
@@ -218,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.input:
         parser.error("either --inputs-file or --input is required")
     payload = {"blend": args.blend, "min_det_score": args.min_det_score,
-               "model_name": args.model_name,
+               "model_name": args.model_name, "portrait": args.portrait,
                "items": [{"input": args.input, "seed": 0, "meta": {}}]}
     tmp = Path(args.output_dir)
     tmp.mkdir(parents=True, exist_ok=True)

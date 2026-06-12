@@ -34,6 +34,9 @@ MONOREPO = Path(__file__).resolve().parents[4]
     # M4: the identity-lock worker (inswapper to the version's anchor)
     ("postproc/identity/run_pipeline.py",
      ["pipelines/multistack/src/pipeline/postproc/identity/run_pipeline.py"]),
+    # M6: the GFPGAN-onnx face-restore worker
+    ("postproc/face_restore/run_pipeline.py",
+     ["pipelines/multistack/src/pipeline/postproc/face_restore/run_pipeline.py"]),
 ])
 def test_vendored_workers_match_monorepo_source(rel, copies):
     """The batch mode landed in the monorepo first (R162); every vendored copy must be a

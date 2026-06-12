@@ -254,6 +254,14 @@ POST_PARAMS: list[dict] = [
      "post": True, "note": "requires polish"},
     {"name": "polish_seed", "flag": None, "type": "int", "default": None, "post": True,
      "note": "default: each image's own seed; requires polish"},
+    # M6 — GFPGAN face-restore pass (CPU onnx, no diffusion backbone): fixes soft faces,
+    # esp. the 128px softness the identity swap leaves on close-ups → it always runs
+    # AFTER identity in the chain. No-face images pass through unchanged.
+    {"name": "restore", "flag": None, "type": "flag", "default": False, "post": True,
+     "note": "chained face-restore pass (GFPGAN onnx, CPU) over every output of this run"},
+    {"name": "restore_blend", "flag": None, "type": "float", "default": 0.8,
+     "min": 0.0, "max": 1.0, "post": True,
+     "note": "restored↔original blend per face (1 = fully restored); requires restore"},
 ]
 
 # The post-passes apply to every generation surface: zimage/sd35 singles + Stage-B

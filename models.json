@@ -66,6 +66,10 @@
     "identity": [
       {"id": "inswapper-128", "repo_id": "ezioruan/inswapper_128.onnx", "probe": "inswapper_128.onnx", "gated": false, "pipeline": "identity", "note": "⚠ InsightFace RESEARCH/NON-COMMERCIAL (HF mirror, ~530 MB) — the M4 identity-lock swapper (spike: anchor cos 0.105→0.870)"},
       {"id": "buffalo-l", "insightface_pack": "buffalo_l", "probe": "w600k_r50.onnx", "gated": false, "pipeline": "identity", "note": "InsightFace buffalo_l detection/recognition pack (~280 MB; research/non-commercial) — NOT an HF repo (github-release zip): presence is a FILESYSTEM probe at $LOOM_INSIGHTFACE_ROOT (default <HF_HOME>/insightface)/models/buffalo_l/<probe>; fetch hydrates via the insightface auto-downloader (M4 review: a fresh/offline rig must fail at the 412 gate with a fetch hint, never mid-job)"}
+    ],
+    "face_restore": [
+      {"id": "gfpgan-1.4", "repo_id": "facefusion/models-3.0.0", "probe": "gfpgan_1.4.onnx", "gated": false, "pipeline": "face_restore", "note": "GFPGAN v1.4 as ONNX (~340 MB; upstream GFPGAN is Apache-2.0; facefusion model mirror) — the M6 restore pass. ⚙ Deliberately ONNX, not the gfpgan/basicsr pip stack (breaks on modern torchvision; M6 spike: ~0.3 s/face CPU)"},
+      {"id": "buffalo-l", "insightface_pack": "buffalo_l", "probe": "w600k_r50.onnx", "gated": false, "pipeline": "face_restore", "note": "shared detection/alignment pack (see the identity entry) — listed here too so THIS tool's gate is self-contained"}
     ]
   }
 }

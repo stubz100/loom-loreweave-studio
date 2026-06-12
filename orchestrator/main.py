@@ -39,6 +39,7 @@ try:
     from .adapters import sd35 as sd35_adapter
     from .adapters import birefnet as birefnet_adapter
     from .adapters import identity as identity_adapter
+    from .adapters import face_restore as face_restore_adapter
     from .runner import RUNNER, WORKER_REAP, ADAPTERS, estimate_vram
     from . import projects
     from . import workspace as ws_mod
@@ -58,6 +59,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import sd35 as sd35_adapter  # type: ignore
     from adapters import birefnet as birefnet_adapter  # type: ignore
     from adapters import identity as identity_adapter  # type: ignore
+    from adapters import face_restore as face_restore_adapter  # type: ignore
     from runner import RUNNER, WORKER_REAP, ADAPTERS, estimate_vram  # type: ignore
     import projects  # type: ignore
     import workspace as ws_mod  # type: ignore
@@ -519,6 +521,24 @@ def create_app() -> FastAPI:
             if name == "polish" and post.get("polish_seed") is not None:
                 spec["seed"] = post["polish_seed"]
             passes.append(spec)
+        # M6 — restore pass (GFPGAN onnx, CPU): appended LAST among the extracted passes
+        # (it must run after any re-diffusing pass; stage_b inserts identity BEFORE it so
+        # the restore also fixes the swap's 128px softness — the M4 pairing).
+        r_orphans = sorted(k for k in post if k.startswith("restore_"))
+        if not post.get("restore"):
+            if r_orphans:
+                raise HTTPException(422, f"{r_orphans} given but 'restore' is off — set "
+                                         "params.restore=true to run that pass")
+        else:
+            if not dry_run:
+                r_ok, r_missing = components.postproc_weights_status("face_restore")
+                if not r_ok:
+                    raise HTTPException(412, {
+                        "error": "face-restore weight(s) missing", "missing": r_missing,
+                        "hint": "POST /components/fetch?postproc=face_restore "
+                                "(GFPGAN onnx, ungated)"})
+            passes.append({"pass": "restore", "backend": "face_restore",
+                           "blend": post.get("restore_blend", 0.8)})
         return passes
 
     @app.post("/generate")
@@ -985,11 +1005,16 @@ def create_app() -> FastAPI:
                         "error": "identity-lock weight(s) missing", "missing": i_missing,
                         "hint": "POST /components/fetch?postproc=identity "
                                 "(inswapper_128 — research/non-commercial license)"})
-            post_passes = post_passes + [{
+            # Insert BEFORE a restore pass (M6): the lock first, then GFPGAN fixes the
+            # swap's 128px softness — restore stays the chain's final word.
+            identity_spec = {
                 "pass": "identity", "backend": "identity",
                 "anchor": str(anchor_path),
                 "min_det_score": req.identity_min_det_score,
-            }]
+            }
+            r_idx = next((i for i, p in enumerate(post_passes)
+                          if p.get("pass") == "restore"), len(post_passes))
+            post_passes = [*post_passes[:r_idx], identity_spec, *post_passes[r_idx:]]
 
         script = ADAPTERS[req.pipeline].resolve_script(CONFIG.pipeline_roots)
         if script is None:
@@ -1496,6 +1521,7 @@ def create_app() -> FastAPI:
             "sd35": sd35_adapter.capabilities(CONFIG.pipeline_roots),
             "birefnet": birefnet_adapter.capabilities(CONFIG.pipeline_roots),
             "identity": identity_adapter.capabilities(CONFIG.pipeline_roots),
+            "face_restore": face_restore_adapter.capabilities(CONFIG.pipeline_roots),
         }}
 
     @app.get("/models")

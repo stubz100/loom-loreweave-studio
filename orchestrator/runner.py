@@ -43,6 +43,7 @@ try:
     from .adapters import sd35 as sd35_adapter
     from .adapters import birefnet as birefnet_adapter
     from .adapters import identity as identity_adapter
+    from .adapters import face_restore as face_restore_adapter
     from .config import CONFIG
     from . import lineage
     from . import workspace as ws_mod
@@ -56,6 +57,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import sd35 as sd35_adapter  # type: ignore
     from adapters import birefnet as birefnet_adapter  # type: ignore
     from adapters import identity as identity_adapter  # type: ignore
+    from adapters import face_restore as face_restore_adapter  # type: ignore
     from config import CONFIG  # type: ignore
     import lineage  # type: ignore
     import workspace as ws_mod  # type: ignore
@@ -63,7 +65,8 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from logsetup import get_logger  # type: ignore
 
 ADAPTERS = {"zimage": zimage_adapter, "multi": multi_adapter, "sd35": sd35_adapter,
-            "birefnet": birefnet_adapter, "identity": identity_adapter}
+            "birefnet": birefnet_adapter, "identity": identity_adapter,
+            "face_restore": face_restore_adapter}
 SCHEMA_VERSION = 1
 LOG = get_logger()
 
@@ -154,7 +157,7 @@ def _assign_to_kill_job(proc: subprocess.Popen) -> None:
 # peak is a single pipeline (flux2-klein ~ the largest), not the sum — admission vs 16 GB.
 # sd35 (Stage-B img2img/inpaint) with cpu_offload + T5 peaks ~13 GB on the 16 GB rig.
 VRAM_ESTIMATES = {"zimage": 11.0, "multi": 14.0, "sd35": 13.0, "birefnet": 4.0,
-                  "identity": 1.0}   # onnxruntime CPU — effectively no VRAM
+                  "identity": 1.0, "face_restore": 1.0}   # onnx CPU — effectively no VRAM
 DEFAULT_VRAM_GB = 8.0
 MAX_OOM_RETRIES = 1
 _OOM_MARKERS = (
@@ -895,16 +898,16 @@ class JobRunner:
         spec, rest = passes[0], passes[1:]
         meta_map = result.get("output_meta") or {}
         pparams = parent.get("params") or {}
-        # M4: the identity pass is a face-LOCK over the outputs (inswapper to the
-        # version's anchor) — batch-shaped like clean/polish but a different worker
-        # vocabulary: items carry `input` (no prompt/init_image) + the anchor rides the
-        # shared params. Backend is the `identity` adapter (mode "lock", CPU).
-        is_identity = spec.get("pass") == "identity"
+        # M4/M6: the identity + restore passes are image→image FIXES over the outputs
+        # (no diffusion backbone) — batch-shaped like clean/polish but a different worker
+        # vocabulary: items carry `input` (no prompt/init_image); the pass tunables ride
+        # the shared params (identity: the anchor; restore: the blend).
+        io_pass = spec.get("pass") in ("identity", "restore")
         items: list[dict] = []
         for n in names:
             m = meta_map.get(n) or {}
             abs_path = str((ws.out_dir / n).resolve())
-            if is_identity:
+            if io_pass:
                 item: dict = {"input": abs_path}
             else:
                 item = {
@@ -918,14 +921,18 @@ class JobRunner:
             if carry:
                 item["meta"] = carry            # curation survives the pass (Stage-B)
             items.append(item)
-        if is_identity:
+        if io_pass:
             params: dict = {
-                "prompt": f"[identity pass of {parent['id']} · {len(items)} image(s)]",
+                "prompt": f"[{spec['pass']} pass of {parent['id']} · {len(items)} image(s)]",
                 "batch_items": items,
-                "anchor_image": spec["anchor"],
-                "min_det_score": spec.get("min_det_score", 0.5),
             }
-            backend, mode = "identity", "lock"
+            if spec["pass"] == "identity":
+                params["anchor_image"] = spec["anchor"]
+                params["min_det_score"] = spec.get("min_det_score", 0.5)
+                backend, mode = "identity", "lock"
+            else:
+                params["blend"] = spec.get("blend", 0.8)
+                backend, mode = "face_restore", "restore"
         else:
             params = {
                 "prompt": f"[{spec['pass']} pass of {parent['id']} · {len(items)} image(s)]",

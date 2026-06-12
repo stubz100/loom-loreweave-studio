@@ -465,10 +465,12 @@ def postproc_weights_status(tool: str, variant_id: str | None = None) -> tuple[b
 
 
 def fetch_postproc(tool: str, variant_id: str | None = None) -> dict:
-    """Explicit, on-demand fetch of a postproc tool's HF weights (snapshot_download —
-    mirrors fetch_multi_preset; BiRefNet is ungated so no token/license dance). With
-    `variant_id` only that variant's repo is fetched (don't pull the 2048 HR model when
-    the default was asked for)."""
+    """Explicit, on-demand fetch of a postproc tool's weights, per entry kind (M6 review):
+    `insightface_pack` → the insightface auto-downloader; `filename` → **single-file
+    `hf_hub_download`** (never an unrestricted snapshot of a mirror repo — the gfpgan/
+    inswapper case); otherwise `snapshot_download` (genuinely multi-file repos, e.g.
+    BiRefNet's config + remote code + safetensors). With `variant_id` only that variant's
+    entry is fetched (don't pull the 2048 HR model when the default was asked for)."""
     entries = postproc_weights(tool)
     if variant_id is not None:
         entries = [e for e in entries if e.get("id") == variant_id]

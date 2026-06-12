@@ -38,7 +38,12 @@ the held subject — the background-diversity axis). **M4** — face **anchor** 
 /assets/{id}/anchor`) + the **identity-lock pass** (inswapper swap to the anchor, chained after
 Stage-B, default-on once the anchor is verified; clean/polish/identity run as **chained
 post-passes** on any pipeline). **P1-12** — curation throughput (persistent reject list, bulk
-keep/reject, keyboard k/x/space, coverage filters). Next: M5 (profile versioning). Spec:
+keep/reject, keyboard k/x/space, coverage filters). **M5** — profile versioning (copy-on-create
+from any parent incl. files+anchor, finalize = R60 lock on every mutator, version selector +
+parent-picker modal, read-only finalized UI). **M6/M6.1** — **face-restore pass** (GFPGAN 1.4
+ONNX — chain order clean → polish → identity → restore) + **face-portrait anchor derivation**
+(`POST /assets/{id}/anchor/derive`: restored aligned 512² crop of the largest face → anchor it);
+masking/upscale deferred "as needed". Next: M7 (video-sketch harvest). Spec:
 > [`kb-loom-p1.md`](../../.github/copilot/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:
 > [`kb-loom-p1-imp.md`](../../.github/copilot/kb-loom-p1-imp.md) (P0 spine:

@@ -607,6 +607,13 @@ def create_app() -> FastAPI:
                     raise HTTPException(422, str(e))
             base["num_candidates"] = req.num_candidates
             base["ideation_mode"] = req.ideation_mode
+            # The TOP-LEVEL width/height defaults (1280×720 — the P0/Wan project default)
+            # must not shadow the cast catalog's native 1024² (M6 review #2: the drawer
+            # advertises the catalog default, so an unset cast must actually GET it).
+            # Explicit values — top-level (model_fields_set) or params channel — still win.
+            for dim in ("width", "height"):
+                if dim not in req.model_fields_set and dim not in req.params:
+                    base[dim] = model_catalog.param_default("multi", dim)
             # Preset-aware pre-flight (review follow-up): `multi`'s gated flux2/sd35
             # checkpoints aren't in the phase weight gate above, so check the SELECTED
             # ideation preset's weight set here and fail fast — never start the GPU run

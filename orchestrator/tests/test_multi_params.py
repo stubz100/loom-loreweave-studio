@@ -167,6 +167,28 @@ def test_generate_multi_accepts_params_dry_run(client):
     assert passes[1]["backend"] == "sd35" and passes[1]["strength"] == 0.22
 
 
+def test_multi_unset_size_uses_catalog_default_not_project_default(client):
+    """M6 review #2 (user finding): the drawer advertises the CATALOG default (1024² —
+    the member models' native square), but the request-level 1280×720 default silently
+    won for an unset cast. Unset → catalog default; explicit values (top-level or params
+    channel) still win."""
+    r = client.post("/generate", json={"pipeline": "multi", "prompt": "a hero",
+                                       "num_candidates": 1, "dry_run": True})
+    assert r.status_code == 200, r.text
+    argv = r.json()["argv"]
+    assert argv[argv.index("--width") + 1] == "1024"
+    assert argv[argv.index("--height") + 1] == "1024"
+    r2 = client.post("/generate", json={"pipeline": "multi", "prompt": "a hero",
+                                        "width": 1280, "height": 720, "dry_run": True})
+    argv2 = r2.json()["argv"]
+    assert argv2[argv2.index("--width") + 1] == "1280"
+    assert argv2[argv2.index("--height") + 1] == "720"
+    r3 = client.post("/generate", json={"pipeline": "multi", "prompt": "a hero",
+                                        "params": {"width": 1536}, "dry_run": True})
+    argv3 = r3.json()["argv"]
+    assert argv3[argv3.index("--width") + 1] == "1536"
+
+
 def test_generate_multi_footgun_subparams_without_toggle_422(client):
     r = client.post("/generate", json={
         "pipeline": "multi", "prompt": "a hero",

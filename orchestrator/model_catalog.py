@@ -338,6 +338,15 @@ def params(pipeline: str) -> list[dict]:
     return CATALOG.get(pipeline, {}).get("params", [])
 
 
+def param_default(pipeline: str, name: str):
+    """The catalog default for one param — what the UI drawer advertises, and therefore
+    what an UNSET request must resolve to (M6 review #2: display must equal reality)."""
+    for prm in params(pipeline):
+        if prm["name"] == name:
+            return prm.get("default")
+    return None
+
+
 def find_variant(pipeline: str, model_name: str) -> dict | None:
     return next((v for v in variants(pipeline) if v["id"] == model_name), None)
 

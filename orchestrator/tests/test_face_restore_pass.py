@@ -169,3 +169,23 @@ def test_parse_result_reads_batch_manifest(tmp_path):
 def test_resolve_script_finds_vendored_worker():
     p = face_restore.resolve_script(CONFIG.pipeline_roots)
     assert p is not None and "face_restore" in str(p)
+
+
+def test_fetch_postproc_is_single_file_for_filename_entries(monkeypatch):
+    """M6 review (Medium): facefusion/models-3.0.0 mirrors DOZENS of models — the fetch
+    must request exactly the one file the worker loads (hf_hub_download w/ filename),
+    never an unrestricted snapshot."""
+    import huggingface_hub
+    calls: list[tuple] = []
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download",
+                        lambda repo_id, filename=None, token=None, **kw:
+                        calls.append(("file", repo_id, filename)) or "x")
+    monkeypatch.setattr(huggingface_hub, "snapshot_download",
+                        lambda repo_id, token=None, **kw:
+                        calls.append(("snapshot", repo_id, None)) or "x")
+    # only buffalo is "present" → exactly the gfpgan entry needs fetching
+    monkeypatch.setattr(components, "_entry_present",
+                        lambda e: bool(e.get("insightface_pack")))
+    components.fetch_postproc("face_restore")
+    assert ("file", "facefusion/models-3.0.0", "gfpgan_1.4.onnx") in calls
+    assert not any(kind == "snapshot" for kind, *_ in calls)

@@ -493,6 +493,13 @@ def fetch_postproc(tool: str, variant_id: str | None = None) -> dict:
                 from insightface.app import FaceAnalysis
                 FaceAnalysis(name=pack, root=str(_insightface_root()),
                              providers=["CPUExecutionProvider"])
+            elif e.get("filename"):
+                # Single-FILE entry (M6 review): the worker loads exactly this file, so
+                # the fetch must too — an unrestricted snapshot of a mirror repo like
+                # facefusion/models-3.0.0 would pull dozens of unrelated models (the
+                # disk surprise the P0 guardrails exist to prevent).
+                from huggingface_hub import hf_hub_download
+                hf_hub_download(repo_id=repo_id, filename=e["filename"], token=token)
             else:
                 from huggingface_hub import snapshot_download
                 snapshot_download(repo_id, token=token)

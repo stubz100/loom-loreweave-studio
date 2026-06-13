@@ -48,8 +48,11 @@ masking/upscale deferred "as needed". **M7** — video-sketch harvest (`POST
 chained `frame_harvest` pass extracts stills carrying that coverage cell → curate like recipe
 cells; pose/angle coverage img2img can't reach, without 3D). **M8** — full L1 World (`/bible`:
 world prose, the style **global negative** auto-applied to every generation surface, and the
-**story spine** whose characters seed stub AssetProfiles + manual re-sync, R55). Next: M9
-(export/import profiles).
+**story spine** whose characters seed stub AssetProfiles + manual re-sync, R55). **M9** —
+**export/import profiles** (`GET /assets/{id}/export` → a portable .zip of the profile + ALL
+its versions + files; `POST /assets/import` → ALWAYS a new profile with fresh ids,
+`derived_from` remapped, rename-on-collision, never a merge, R66/R67 — both token-gated,
+size/zip-bomb guarded). Next: M10 (MVP/P1 acceptance).
 Spec:
 > [`kb-loom-p1.md`](../../.github/copilot/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:

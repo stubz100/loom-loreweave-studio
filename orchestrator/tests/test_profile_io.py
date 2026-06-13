@@ -77,6 +77,14 @@ def test_export_unknown_asset_404(client):
     assert client.get("/assets/ast_zzzzzz/export").status_code == 404
 
 
+def test_export_requires_token(client):
+    """M9 review — export packages every version+file, so it's token-gated like import."""
+    from orchestrator.runner import RUNNER
+    a, _v1, _v2 = _multi_version_asset(RUNNER.workspace)
+    r = client.get(f"/assets/{a['id']}/export", headers={"X-Loom-Token": "wrong"})
+    assert r.status_code == 401
+
+
 def test_import_creates_new_profile_fresh_ids(client):
     from orchestrator.runner import RUNNER
     ws = RUNNER.workspace
@@ -142,3 +150,24 @@ def test_import_rejects_non_bundle_zip(client):
     assert r.status_code == 400 and "loom asset bundle" in r.text
     # and a non-zip body
     assert client.post("/assets/import", content=b"garbage").status_code == 400
+
+
+def test_import_rejects_unsupported_bundle_version(client):
+    """M9 review — a future/incompatible bundle_version must be refused, not partially reshaped."""
+    import io
+    import json as _json
+    from orchestrator.runner import RUNNER
+    a, _v1, _v2 = _multi_version_asset(RUNNER.workspace)
+    blob = client.get(f"/assets/{a['id']}/export").content
+    # repackage with a bumped bundle_version
+    src = io.BytesIO(blob)
+    out = io.BytesIO()
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w") as zout:
+        for n in zin.namelist():
+            if n == "loom_bundle.json":
+                m = _json.loads(zin.read(n)); m["bundle_version"] = 999
+                zout.writestr(n, _json.dumps(m))
+            else:
+                zout.writestr(n, zin.read(n))
+    r = client.post("/assets/import", content=out.getvalue())
+    assert r.status_code == 400 and "bundle_version" in r.text

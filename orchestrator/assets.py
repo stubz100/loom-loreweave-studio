@@ -626,6 +626,38 @@ def ref_file_path(ws: Workspace, asset_id: str, file: str,
 BUNDLE_KIND = "loom_asset_bundle"
 BUNDLE_VERSION = 1
 
+# Import safety bounds (M9 review) — refuse a pathological / zip-bomb / accidental-huge
+# archive BEFORE expanding it, so a bad bundle can't bypass the disk guard (R96) and fill
+# the work disk. The API also gates on Content-Length with MAX_BUNDLE_BYTES.
+MAX_BUNDLE_BYTES = 2 * 1024 ** 3        # compressed body cap (== API Content-Length cap)
+MAX_BUNDLE_UNCOMPRESSED = 4 * 1024 ** 3  # total expanded size cap
+MAX_MEMBER_BYTES = 1024 ** 3            # any single expanded member
+MAX_BUNDLE_MEMBERS = 5000              # file-count cap
+MAX_COMPRESSION_RATIO = 200            # uncompressed/compressed — zip-bomb tripwire
+
+
+def _require_import_headroom(ws: Workspace, needed_bytes: int) -> None:
+    """Refuse an import that would overflow the work disk or the project size cap (R96),
+    checked against the bundle's *uncompressed* footprint before any extraction."""
+    try:
+        probe = ws.temp_dir if ws.temp_dir.exists() else ws.path
+        if needed_bytes > shutil.disk_usage(probe).free:
+            raise ws_mod.WorkspaceError(
+                f"not enough free disk to import ({needed_bytes // (1024 ** 2)} MB needed)")
+    except OSError:
+        pass  # can't stat the disk — fall through to the cap check
+    try:
+        from .diskguard import _dir_size_bytes
+    except ImportError:  # pragma: no cover - direct-run convenience
+        from diskguard import _dir_size_bytes  # type: ignore
+    try:
+        cap_gb = float(ws.load_project().get("size_cap_gb") or 0)
+    except Exception:  # noqa: BLE001 - never let project sizing block a valid import
+        return
+    if cap_gb and _dir_size_bytes(ws.path) + needed_bytes > cap_gb * (1024 ** 3):
+        raise ws_mod.WorkspaceError(
+            f"import would exceed the project size cap ({cap_gb} GB)")
+
 
 def export_profile(ws: Workspace, asset_id: str) -> Path:
     """Zip a profile + all its versions into a portable bundle under the workspace temp
@@ -685,6 +717,10 @@ def import_profile(ws: Workspace, zip_path: str | Path) -> dict:
             raise ws_mod.WorkspaceError("not a loom asset bundle (no loom_bundle.json)")
         if manifest.get("kind") != BUNDLE_KIND:
             raise ws_mod.WorkspaceError("not a loom asset bundle")
+        bv = manifest.get("bundle_version")
+        if bv != BUNDLE_VERSION:                       # reject future/incompatible formats
+            raise ws_mod.WorkspaceError(
+                f"unsupported bundle_version {bv!r} (this build reads version {BUNDLE_VERSION})")
         asset_class = manifest.get("asset_class")
         if asset_class not in ASSET_CLASSES:
             raise ws_mod.WorkspaceError(f"bundle asset_class {asset_class!r} not supported "
@@ -693,6 +729,27 @@ def import_profile(ws: Workspace, zip_path: str | Path) -> dict:
                    if n.startswith("asset/") and not n.endswith("/")]
         if "asset/profile.json" not in members:
             raise ws_mod.WorkspaceError("bundle missing asset/profile.json")
+
+        # Size guard (M9 review) — bound file-count + per-member + total expansion, and
+        # flag implausible compression ratios, BEFORE writing anything to staging.
+        if len(members) > MAX_BUNDLE_MEMBERS:
+            raise ws_mod.WorkspaceError(
+                f"bundle has too many files ({len(members)} > {MAX_BUNDLE_MEMBERS})")
+        total_unc = total_comp = 0
+        for zi in zf.infolist():
+            if not (zi.filename.startswith("asset/") and not zi.filename.endswith("/")):
+                continue
+            if zi.file_size > MAX_MEMBER_BYTES:
+                raise ws_mod.WorkspaceError(
+                    f"bundle member {zi.filename!r} too large ({zi.file_size} bytes)")
+            total_unc += zi.file_size
+            total_comp += zi.compress_size
+        if total_unc > MAX_BUNDLE_UNCOMPRESSED:
+            raise ws_mod.WorkspaceError(
+                f"bundle expands to {total_unc} bytes (> {MAX_BUNDLE_UNCOMPRESSED} cap)")
+        if total_comp and total_unc / total_comp > MAX_COMPRESSION_RATIO:
+            raise ws_mod.WorkspaceError("bundle compression ratio looks like a zip bomb")
+        _require_import_headroom(ws, total_unc)
 
         ws.temp_dir.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(dir=ws.temp_dir))

@@ -19,7 +19,7 @@ import {
   getProject,
   getStyle,
   getBible,
-  exportProfileUrl,
+  exportProfile,
   importProfile,
   setWorld,
   setPremise,
@@ -541,6 +541,24 @@ export default function App() {
 
   // M9 — export the active asset (download the bundle) / import a bundle as a new profile.
   const importFileRef = useRef<HTMLInputElement | null>(null);
+  const onExport = async () => {
+    if (!activeAsset) return;
+    setError(null);
+    try {
+      const blob = await exportProfile(activeAsset.id);   // token-gated fetch (M9 review)
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${activeAsset.name || activeAsset.id}_bundle.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      log.error("export failed:", e);
+      setError(String(e));
+    }
+  };
   const onImportFile = async (file: File) => {
     setError(null);
     try {
@@ -1274,10 +1292,10 @@ export default function App() {
                   finalize 🔒
                 </button>
               )}
-              <a className="ghost" href={exportProfileUrl(activeAsset.id)}
+              <button className="ghost" onClick={() => void onExport()}
                  title="export this profile + ALL its versions as a portable bundle (.zip, R66)">
                 ⤓ Export
-              </a>
+              </button>
               <span className="muted"> · CHARACTER BOOTSTRAP — </span>
               <span className="stage-switch">
                 {([["A", "Casting"], ["B", "Expansion"], ["C", "Curation"]] as const).map(

@@ -969,10 +969,23 @@ def create_app() -> FastAPI:
         **brand-new profile**: fresh ids, rename-on-collision, never a merge. The zip bytes
         are the raw request body (no multipart dep). Token-gated."""
         ws = _require_ws()
+        # Refuse an oversized upload BEFORE buffering it (M9 review): trust Content-Length
+        # as a cheap pre-read gate, then re-check the actual bytes (assets.* enforces the
+        # uncompressed-expansion + disk/cap bounds once the zip is on disk).
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) > assets.MAX_BUNDLE_BYTES:
+                    raise HTTPException(413, f"bundle too large "
+                                             f"(> {assets.MAX_BUNDLE_BYTES} bytes)")
+            except ValueError:
+                pass
         data = await request.body()
         if not data:
             raise HTTPException(400, "empty body — POST the .zip bundle bytes "
                                      "(Content-Type: application/zip)")
+        if len(data) > assets.MAX_BUNDLE_BYTES:
+            raise HTTPException(413, f"bundle too large (> {assets.MAX_BUNDLE_BYTES} bytes)")
         ws.temp_dir.mkdir(parents=True, exist_ok=True)
         tmp = ws.temp_dir / f"import_{uuid.uuid4().hex[:8]}.zip"
         tmp.write_bytes(data)
@@ -995,9 +1008,11 @@ def create_app() -> FastAPI:
         return res
 
     @app.get("/assets/{asset_id}/export")
-    def export_profile(asset_id: str) -> FileResponse:
+    def export_profile(asset_id: str, _auth: None = Depends(require_token)) -> FileResponse:
         """M9 (R66) — download a portable bundle of the profile + ALL its versions (.zip).
-        Unauthenticated read (mirrors /outputs + the casting/ref/anchor serves)."""
+        **Token-gated** (M9 review): unlike the per-image serves this packages every version
+        and file into one portable archive, so it's gated like the other bulk operations; the
+        UI downloads via fetch + X-Loom-Token + object URL."""
         try:
             path = assets.export_profile(_require_ws(), asset_id)
         except ws_mod.WorkspaceError as e:

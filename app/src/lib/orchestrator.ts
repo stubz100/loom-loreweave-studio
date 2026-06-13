@@ -333,9 +333,15 @@ export async function resyncSpineStub(characterId: string):
 
 // --- M9: profile export / import (R66/R67) ---------------------------------------
 
-/** The download URL for a profile bundle (.zip of profile + all versions). */
-export function exportProfileUrl(assetId: string): string {
-  return `${orchestratorUrl()}/assets/${encodeURIComponent(assetId)}/export`;
+/** Fetch a profile bundle (.zip of profile + all versions) WITH the auth token; the caller
+ * turns the Blob into an object URL to trigger the download. Export is token-gated (M9
+ * review — it packages every version + file), so a plain anchor href can't carry it. */
+export async function exportProfile(assetId: string): Promise<Blob> {
+  const res = await fetch(
+    `${orchestratorUrl()}/assets/${encodeURIComponent(assetId)}/export`,
+    { headers: { "X-Loom-Token": orchestratorToken() } });
+  if (!res.ok) throw new Error(`export ${res.status}: ${await res.text()}`);
+  return await res.blob();
 }
 
 /** Import a bundle (.zip bytes) as a new profile — rename on collision (R67). */

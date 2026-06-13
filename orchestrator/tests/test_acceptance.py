@@ -153,6 +153,58 @@ def test_done_line_end_to_end(client, tmp_path):
     assert "watercolor" in style["fragment"] and style["enabled_default"] is True
 
 
+def _asset_with_hero(client, ws, *, name="Lyra"):
+    """An AssetProfile whose active version already has a starred hero ★ (the Stage-B
+    precondition) — built no-GPU via an injected done casting job."""
+    a = client.post("/assets", json={"name": name}).json()["profile"]
+    jid, cands = _done_casting_job(ws, a["active_version"], job_id=f"job_cast_{name}")
+    client.post(f"/assets/{a['id']}/casting/star",
+                json={"job_id": jid, "output": cands[0], "starred": True})
+    return a
+
+
+def test_done_line_uses_the_p1_adapter_path(client):
+    """M10 review (Medium): the §1 done-line MINIMUM is `multi` casting + `_img2img`/`sd35`
+    Stage-B (kb-loom-p1.md §11.1, R121). The persistence test stands in zimage; this pins the
+    actual user-facing adapter wiring with no-GPU dry-runs so a regression in the multi/sd35
+    routing fails M10 rather than passing on the zimage stand-in."""
+    from orchestrator.runner import RUNNER
+    ws = RUNNER.workspace
+    a = _asset_with_hero(client, ws)
+    vid = a["active_version"]
+
+    # CAST via `multi`, asset-scoped — the real Stage-A casting adapter.
+    cast = client.post("/generate",
+                       json={"pipeline": "multi", "prompt": "cast Lyra", "asset_id": a["id"],
+                             "stage": "A", "num_candidates": 1, "dry_run": True})
+    assert cast.status_code == 200, cast.text
+    cbody = cast.json()
+    assert cbody["pipeline"] == "multi" and cbody["num_candidates"] == 1
+    assert cbody["profile_version_id"] == vid          # scoped to the asset version
+    assert "ideate" in cbody["argv"] and any("multi" in tok for tok in cbody["argv"])
+
+    # EXPAND via `sd35` img2img — the real Stage-B expansion adapter.
+    sb = client.post(f"/assets/{a['id']}/stage-b",
+                     json={"pipeline": "sd35", "character_clause": "a star-pilot",
+                           "preset": "full_coverage", "dry_run": True})
+    assert sb.status_code == 200, sb.text
+    sbody = sb.json()
+    assert sbody["pipeline"] == "sd35" and sbody["planned_jobs"] >= 1
+    assert "img2img" in sbody["split"]
+    assert any("sd35" in tok for tok in sbody["first_argv"]) and "img2img" in sbody["first_argv"]
+
+    # M3.5 mixed realization splits cells into TWO batch jobs (img2img sweep + inpaint
+    # background-diversity) — prove the routing, dry-run echoes the bg_mask unchecked.
+    mixed = client.post(f"/assets/{a['id']}/stage-b",
+                        json={"pipeline": "sd35", "character_clause": "a star-pilot",
+                              "preset": "full_coverage", "realize": "mixed",
+                              "bg_mask": "job_x/hero_bgmask.png", "dry_run": True})
+    assert mixed.status_code == 200, mixed.text
+    mbody = mixed.json()
+    assert mbody["realize"] == "mixed"
+    assert mbody["split"].get("img2img", 0) >= 1 and mbody["split"].get("inpaint", 0) >= 1
+
+
 def test_save_is_reopenable_without_curation(client, tmp_path):
     """The minimum done-line is a saved, reopenable profile — even a bare style→save (no
     curated refs yet) must reopen as a valid, editable v1 (not lost, not finalized)."""

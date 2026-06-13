@@ -529,7 +529,7 @@ def create_app() -> FastAPI:
                                "DELETE /bible/spine/character/{cid}",
                                "POST /bible/spine/character/stub",
                                "POST /bible/spine/character/{cid}/resync", "POST /assets",
-                               "POST /assets/import",
+                               "POST /assets/import", "GET /assets/{id}/export",
                                "POST /assets/{id}/casting/star", "POST /assets/{id}/casting/hero",
                                "POST /assets/{id}/stage-b", "POST /assets/{id}/stage-b/matte",
                                "POST /assets/{id}/stage-b/sketch",
@@ -969,23 +969,28 @@ def create_app() -> FastAPI:
         **brand-new profile**: fresh ids, rename-on-collision, never a merge. The zip bytes
         are the raw request body (no multipart dep). Token-gated."""
         ws = _require_ws()
-        # Refuse an oversized upload BEFORE buffering it (M9 review): trust Content-Length
-        # as a cheap pre-read gate, then re-check the actual bytes (assets.* enforces the
-        # uncompressed-expansion + disk/cap bounds once the zip is on disk).
+        # Read the body with a RUNNING byte cap (M10 review): a chunked or lying
+        # Content-Length client could otherwise buffer an oversized body into memory
+        # before any check. Stream the chunks and abort the instant the running total
+        # exceeds the cap — memory is bounded by MAX_BUNDLE_BYTES no matter what the
+        # header says. (An honest Content-Length just lets us reject even sooner.)
+        cap = assets.MAX_BUNDLE_BYTES
         cl = request.headers.get("content-length")
         if cl is not None:
             try:
-                if int(cl) > assets.MAX_BUNDLE_BYTES:
-                    raise HTTPException(413, f"bundle too large "
-                                             f"(> {assets.MAX_BUNDLE_BYTES} bytes)")
+                if int(cl) > cap:
+                    raise HTTPException(413, f"bundle too large (> {cap} bytes)")
             except ValueError:
-                pass
-        data = await request.body()
+                pass  # malformed header — the streaming cap below still bounds memory
+        buf = bytearray()
+        async for chunk in request.stream():
+            buf += chunk
+            if len(buf) > cap:
+                raise HTTPException(413, f"bundle too large (> {cap} bytes)")
+        data = bytes(buf)
         if not data:
             raise HTTPException(400, "empty body — POST the .zip bundle bytes "
                                      "(Content-Type: application/zip)")
-        if len(data) > assets.MAX_BUNDLE_BYTES:
-            raise HTTPException(413, f"bundle too large (> {assets.MAX_BUNDLE_BYTES} bytes)")
         ws.temp_dir.mkdir(parents=True, exist_ok=True)
         tmp = ws.temp_dir / f"import_{uuid.uuid4().hex[:8]}.zip"
         tmp.write_bytes(data)

@@ -152,6 +152,22 @@ def test_import_rejects_non_bundle_zip(client):
     assert client.post("/assets/import", content=b"garbage").status_code == 400
 
 
+def test_import_streams_with_a_running_cap(client, monkeypatch):
+    """M10 review: an oversized upload is capped even with a chunked / absent / lying
+    Content-Length — the body is streamed with a running byte limit, not buffered then
+    checked. A generator body makes httpx send Transfer-Encoding: chunked (no Content-Length),
+    so the running cap is the only guard."""
+    from orchestrator import assets
+    monkeypatch.setattr(assets, "MAX_BUNDLE_BYTES", 16)
+
+    def gen():
+        for _ in range(8):
+            yield b"0123456789"            # 80 bytes total, chunked, no Content-Length
+
+    r = client.post("/assets/import", content=gen())
+    assert r.status_code == 413 and "too large" in r.text
+
+
 def test_import_rejects_unsupported_bundle_version(client):
     """M9 review — a future/incompatible bundle_version must be refused, not partially reshaped."""
     import io

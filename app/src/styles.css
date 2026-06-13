@@ -185,10 +185,12 @@ body {
 .cell:hover .star { opacity: 1; }
 .cell .star.on { opacity: 1; color: var(--amber); }
 .cell .star:hover { background: var(--amber); color: #1a1a1a; }
-/* Stage-C curation: keep ✓ into the ref set (mirrors .star; kept = green ring) */
+/* Stage-C curation: keep ✓ into the ref set (kept = green ring). All four curate icons line
+   up in the TOP-RIGHT (like Cast's star+delete), delete LAST/rightmost (user 2026-06-13):
+   keep(76) · select □(52) · cull/reject ✕(28) · delete 🗑(4). */
 .cell.kept { box-shadow: 0 0 0 2px #4caf78, 0 0 10px rgba(76, 175, 120, 0.45); }
 .cell .keep {
-  position: absolute; top: 4px; left: 4px; width: 22px; height: 22px; padding: 0;
+  position: absolute; top: 4px; right: 76px; width: 22px; height: 22px; padding: 0;
   border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.55); color: #fff;
   font-size: 14px; line-height: 1; cursor: pointer; display: flex; align-items: center;
   justify-content: center; opacity: 0; transition: opacity 0.1s;
@@ -277,23 +279,24 @@ body {
   box-shadow: 0 0 0 2px var(--amber);
 }
 
-/* M4 review: pre-pass tiles (pending clean/polish/identity) — marked, not curatable */
+/* Pass markers (clean/polish/identity/restore) live BOTTOM-LEFT on every panel
+   (Casting/Expansion/Curation) — clear of the top-right icon lineup (user 2026-06-13). */
 .cell .prelock {
-  position: absolute; top: 4px; left: 4px; font-size: 10px; padding: 1px 5px;
+  position: absolute; bottom: 4px; left: 4px; font-size: 10px; padding: 1px 5px;
   border-radius: 4px; background: rgba(0, 0, 0, .65); color: var(--amber);
   pointer-events: none;
 }
 
-/* P1-12 curation throughput: reject ✕ (bottom-right), bulk-select □ (bottom-left),
-   rejected tiles dimmed, bulk-selected tiles ringed. */
+/* P1-12 curation throughput: reject/cull ✕ and bulk-select □ join the TOP-RIGHT lineup
+   (left of delete), rejected tiles dimmed, bulk-selected tiles ringed. */
 .cell .reject, .cell .bulksel {
-  position: absolute; bottom: 8px; width: 22px; height: 22px; padding: 0;
+  position: absolute; top: 4px; width: 22px; height: 22px; padding: 0;
   border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.55); color: #fff;
   font-size: 12px; line-height: 1; cursor: pointer; display: flex; align-items: center;
   justify-content: center; opacity: 0; transition: opacity 0.1s;
 }
-.cell .reject { right: 4px; }
-.cell .bulksel { left: 4px; }
+.cell .reject { right: 28px; }
+.cell .bulksel { right: 52px; }
 .cell:hover .reject, .cell:hover .bulksel,
 .cell .reject.on, .cell .bulksel.on { opacity: 1; }
 .cell .reject:hover { background: var(--err); }

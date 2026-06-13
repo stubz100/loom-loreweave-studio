@@ -2110,12 +2110,13 @@ function GridCell({
   const isVideo = !!name && /\.(mp4|webm|mov)$/i.test(name);
   // Interim tiles (a running cast's already-landed candidates) show their image early.
   const showImg = (!!name && !isVideo && (done || interim)) || isRef;
-  // M4 review (High): a done job with PENDING post-passes is not the end of its chain —
-  // these are pre-clean/pre-polish/pre-IDENTITY-LOCK images. Mark them and don't offer
-  // keep ✓ (the terminal pass job's tiles are the curatable ones; the API enforces too).
+  // A done job that had chained post-passes (clean/polish/identity/restore) — the tile is
+  // the PRE-pass image; its processed pass outputs land as separate tiles. We MARK it
+  // (bottom-left) but still allow curating it: keeping is a deliberate choice and EVERY
+  // output is selectable (user 2026-06-13; the UI sends allow_unlocked=true).
   const pendingPasses = (job?.post_passes ?? []).map((p) => p.pass);
-  const preLock = done && pendingPasses.length > 0;
-  const curable = curating && (done || isRef) && !preLock && !locked && !isVideo;
+  const prePass = done && pendingPasses.length > 0;
+  const curable = curating && (done || isRef) && !locked && !isVideo;
   return (
     <div
       className={`cell ${selected ? "sel" : ""} ${isHero ? "hero" : ""} ${isKept ? "kept" : ""} ${isRejected ? "rejected" : ""} ${bulkSelected ? "bulksel-on" : ""} st-${isRef ? "done" : status}`}
@@ -2177,12 +2178,12 @@ function GridCell({
           {isHero ? "★" : "☆"}
         </button>
       )}
-      {preLock && (
+      {prePass && (
         <span
           className="prelock"
-          title={`pre-pass image — ${pendingPasses.join(" → ")} pending/un-run; curate the pass outputs instead`}
+          title={`pre-pass image — ${pendingPasses.join(" → ")} (the processed pass outputs appear as separate tiles; this one is still keepable)`}
         >
-          ⏳ {pendingPasses.join("→")}
+          {pendingPasses.join("→")}
         </span>
       )}
       {curable && (onKeep || onCull) && (

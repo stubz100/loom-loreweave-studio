@@ -653,9 +653,15 @@ export async function stageBPreview(assetId: string, body: StageBRequest): Promi
   return (await res.json()) as StageBPreview;
 }
 
-/** Keep a completed Stage-B candidate into the curated ref_set (records its coverage_cell). */
-export function keepRef(assetId: string, jobId: string, output?: string, versionId?: string) {
-  return postAsset(assetId, "refs/keep", { job_id: jobId, output: output ?? null, version_id: versionId ?? null });
+/** Keep a completed Stage-B candidate into the curated ref_set (records its coverage_cell).
+ * `allowUnlocked` (default true from the UI): curate ANY output, including a pre-pass image
+ * whose chained clean/polish/identity/restore passes are still pending/un-run — keeping is a
+ * deliberate human action (user 2026-06-13). The backend keeps the guard for API callers. */
+export function keepRef(assetId: string, jobId: string, output?: string, versionId?: string,
+                        allowUnlocked = true) {
+  return postAsset(assetId, "refs/keep", { job_id: jobId, output: output ?? null,
+                                           version_id: versionId ?? null,
+                                           allow_unlocked: allowUnlocked });
 }
 
 /** Cull (un-keep) a curated ref by id. */

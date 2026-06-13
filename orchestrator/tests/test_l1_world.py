@@ -53,6 +53,55 @@ def test_global_negative_skipped_for_multi(client):
     assert "--negative-prompt" not in g.json()["argv"]     # ideate takes no negative
 
 
+def _hero_asset(ws):
+    from orchestrator import assets
+    from orchestrator.runner import RUNNER
+    RUNNER.pause()
+    a = assets.create_asset(ws, name="NegHero")["profile"]
+    out = ws.out_dir / "job_negh"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "h.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    jid = RUNNER.submit(pipeline="zimage", mode="t2i", params={"prompt": "h"},
+                        batch_id="bat_n", index=0, batch_size=1,
+                        requester_id=a["active_version"],
+                        profile_version_id=a["active_version"], stage="A")
+    RUNNER.jobs[jid]["status"] = "done"
+    RUNNER.jobs[jid]["result"] = {"ok": True, "output_name": "job_negh/h.png",
+                                  "output_names": ["job_negh/h.png"]}
+    assets.star_candidate(ws, a["id"], job_id=jid, source_output="job_negh/h.png",
+                          version_id=a["active_version"], pipeline="zimage", seed=1)
+    return a
+
+
+def test_global_negative_is_global_stage_b_and_sketch(client, monkeypatch):
+    """M8 review (Medium): the global negative must reach EVERY generation surface, not
+    just /generate — Stage-B dataset cells and the video sketch too."""
+    from orchestrator import components
+    from orchestrator.runner import RUNNER
+    monkeypatch.setattr(components, "image_model_present", lambda repo_id: True)
+    client.put("/bible/style", json={"global_negative": "watermark, blurry"})
+    a = _hero_asset(RUNNER.workspace)
+    # Stage-B dry run — the first-cell argv carries the global negative
+    sb = client.post(f"/assets/{a['id']}/stage-b",
+                     json={"preset": "npc_lite", "character_clause": "a ranger",
+                           "dry_run": True})
+    assert sb.status_code == 200, sb.text
+    argv = sb.json()["first_argv"]
+    assert "watermark" in argv[argv.index("--negative-prompt") + 1]
+    # sketch dry run — same
+    sk = client.post(f"/assets/{a['id']}/stage-b/sketch",
+                     json={"angle": "profile_left", "character_clause": "a ranger",
+                           "dry_run": True})
+    assert sk.status_code == 200, sk.text
+    skargv = sk.json()["argv"]
+    assert "watermark" in skargv[skargv.index("--negative-prompt") + 1]
+    # opt-out drops it everywhere
+    sb2 = client.post(f"/assets/{a['id']}/stage-b",
+                      json={"preset": "npc_lite", "character_clause": "x",
+                            "apply_style": False, "dry_run": True})
+    assert "watermark" not in " ".join(sb2.json()["first_argv"])
+
+
 # --- story spine ----------------------------------------------------------------------
 
 def test_spine_premise_and_character_crud(client):

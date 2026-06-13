@@ -52,6 +52,30 @@ def load_style(ws: Workspace) -> dict:
     return load_story(ws)["style"]
 
 
+def resolve_l1(ws: Workspace, apply_style_req: bool | None) -> tuple[bool, str, str]:
+    """The L1 style GATE, single source of truth (R104; M8 global negative): returns
+    `(apply, fragment, global_negative)`. `apply_style_req` is the per-gen override —
+    None honors the StoryBible's `enabled_default`. Every generation surface (/generate,
+    Stage-B, sketch) must resolve the style + negative through THIS so the global negative
+    is genuinely global (M8 review 2026-06-13). Both strings are "" when the gate is off."""
+    style = load_style(ws)
+    apply = apply_style_req if apply_style_req is not None \
+        else bool(style.get("enabled_default", True))
+    if not apply:
+        return False, "", ""
+    return (True, (style.get("fragment") or "").strip(),
+            (style.get("global_negative") or "").strip())
+
+
+def join_negative(existing: str | None, global_negative: str) -> str | None:
+    """Append the L1 global negative to a request's negative_prompt (M8). Returns the
+    merged string, or the original when there's nothing to add."""
+    existing = (existing or "").strip()
+    if not global_negative:
+        return existing or None
+    return f"{existing}, {global_negative}" if existing else global_negative
+
+
 def set_style(ws: Workspace, *, fragment: str | None = None,
               enabled_default: bool | None = None,
               global_negative: str | None = None) -> dict:

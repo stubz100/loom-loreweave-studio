@@ -46,7 +46,10 @@ ONNX — chain order clean → polish → identity → restore) + **face-portrai
 masking/upscale deferred "as needed". **M7** — video-sketch harvest (`POST
 /assets/{id}/stage-b/sketch`: a cell-targeted `ltxv` i2v motion sketch from the hero ★ → a
 chained `frame_harvest` pass extracts stills carrying that coverage cell → curate like recipe
-cells; pose/angle coverage img2img can't reach, without 3D). Next: M8 (full L1 World authoring).
+cells; pose/angle coverage img2img can't reach, without 3D). **M8** — full L1 World (`/bible`:
+world prose, the style **global negative** auto-applied to every generation surface, and the
+**story spine** whose characters seed stub AssetProfiles + manual re-sync, R55). Next: M9
+(export/import profiles).
 Spec:
 > [`kb-loom-p1.md`](../../.github/copilot/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:

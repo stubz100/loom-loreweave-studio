@@ -1190,6 +1190,11 @@ export default function App() {
               project={project}
               onError={setError}
               onStubCreated={() => void refreshAssets()}
+              onStyleSaved={(s) => {           // keep the L2 Assets style bar in sync (M8 review)
+                setStyleState(s);
+                setStyleDraft(s.fragment);
+                setApplyStyle(s.enabled_default);
+              }}
             />
           ) : (
           <>
@@ -1658,7 +1663,7 @@ export default function App() {
               <span className="style-label">L1 style</span>
               <input
                 className="style-frag"
-                placeholder="style fragment (auto-prepended)…"
+                placeholder="style fragment (auto-applied — appended; full editor in L1·World)…"
                 value={styleDraft}
                 onChange={(e) => setStyleDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -2165,10 +2170,11 @@ function GridCell({
 
 // M8 — L1 World authoring: world prose, the style fragment + global negative, and the
 // story spine (premise + characters that materialize into stub AssetProfiles, R55).
-function WorldWorkspace({ project, onError, onStubCreated }: {
+function WorldWorkspace({ project, onError, onStubCreated, onStyleSaved }: {
   project: ProjectInfo | null;
   onError: (e: string) => void;
   onStubCreated: () => void;
+  onStyleSaved: (s: StyleInfo) => void;
 }) {
   const [bible, setBible] = useState<BibleInfo | null>(null);
   const [worldDraft, setWorldDraft] = useState("");
@@ -2219,8 +2225,11 @@ function WorldWorkspace({ project, onError, onStubCreated }: {
         <button className="proj-btn" disabled={busy}
                 onClick={async () => {
                   setBusy(true);
-                  try { await setStyle(fragDraft, undefined, negDraft); await refresh(); }
-                  catch (e) { onError(String(e)); } finally { setBusy(false); }
+                  try {
+                    const s = await setStyle(fragDraft, undefined, negDraft);
+                    onStyleSaved(s);           // sync the parent (L2 toolbar) — no stale overwrite
+                    await refresh();
+                  } catch (e) { onError(String(e)); } finally { setBusy(false); }
                 }}>
           Save style
         </button>

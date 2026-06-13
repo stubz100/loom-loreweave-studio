@@ -763,20 +763,14 @@ def create_app() -> FastAPI:
         # stored but never consulted). **Appended, not prepended** (user decision 2026-06-10,
         # amends R104's wording): the character/user prompt leads — front tokens dominate,
         # and the style mostly restates the look the model already renders.
-        style = bible.load_style(ws)
-        apply_style = req.apply_style if req.apply_style is not None \
-            else bool(style.get("enabled_default", True))
-        if apply_style:
-            fragment = (style.get("fragment") or "").strip()
-            if fragment:
-                base["prompt"] = f"{base['prompt']}, {fragment}"
-            # L1 global negative (M8) pairs with the fragment — appended to the request's
-            # negative_prompt under the same gate. Skipped for multi (the ideate worker
-            # takes no negative arg) and where the variant ignores negatives (worker warns).
-            neg = (style.get("global_negative") or "").strip()
-            if neg and not is_multi:
-                existing = (base.get("negative_prompt") or "").strip()
-                base["negative_prompt"] = f"{existing}, {neg}" if existing else neg
+        _apply, fragment, global_neg = bible.resolve_l1(ws, req.apply_style)
+        if fragment:
+            base["prompt"] = f"{base['prompt']}, {fragment}"
+        # L1 global negative (M8) pairs with the fragment under the same gate. Skipped for
+        # multi (the ideate worker takes no negative arg); the worker warns harmlessly
+        # where a variant ignores negatives.
+        if global_neg and not is_multi:
+            base["negative_prompt"] = bible.join_negative(base.get("negative_prompt"), global_neg)
 
         if req.dry_run:
             spec = JobSpec(pipeline=req.pipeline, mode=mode, params=base, output_dir=ws.out_dir)
@@ -1041,10 +1035,9 @@ def create_app() -> FastAPI:
 
         # L1 style fragment (R104) applies to every cell prompt unless opted out (the
         # recipe places it LAST: cell fragment → clause → style, user 2026-06-10).
-        style = bible.load_style(ws)
-        apply_style = req.apply_style if req.apply_style is not None \
-            else bool(style.get("enabled_default", True))
-        style_fragment = (style.get("fragment") or "").strip() if apply_style else ""
+        # L1 gate, single source of truth (M8 review): the fragment weaves into each recipe
+        # prompt, the global negative rides the batch params — both under the same gate.
+        _apply, style_fragment, global_neg = bible.resolve_l1(ws, req.apply_style)
 
         try:
             built = recipe.build_recipe(req.preset, character_clause=clause,
@@ -1112,6 +1105,11 @@ def create_app() -> FastAPI:
         # e.g. polish every kept-worthy cell right after the sweep, cells stay curatable
         # (their coverage_cell rides along into the pass outputs).
         post_passes = _extract_post_passes(extra, dry_run=req.dry_run)
+        # L1 global negative folded into the shared batch params (M8 review): both the
+        # dry-run preview and every realization group spread `**extra`, so this reaches
+        # every cell of every Stage-B batch job.
+        if global_neg:
+            extra["negative_prompt"] = bible.join_negative(extra.get("negative_prompt"), global_neg)
 
         # M4 — identity-lock pass (R86/R93): swap every cell's face to the version's
         # anchor (spike: anchor cos 0.105→0.870, CPU). ON by default once an anchor
@@ -1371,11 +1369,9 @@ def create_app() -> FastAPI:
         except model_catalog.CatalogError as e:
             raise HTTPException(422, str(e))
         model_name = extra.pop("model_name", None)
-        # Prompt order (user 2026-06-10): cell fragment leads → clause → motion → style.
-        style = bible.load_style(ws)
-        apply_style = req.apply_style if req.apply_style is not None \
-            else bool(style.get("enabled_default", True))
-        fragment = (style.get("fragment") or "").strip() if apply_style else ""
+        # L1 gate, single source of truth (M8 review). Prompt order (user 2026-06-10):
+        # cell fragment leads → clause → motion → style; the global negative rides params.
+        _apply, fragment, global_neg = bible.resolve_l1(ws, req.apply_style)
         motion = (req.motion_prompt or "").strip() or \
             "slow steady camera, the character turns and moves naturally"
         prompt = ", ".join(p for p in
@@ -1387,6 +1383,8 @@ def create_app() -> FastAPI:
         harvest_spec = {"pass": "harvest", "backend": "frame_harvest",
                         "every": req.every, "max_frames": req.max_frames}
         params = {"prompt": prompt, "init_image": str(hero_path), **extra}
+        if global_neg:
+            params["negative_prompt"] = bible.join_negative(params.get("negative_prompt"), global_neg)
         if model_name:
             params["model_name"] = model_name
         # Persist the ltxv default dims when unset (review 2026-06-12): the catalog default

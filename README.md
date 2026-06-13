@@ -52,7 +52,11 @@ world prose, the style **global negative** auto-applied to every generation surf
 **export/import profiles** (`GET /assets/{id}/export` → a portable .zip of the profile + ALL
 its versions + files; `POST /assets/import` → ALWAYS a new profile with fresh ids,
 `derived_from` remapped, rename-on-collision, never a merge, R66/R67 — both token-gated,
-size/zip-bomb guarded). Next: M10 (MVP/P1 acceptance).
+size/zip-bomb guarded). **M10** — **MVP/P1 acceptance**: the §1 done-line
+(style → cast → hero → expand → curate → save → **reopen**) is locked as an executable no-GPU
+test (`orchestrator/tests/test_acceptance.py`) and the new adapters' contract gaps are recorded
+(journal M10). 🟡 **Awaiting the user's GPU rig sign-off** (done-line + chained passes + mixed +
+identity + restore + video + curation + export/import round-trip) to declare P1 ACCEPTED.
 Spec:
 > [`kb-loom-p1.md`](../../.github/copilot/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:

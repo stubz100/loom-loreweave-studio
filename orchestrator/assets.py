@@ -15,7 +15,10 @@ The display name lives in the record; the folder is a slug; references use the s
 
 from __future__ import annotations
 
+import json
 import shutil
+import tempfile
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -612,3 +615,132 @@ def ref_file_path(ws: Workspace, asset_id: str, file: str,
     if not path.is_relative_to(base) or not path.is_file():
         raise ws_mod.WorkspaceError(f"no such ref file {file!r}")
     return path
+
+
+# --- M9: profile export / import (R66/R67) ---------------------------------------
+# A portable bundle = a zip of the whole `assets/<class>/<slug>/` tree (profile.json +
+# every version's records + casting/refs/faces files) + a top-level `loom_bundle.json`.
+# Export = the full profile WITH all versions (R66). Import = ALWAYS a new profile
+# (fresh ids), rename-on-collision, no merge (R67).
+
+BUNDLE_KIND = "loom_asset_bundle"
+BUNDLE_VERSION = 1
+
+
+def export_profile(ws: Workspace, asset_id: str) -> Path:
+    """Zip a profile + all its versions into a portable bundle under the workspace temp
+    dir; returns the zip path (the API streams it). Raises on an unknown asset."""
+    found = _find_profile(ws, asset_id)
+    if found is None:
+        raise ws_mod.WorkspaceError(f"unknown asset {asset_id!r}")
+    adir, profile = found
+    ws.temp_dir.mkdir(parents=True, exist_ok=True)
+    out_zip = ws.temp_dir / f"{profile.get('slug') or 'asset'}_bundle.zip"
+    manifest = {
+        "kind": BUNDLE_KIND, "bundle_version": BUNDLE_VERSION, "exported_at": _now(),
+        "asset_class": profile["asset_class"], "source_asset_id": profile["id"],
+        "source_name": profile["name"], "version_count": len(profile.get("versions", [])),
+    }
+    with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("loom_bundle.json", json.dumps(manifest, indent=2))
+        for f in sorted(adir.rglob("*")):
+            if f.is_file():
+                zf.write(f, f"asset/{f.relative_to(adir).as_posix()}")
+    return out_zip
+
+
+def _free_name(ws: Workspace, asset_class: str, base_name: str) -> tuple[str, str]:
+    """A non-colliding (name, slug) in `asset_class` — appends '(imported)', '(imported 2)',
+    … until the slug dir is free (R67 rename-on-collision; the slug dir is the real key)."""
+    if not ws.asset_dir(asset_class, slugify(base_name)).exists():
+        return base_name, slugify(base_name)
+    n = 1
+    while n < 1000:
+        cand = f"{base_name} (imported)" if n == 1 else f"{base_name} (imported {n})"
+        cslug = slugify(cand)
+        if not ws.asset_dir(asset_class, cslug).exists():
+            return cand, cslug
+        n += 1
+    raise ws_mod.WorkspaceError(f"too many name collisions importing {base_name!r}")
+
+
+def import_profile(ws: Workspace, zip_path: str | Path) -> dict:
+    """Import a bundle as a **brand-new profile** (R67): fresh profile + version ids (so a
+    re-import into the SAME project can't cross-link the runner/lineage, which key on the
+    version id), `derived_from` remapped within the bundle (dangling parents cleared),
+    rename-on-collision, never a merge. Returns `{profile, renamed_from}`."""
+    zip_path = Path(zip_path)
+    try:
+        _zf = zipfile.ZipFile(zip_path)
+    except zipfile.BadZipFile:
+        raise ws_mod.WorkspaceError("not a valid .zip bundle")
+    with _zf as zf:
+        for n in zf.namelist():                       # traversal guard (untrusted archive)
+            p = Path(n)
+            if p.is_absolute() or ".." in p.parts:
+                raise ws_mod.WorkspaceError(f"unsafe bundle member {n!r}")
+        try:
+            manifest = json.loads(zf.read("loom_bundle.json"))
+        except KeyError:
+            raise ws_mod.WorkspaceError("not a loom asset bundle (no loom_bundle.json)")
+        if manifest.get("kind") != BUNDLE_KIND:
+            raise ws_mod.WorkspaceError("not a loom asset bundle")
+        asset_class = manifest.get("asset_class")
+        if asset_class not in ASSET_CLASSES:
+            raise ws_mod.WorkspaceError(f"bundle asset_class {asset_class!r} not supported "
+                                        f"(one of {ASSET_CLASSES})")
+        members = [n for n in zf.namelist()
+                   if n.startswith("asset/") and not n.endswith("/")]
+        if "asset/profile.json" not in members:
+            raise ws_mod.WorkspaceError("bundle missing asset/profile.json")
+
+        ws.temp_dir.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(dir=ws.temp_dir))
+        try:
+            for n in members:
+                dst = staging / n[len("asset/"):]
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(zf.read(n))
+
+            # Fresh version ids + derived_from remap (within the bundle only).
+            id_map: dict[str, str] = {}
+            vfiles: list[tuple[Path, dict]] = []
+            vroot = staging / "versions"
+            if vroot.is_dir():
+                for vdir in sorted(vroot.iterdir()):
+                    vj = vdir / "version.json"
+                    if vj.is_file():
+                        v = ws_mod.read_json(vj)
+                        id_map[v["id"]] = new_id("ver")
+                        vfiles.append((vj, v))
+            if not vfiles:
+                raise ws_mod.WorkspaceError("bundle has no versions")
+            for vj, v in vfiles:
+                v["id"] = id_map[v["id"]]
+                df = v.get("derived_from")
+                v["derived_from"] = id_map.get(df) if df else None
+                ws_mod.validate(v, "version.schema.json")
+                ws_mod.atomic_write_json(vj, v)
+
+            profile = ws_mod.read_json(staging / "profile.json")
+            profile["id"] = new_id("ast")
+            profile["asset_class"] = asset_class
+            profile["created_at"] = _now()
+            profile["versions"] = [id_map[x] for x in profile.get("versions", [])
+                                   if x in id_map]
+            if not profile["versions"]:
+                raise ws_mod.WorkspaceError("bundle profile references no known versions")
+            av = profile.get("active_version")
+            profile["active_version"] = id_map.get(av, profile["versions"][0])
+            renamed_from = profile["name"]
+            name, slug = _free_name(ws, asset_class, profile["name"])
+            profile["name"], profile["slug"] = name, slug
+            ws_mod.validate(profile, "profile.schema.json")
+            ws_mod.atomic_write_json(staging / "profile.json", profile)
+
+            target = ws.asset_dir(asset_class, slug)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(staging), str(target))
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    return {"profile": profile, "renamed_from": renamed_from if name != renamed_from else None}

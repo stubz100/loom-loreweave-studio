@@ -19,6 +19,8 @@ import {
   getProject,
   getStyle,
   getBible,
+  exportProfileUrl,
+  importProfile,
   setWorld,
   setPremise,
   upsertSpineCharacter,
@@ -535,6 +537,28 @@ export default function App() {
       log.error("create asset failed:", e);
       setError(String(e));
     }
+  };
+
+  // M9 — export the active asset (download the bundle) / import a bundle as a new profile.
+  const importFileRef = useRef<HTMLInputElement | null>(null);
+  const onImportFile = async (file: File) => {
+    setError(null);
+    try {
+      const res = await importProfile(await file.arrayBuffer());
+      const a = await listAssets();
+      setAssets(a.assets);
+      setActiveAsset(a.assets.find((x) => x.id === res.profile.id) ?? null);
+      onSelectAssetReset();
+      log.info("imported:", res.profile.name,
+               res.renamed_from ? `(renamed from ${res.renamed_from})` : "");
+    } catch (e) {
+      log.error("import failed:", e);
+      setError(String(e));
+    }
+  };
+  // Reset the per-asset view bits after an import switches the active asset.
+  const onSelectAssetReset = () => {
+    setCasting([]); setSelected(null); setStage("A"); void refreshJobs();
   };
 
   // Load the active version's casting set (candidates + which one is the hero ★) so the
@@ -1161,6 +1185,18 @@ export default function App() {
                     disabled={conn !== "online" || !project?.open} title="new character">
               + Character
             </button>
+            <button className="rail-add" onClick={() => importFileRef.current?.click()}
+                    disabled={conn !== "online" || !project?.open}
+                    title="import a profile bundle (.zip) — always a NEW profile, rename on collision (R67)">
+              ⤒ Import
+            </button>
+            <input ref={importFileRef} type="file" accept=".zip,application/zip"
+                   style={{ display: "none" }}
+                   onChange={(e) => {
+                     const f = e.target.files?.[0];
+                     if (f) void onImportFile(f);
+                     e.target.value = "";   // allow re-importing the same file
+                   }} />
           </div>
           {!project?.open && <div className="muted">open a project first</div>}
           {project?.open && assets.length === 0 && (
@@ -1238,6 +1274,10 @@ export default function App() {
                   finalize 🔒
                 </button>
               )}
+              <a className="ghost" href={exportProfileUrl(activeAsset.id)}
+                 title="export this profile + ALL its versions as a portable bundle (.zip, R66)">
+                ⤓ Export
+              </a>
               <span className="muted"> · CHARACTER BOOTSTRAP — </span>
               <span className="stage-switch">
                 {([["A", "Casting"], ["B", "Expansion"], ["C", "Curation"]] as const).map(

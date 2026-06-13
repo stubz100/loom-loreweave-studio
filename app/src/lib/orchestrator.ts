@@ -331,6 +331,25 @@ export async function resyncSpineStub(characterId: string):
   return await res.json();
 }
 
+// --- M9: profile export / import (R66/R67) ---------------------------------------
+
+/** The download URL for a profile bundle (.zip of profile + all versions). */
+export function exportProfileUrl(assetId: string): string {
+  return `${orchestratorUrl()}/assets/${encodeURIComponent(assetId)}/export`;
+}
+
+/** Import a bundle (.zip bytes) as a new profile — rename on collision (R67). */
+export async function importProfile(bytes: ArrayBuffer):
+    Promise<{ profile: AssetSummary; renamed_from: string | null }> {
+  const res = await fetch(`${orchestratorUrl()}/assets/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/zip", "X-Loom-Token": orchestratorToken() },
+    body: bytes,
+  });
+  if (!res.ok) throw new Error(`import ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
 export async function listAssets(signal?: AbortSignal): Promise<{ assets: AssetSummary[] }> {
   const res = await fetch(`${orchestratorUrl()}/assets`, { signal });
   if (!res.ok) throw new Error(`assets ${res.status}`);

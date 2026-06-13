@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -529,6 +529,7 @@ def create_app() -> FastAPI:
                                "DELETE /bible/spine/character/{cid}",
                                "POST /bible/spine/character/stub",
                                "POST /bible/spine/character/{cid}/resync", "POST /assets",
+                               "POST /assets/import",
                                "POST /assets/{id}/casting/star", "POST /assets/{id}/casting/hero",
                                "POST /assets/{id}/stage-b", "POST /assets/{id}/stage-b/matte",
                                "POST /assets/{id}/stage-b/sketch",
@@ -961,6 +962,30 @@ def create_app() -> FastAPI:
                  res["profile"]["asset_class"], res["profile"]["id"])
         return res
 
+    @app.post("/assets/import")
+    async def import_profile(request: Request,
+                             _auth: None = Depends(require_token)) -> dict:
+        """M9 (R66/R67) — import an AssetProfile bundle (the .zip from `GET …/export`) as a
+        **brand-new profile**: fresh ids, rename-on-collision, never a merge. The zip bytes
+        are the raw request body (no multipart dep). Token-gated."""
+        ws = _require_ws()
+        data = await request.body()
+        if not data:
+            raise HTTPException(400, "empty body — POST the .zip bundle bytes "
+                                     "(Content-Type: application/zip)")
+        ws.temp_dir.mkdir(parents=True, exist_ok=True)
+        tmp = ws.temp_dir / f"import_{uuid.uuid4().hex[:8]}.zip"
+        tmp.write_bytes(data)
+        try:
+            res = assets.import_profile(ws, tmp)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        finally:
+            tmp.unlink(missing_ok=True)
+        LOG.info("imported profile %s (%s)%s", res["profile"]["id"], res["profile"]["name"],
+                 f" — renamed from {res['renamed_from']!r}" if res.get("renamed_from") else "")
+        return res
+
     @app.get("/assets/{asset_id}")
     def get_asset(asset_id: str) -> dict:
         """Full AssetProfile + its versions, by id."""
@@ -968,6 +993,16 @@ def create_app() -> FastAPI:
         if res is None:
             raise HTTPException(404, f"no such asset {asset_id!r}")
         return res
+
+    @app.get("/assets/{asset_id}/export")
+    def export_profile(asset_id: str) -> FileResponse:
+        """M9 (R66) — download a portable bundle of the profile + ALL its versions (.zip).
+        Unauthenticated read (mirrors /outputs + the casting/ref/anchor serves)."""
+        try:
+            path = assets.export_profile(_require_ws(), asset_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+        return FileResponse(path, media_type="application/zip", filename=path.name)
 
     @app.post("/assets/{asset_id}/casting/star")
     def star_casting(asset_id: str, req: StarRequest,

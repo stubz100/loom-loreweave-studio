@@ -314,6 +314,7 @@ body {
 }
 .ghost:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
 .ghost:disabled { opacity: 0.4; cursor: default; }
+a.ghost { text-decoration: none; display: inline-block; }
 .stage-ctx select, .modal select, .modal input {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
   border-radius: 4px; padding: 2px 6px; font-size: 11px;

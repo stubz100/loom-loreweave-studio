@@ -1270,6 +1270,12 @@ def create_app() -> FastAPI:
         params = {"prompt": prompt, "init_image": str(hero_path), **extra}
         if model_name:
             params["model_name"] = model_name
+        # Persist the ltxv default dims when unset (review 2026-06-12): the catalog default
+        # is 704×480, but without these on the job params the CHAINED harvest pass falls
+        # back to 1024² display metadata → harvested stills render square in the grid.
+        for dim in ("width", "height"):
+            if dim not in params:
+                params[dim] = model_catalog.param_default("ltxv", dim)
         if req.dry_run:
             spec = JobSpec(pipeline="ltxv", mode="i2v", params=params,
                            output_dir=ws.out_dir)

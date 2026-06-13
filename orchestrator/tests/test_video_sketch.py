@@ -194,6 +194,16 @@ def test_sketch_submits_with_cell_and_harvest_chain(client, monkeypatch):
     assert h == {"pass": "harvest", "backend": "frame_harvest",
                  "every": 8, "max_frames": 16}
     assert job["stage"] == "B" and job["requester_id"] == a["active_version"]
+    # the catalog default dims are PERSISTED so the chained harvest inherits 704×480 (not
+    # the 1024² display fallback → square tiles); review 2026-06-12
+    assert job["params"]["width"] == 704 and job["params"]["height"] == 480
+    from orchestrator.runner import RUNNER as _R
+    _R._submit_chained(_R.get(r.json()["job_id"]) | {
+        "result": {"output_names": [f"{r.json()['job_id']}/sketch.mp4"]}})
+    harvest = next(j for j in _R.jobs.values()
+                   if j.get("chained_from") == r.json()["job_id"])
+    assert harvest["params"]["width"] == 704 and harvest["params"]["height"] == 480
+    _R.jobs.pop(harvest["id"], None)
 
 
 def test_sketch_rejects_bad_cell_and_videos_not_keepable(client):

@@ -43,7 +43,11 @@ from any parent incl. files+anchor, finalize = R60 lock on every mutator, versio
 parent-picker modal, read-only finalized UI). **M6/M6.1** — **face-restore pass** (GFPGAN 1.4
 ONNX — chain order clean → polish → identity → restore) + **face-portrait anchor derivation**
 (`POST /assets/{id}/anchor/derive`: restored aligned 512² crop of the largest face → anchor it);
-masking/upscale deferred "as needed". Next: M7 (video-sketch harvest). Spec:
+masking/upscale deferred "as needed". **M7** — video-sketch harvest (`POST
+/assets/{id}/stage-b/sketch`: a cell-targeted `ltxv` i2v motion sketch from the hero ★ → a
+chained `frame_harvest` pass extracts stills carrying that coverage cell → curate like recipe
+cells; pose/angle coverage img2img can't reach, without 3D). Next: M8 (full L1 World authoring).
+Spec:
 > [`kb-loom-p1.md`](../../.github/copilot/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:
 > [`kb-loom-p1-imp.md`](../../.github/copilot/kb-loom-p1-imp.md) (P0 spine:

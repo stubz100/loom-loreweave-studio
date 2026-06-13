@@ -18,6 +18,15 @@ import {
   getHealth,
   getProject,
   getStyle,
+  getBible,
+  setWorld,
+  setPremise,
+  upsertSpineCharacter,
+  removeSpineCharacter,
+  createSpineStub,
+  resyncSpineStub,
+  type BibleInfo,
+  type SpineCharacter,
   listAssets,
   listJobs,
   listProjects,
@@ -112,6 +121,8 @@ export default function App() {
   const [casting, setCasting] = useState<CastingCandidate[]>([]);
   const [style, setStyleState] = useState<StyleInfo | null>(null);
   const [styleDraft, setStyleDraft] = useState("");
+  // M8 — L1 World view toggle (ASSETS bootstrap vs the WORLD authoring surface).
+  const [view, setView] = useState<"assets" | "world">("assets");
   const [applyStyle, setApplyStyle] = useState(true);
   // P1/M3 bootstrap stages (A casting · B expansion · C curation) + their controls.
   const [stage, setStage] = useState<"A" | "B" | "C">("A");
@@ -1137,6 +1148,13 @@ export default function App() {
 
       <div className="panes">
         <nav className="rail">
+          <div className="view-tabs">
+            <button className={`view-tab ${view === "assets" ? "on" : ""}`}
+                    onClick={() => setView("assets")}>L2 · Assets</button>
+            <button className={`view-tab ${view === "world" ? "on" : ""}`}
+                    onClick={() => setView("world")}
+                    title="L1 World — style, world prose, story spine (M8)">L1 · World</button>
+          </div>
           <div className="rail-head">
             ASSETS
             <button className="rail-add" onClick={onCreateAsset}
@@ -1167,6 +1185,14 @@ export default function App() {
         </nav>
 
         <main className="stage">
+          {view === "world" ? (
+            <WorldWorkspace
+              project={project}
+              onError={setError}
+              onStubCreated={() => void refreshAssets()}
+            />
+          ) : (
+          <>
           {activeAsset && (
             <div className="stage-ctx">
               <span className="ctx-asset">{activeAsset.name}</span>
@@ -1735,6 +1761,8 @@ export default function App() {
               />
             ))}
           </div>
+          </>
+          )}
         </main>
 
         <aside className="inspector">
@@ -2131,6 +2159,153 @@ function GridCell({
           {bulkSelected ? "■" : "□"}
         </button>
       )}
+    </div>
+  );
+}
+
+// M8 — L1 World authoring: world prose, the style fragment + global negative, and the
+// story spine (premise + characters that materialize into stub AssetProfiles, R55).
+function WorldWorkspace({ project, onError, onStubCreated }: {
+  project: ProjectInfo | null;
+  onError: (e: string) => void;
+  onStubCreated: () => void;
+}) {
+  const [bible, setBible] = useState<BibleInfo | null>(null);
+  const [worldDraft, setWorldDraft] = useState("");
+  const [fragDraft, setFragDraft] = useState("");
+  const [negDraft, setNegDraft] = useState("");
+  const [premiseDraft, setPremiseDraft] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newSnippet, setNewSnippet] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    if (!project?.open) { setBible(null); return; }
+    try {
+      const b = await getBible();
+      setBible(b);
+      setWorldDraft(b.world ?? "");
+      setFragDraft(b.style.fragment);
+      setNegDraft(b.style.global_negative ?? "");
+      setPremiseDraft(b.spine?.premise ?? "");
+    } catch (e) { onError(String(e)); }
+  };
+  useEffect(() => { void refresh(); /* eslint-disable-next-line */ }, [project?.open, project?.id]);
+
+  const guard = async (fn: () => Promise<BibleInfo>) => {
+    setBusy(true);
+    try { setBible(await fn()); } catch (e) { onError(String(e)); } finally { setBusy(false); }
+  };
+
+  if (!project?.open) {
+    return <div className="world"><p className="muted">Open a project to author its L1 World.</p></div>;
+  }
+  const chars = bible?.spine?.characters ?? [];
+  return (
+    <div className="world">
+      <div className="rail-head">L1 WORLD — the bible every generation inherits</div>
+
+      <section className="world-sec">
+        <h3>Visual style <span className="muted">(auto-applied to every generation, R104)</span></h3>
+        <label className="world-field">
+          style fragment <span className="muted">— appended after the character prompt</span>
+          <textarea rows={2} value={fragDraft} onChange={(e) => setFragDraft(e.target.value)} />
+        </label>
+        <label className="world-field">
+          global negative <span className="muted">— appended to every negative prompt</span>
+          <textarea rows={2} value={negDraft} onChange={(e) => setNegDraft(e.target.value)}
+                    placeholder="blurry, extra fingers, watermark, lowres…" />
+        </label>
+        <button className="proj-btn" disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try { await setStyle(fragDraft, undefined, negDraft); await refresh(); }
+                  catch (e) { onError(String(e)); } finally { setBusy(false); }
+                }}>
+          Save style
+        </button>
+      </section>
+
+      <section className="world-sec">
+        <h3>World <span className="muted">(long-form summary — authoring context, not injected)</span></h3>
+        <textarea className="world-prose" rows={6} value={worldDraft}
+                  onChange={(e) => setWorldDraft(e.target.value)}
+                  placeholder="# The world…  (markdown)" />
+        <button className="proj-btn" disabled={busy}
+                onClick={() => void guard(() => setWorld(worldDraft))}>Save world</button>
+      </section>
+
+      <section className="world-sec">
+        <h3>Story spine <span className="muted">(premise + characters → stub profiles, R55)</span></h3>
+        <textarea className="world-prose" rows={3} value={premiseDraft}
+                  onChange={(e) => setPremiseDraft(e.target.value)}
+                  placeholder="premise / arc / factions…" />
+        <button className="proj-btn" disabled={busy}
+                onClick={() => void guard(() => setPremise(premiseDraft))}>Save premise</button>
+
+        <div className="spine-list">
+          {chars.map((c) => (
+            <SpineRow key={c.id} ch={c} busy={busy}
+              onSave={(name, snippet) => void guard(() =>
+                upsertSpineCharacter({ character_id: c.id, name, snippet }))}
+              onDelete={() => void guard(() => removeSpineCharacter(c.id))}
+              onStub={async () => {
+                setBusy(true);
+                try { await createSpineStub(c.id); onStubCreated(); await refresh(); }
+                catch (e) { onError(String(e)); } finally { setBusy(false); }
+              }}
+              onResync={async () => {
+                setBusy(true);
+                try { await resyncSpineStub(c.id); onStubCreated(); }
+                catch (e) { onError(String(e)); } finally { setBusy(false); }
+              }} />
+          ))}
+          {chars.length === 0 && <p className="muted">no spine characters yet</p>}
+        </div>
+
+        <div className="spine-add">
+          <input className="prompt" placeholder="character name (e.g. Mara)…"
+                 value={newName} onChange={(e) => setNewName(e.target.value)} />
+          <input className="prompt" placeholder="prompt-template snippet (the fixed identity clause)…"
+                 value={newSnippet} onChange={(e) => setNewSnippet(e.target.value)} />
+          <button className="proj-btn" disabled={busy || !newName.trim()}
+                  onClick={() => void guard(async () => {
+                    const b = await upsertSpineCharacter({ name: newName.trim(),
+                                                           snippet: newSnippet.trim() });
+                    setNewName(""); setNewSnippet("");
+                    return b;
+                  })}>+ character</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SpineRow({ ch, busy, onSave, onDelete, onStub, onResync }: {
+  ch: SpineCharacter; busy: boolean;
+  onSave: (name: string, snippet: string) => void;
+  onDelete: () => void; onStub: () => void; onResync: () => void;
+}) {
+  const [name, setName] = useState(ch.name);
+  const [snippet, setSnippet] = useState(ch.snippet);
+  const dirty = name !== ch.name || snippet !== ch.snippet;
+  const linked = !!ch.linked_asset_id;
+  return (
+    <div className="spine-row">
+      <input className="prompt" value={name} onChange={(e) => setName(e.target.value)} />
+      <input className="prompt" value={snippet} onChange={(e) => setSnippet(e.target.value)}
+             placeholder="identity clause snippet…" />
+      <button className="ghost" disabled={busy || !dirty}
+              onClick={() => onSave(name, snippet)} title="save name/snippet (does NOT touch a linked profile — R55)">save</button>
+      {linked ? (
+        <button className="ghost" disabled={busy} onClick={onResync}
+                title="push this snippet into the linked profile's active version (overwrites — manual, R55)">⟳ re-sync</button>
+      ) : (
+        <button className="ghost" disabled={busy} onClick={onStub}
+                title="materialize a stub AssetProfile seeded with this snippet (R112)">+ stub profile</button>
+      )}
+      <button className="ghost" disabled={busy} onClick={onDelete} title="remove from spine (a linked profile is left intact)">✕</button>
+      {linked && <span className="muted spine-linked" title={ch.linked_asset_id!}>● linked</span>}
     </div>
   );
 }

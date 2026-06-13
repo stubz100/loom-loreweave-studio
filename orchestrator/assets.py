@@ -53,9 +53,12 @@ def _version_dir(ws: Workspace, asset_class: str, slug: str, version_name: str) 
 
 # --- create ---------------------------------------------------------------------
 
-def create_asset(ws: Workspace, *, name: str, asset_class: str = "characters") -> dict:
-    """Create an AssetProfile + a single `v1_base` version (M1 scaffold). Raises
-    WorkspaceError on a bad class / empty name / slug collision within the class."""
+def create_asset(ws: Workspace, *, name: str, asset_class: str = "characters",
+                 prompt_template: str = "") -> dict:
+    """Create an AssetProfile + a single `v1_base` version (M1 scaffold). `prompt_template`
+    (M8) pre-fills the version's identity clause — a spine stub seeds it from the spine
+    character's snippet (R112). Raises WorkspaceError on a bad class / empty name / slug
+    collision within the class."""
     if asset_class not in ASSET_CLASSES:
         raise ws_mod.WorkspaceError(f"unknown asset_class {asset_class!r} (one of {ASSET_CLASSES})")
     if not name or not name.strip():
@@ -77,7 +80,7 @@ def create_asset(ws: Workspace, *, name: str, asset_class: str = "characters") -
         "derived_from": None,
         "finalized": False,        # M1 = Saved, not Finalized (R119)
         "saved_at": _now(),
-        "prompt_template": "",
+        "prompt_template": prompt_template,
         "anchor_ref": None,
         "ref_set": [],
         "casting": [],

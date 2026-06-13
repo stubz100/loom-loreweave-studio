@@ -186,11 +186,42 @@ class CreateAssetRequest(BaseModel):
 
 
 class StyleRequest(BaseModel):
-    """Edit the L1 style fragment (R104 fixed prepend + default-on toggle)."""
+    """Edit the L1 style fragment (R104 auto-append + default-on toggle) + the M8 global
+    negative (a negative prompt auto-applied to every generation under the same gate)."""
 
     model_config = ConfigDict(extra="forbid")
     fragment: str | None = None
     enabled_default: bool | None = None
+    global_negative: str | None = None
+
+
+class WorldRequest(BaseModel):
+    """M8 — set the long-form world summary (markdown)."""
+
+    model_config = ConfigDict(extra="forbid")
+    world: str
+
+
+class PremiseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    premise: str
+
+
+class SpineCharacterRequest(BaseModel):
+    """M8 — add (no character_id) or edit (character_id given) a spine character."""
+
+    model_config = ConfigDict(extra="forbid")
+    character_id: str | None = None
+    name: str | None = None
+    snippet: str | None = None
+
+
+class SpineStubRequest(BaseModel):
+    """M8 — materialize a spine character into a stub AssetProfile (R55 manual)."""
+
+    model_config = ConfigDict(extra="forbid")
+    character_id: str
+    asset_class: str = "characters"
 
 
 class StarRequest(BaseModel):
@@ -493,7 +524,11 @@ def create_app() -> FastAPI:
                                "DELETE /jobs/{id}", "POST /queue/pause",
                                "POST /queue/unpause", "POST /project", "POST /project/open",
                                "POST /project/close",
-                               "POST /project/forget", "PUT /bible/style", "POST /assets",
+                               "POST /project/forget", "PUT /bible/style", "PUT /bible/world",
+                               "PUT /bible/spine/premise", "POST /bible/spine/character",
+                               "DELETE /bible/spine/character/{cid}",
+                               "POST /bible/spine/character/stub",
+                               "POST /bible/spine/character/{cid}/resync", "POST /assets",
                                "POST /assets/{id}/casting/star", "POST /assets/{id}/casting/hero",
                                "POST /assets/{id}/stage-b", "POST /assets/{id}/stage-b/matte",
                                "POST /assets/{id}/stage-b/sketch",
@@ -735,6 +770,13 @@ def create_app() -> FastAPI:
             fragment = (style.get("fragment") or "").strip()
             if fragment:
                 base["prompt"] = f"{base['prompt']}, {fragment}"
+            # L1 global negative (M8) pairs with the fragment — appended to the request's
+            # negative_prompt under the same gate. Skipped for multi (the ideate worker
+            # takes no negative arg) and where the variant ignores negatives (worker warns).
+            neg = (style.get("global_negative") or "").strip()
+            if neg and not is_multi:
+                existing = (base.get("negative_prompt") or "").strip()
+                base["negative_prompt"] = f"{existing}, {neg}" if existing else neg
 
         if req.dry_run:
             spec = JobSpec(pipeline=req.pipeline, mode=mode, params=base, output_dir=ws.out_dir)
@@ -828,9 +870,86 @@ def create_app() -> FastAPI:
 
     @app.put("/bible/style")
     def put_style(req: StyleRequest, _auth: None = Depends(require_token)) -> dict:
-        """Edit the style fragment / default-on flag (writes story.json). Token-gated."""
+        """Edit the style fragment / default-on flag / global negative (writes story.json).
+        Token-gated."""
         return bible.set_style(_require_ws(), fragment=req.fragment,
-                               enabled_default=req.enabled_default)
+                               enabled_default=req.enabled_default,
+                               global_negative=req.global_negative)
+
+    @app.get("/bible")
+    def get_bible() -> dict:
+        """The full L1 World record (style + world prose + spine). Unauthenticated read."""
+        return bible.load_story(_require_ws())
+
+    @app.put("/bible/world")
+    def put_world(req: WorldRequest, _auth: None = Depends(require_token)) -> dict:
+        """M8 — set the long-form world summary. Token-gated."""
+        return bible.set_world(_require_ws(), req.world)
+
+    @app.put("/bible/spine/premise")
+    def put_premise(req: PremiseRequest, _auth: None = Depends(require_token)) -> dict:
+        """M8 — set the spine premise. Token-gated."""
+        return bible.set_premise(_require_ws(), req.premise)
+
+    @app.post("/bible/spine/character")
+    def upsert_spine_character(req: SpineCharacterRequest,
+                               _auth: None = Depends(require_token)) -> dict:
+        """M8 — add or edit a spine character (name + prompt-template snippet). Editing the
+        snippet here does NOT touch a linked profile (R55 — re-sync is explicit). Token-gated."""
+        try:
+            return bible.upsert_spine_character(
+                _require_ws(), character_id=req.character_id, name=req.name,
+                snippet=req.snippet)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+
+    @app.delete("/bible/spine/character/{character_id}")
+    def remove_spine_character(character_id: str,
+                               _auth: None = Depends(require_token)) -> dict:
+        """M8 — drop a spine character (a linked AssetProfile is left intact). Token-gated."""
+        return bible.remove_spine_character(_require_ws(), character_id)
+
+    @app.post("/bible/spine/character/stub")
+    def create_spine_stub(req: SpineStubRequest,
+                          _auth: None = Depends(require_token)) -> dict:
+        """M8 (§6, R55) — materialize a spine character into a **stub AssetProfile**: a new
+        profile whose v1_base prompt_template = the character's snippet (R112), linked back
+        to the spine entry. Refuses if already linked to a live profile. Token-gated."""
+        ws = _require_ws()
+        ch = bible.spine_character(ws, req.character_id)
+        if ch is None:
+            raise HTTPException(404, f"spine character {req.character_id!r} not found")
+        if ch.get("linked_asset_id") and assets.get_asset(ws, ch["linked_asset_id"]):
+            raise HTTPException(409, f"{ch['name']!r} is already linked to a profile "
+                                     f"({ch['linked_asset_id']}) — re-sync instead")
+        try:
+            res = assets.create_asset(ws, name=ch["name"], asset_class=req.asset_class,
+                                      prompt_template=ch.get("snippet", ""))
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        bible.link_spine_character(ws, req.character_id, res["profile"]["id"])
+        LOG.info("spine stub: %s -> %s", ch["name"], res["profile"]["id"])
+        return {"profile": res["profile"], "linked_asset_id": res["profile"]["id"]}
+
+    @app.post("/bible/spine/character/{character_id}/resync")
+    def resync_spine_stub(character_id: str,
+                          _auth: None = Depends(require_token)) -> dict:
+        """M8 (R55) — push the spine character's snippet into its linked profile's ACTIVE
+        version prompt_template. **Manual + explicit, never automatic** (the author chose to
+        overwrite hand-edits). Refuses if unlinked / finalized. Token-gated."""
+        ws = _require_ws()
+        ch = bible.spine_character(ws, character_id)
+        if ch is None:
+            raise HTTPException(404, f"spine character {character_id!r} not found")
+        if not ch.get("linked_asset_id"):
+            raise HTTPException(409, "not linked to a profile — create a stub first")
+        try:
+            version = assets.save_profile(ws, ch["linked_asset_id"],
+                                          prompt_template=ch.get("snippet", ""))
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(409, str(e))
+        return {"linked_asset_id": ch["linked_asset_id"],
+                "prompt_template": version.get("prompt_template", "")}
 
     @app.get("/assets")
     def get_assets() -> dict:

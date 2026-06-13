@@ -325,6 +325,34 @@ body {
 .stage-ctx .ver-select { margin: 0 6px; max-width: 180px; }
 .stage-ctx .ghost { margin-right: 4px; }
 
+/* M8 — L1 World view tabs (rail) + the World authoring surface */
+.view-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.view-tab {
+  flex: 1; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+  border-radius: 4px; padding: 4px 6px; font-size: 11px; cursor: pointer;
+}
+.view-tab.on { background: var(--amber); color: #1a1a1a; border-color: var(--amber); font-weight: 600; }
+.world { max-width: 760px; padding: 4px 2px; overflow-y: auto; }
+.world-sec { margin: 14px 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.world-sec h3 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }
+.world-sec h3 .muted { font-weight: 400; font-size: 11px; }
+.world-field { display: block; font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+.world textarea {
+  display: block; width: 100%; box-sizing: border-box; margin-top: 4px;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 4px; padding: 6px; font: inherit; font-size: 12px; resize: vertical;
+}
+.world-prose { font-family: ui-monospace, monospace; }
+.spine-list { margin: 10px 0; display: flex; flex-direction: column; gap: 6px; }
+.spine-row { display: flex; gap: 4px; align-items: center; }
+.spine-row .prompt { flex: 1; padding: 4px 6px; font-size: 11px;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 4px; }
+.spine-row .prompt:first-of-type { flex: 0 0 120px; }
+.spine-linked { font-size: 10px; color: #4caf78; white-space: nowrap; }
+.spine-add { display: flex; gap: 4px; margin-top: 8px; }
+.spine-add .prompt { flex: 1; padding: 5px 6px;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 4px; }
+
 /* Params drawer blocks (user request 2026-06-11): base / clean / polish / postproc */
 .p-group {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center;

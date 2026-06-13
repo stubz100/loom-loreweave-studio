@@ -1,19 +1,53 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "loom:story.schema.json",
-  "title": "StoryBible (P1 minimal — world/style; M1 seeds style only)",
+  "title": "StoryBible (P1 L1 World — M1 seeds style; M8 adds world prose + global negative + spine)",
   "type": "object",
   "required": ["schema_version", "id", "style"],
   "properties": {
     "schema_version": { "const": 1 },
     "id": { "type": "string", "pattern": "^sto_[0-9a-f]{6}$" },
+    "world": {
+      "type": "string",
+      "description": "M8: long-form world summary (markdown). Authoring context for the author + future Muse; NOT auto-injected into generation."
+    },
     "style": {
       "type": "object",
       "required": ["id", "fragment", "enabled_default"],
       "properties": {
         "id": { "type": "string", "pattern": "^sty_[0-9a-f]{6}$" },
         "fragment": { "type": "string" },
-        "enabled_default": { "type": "boolean" }
+        "enabled_default": { "type": "boolean" },
+        "global_negative": {
+          "type": "string",
+          "description": "M8: a negative prompt auto-applied to every generation (same apply_style gate as the fragment) — appended to the request's negative_prompt."
+        }
+      }
+    },
+    "spine": {
+      "type": "object",
+      "description": "M8 story spine (§6): premise + characters that seed stub AssetProfiles (R55: manual create + re-sync, never auto-clobber).",
+      "properties": {
+        "premise": { "type": "string" },
+        "characters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "snippet"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^spc_[0-9a-f]{6}$" },
+              "name": { "type": "string", "minLength": 1 },
+              "snippet": {
+                "type": "string",
+                "description": "the prompt-template snippet a stub AssetProfile inherits (R112: the version's fixed identity clause)."
+              },
+              "linked_asset_id": {
+                "type": ["string", "null"],
+                "description": "the AssetProfile id this spine character was materialized into (set on create-stub; re-sync pushes the snippet to it)."
+              }
+            }
+          }
+        }
       }
     }
   }

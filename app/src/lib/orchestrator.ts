@@ -191,6 +191,21 @@ export interface StyleInfo {
   id: string;
   fragment: string;
   enabled_default: boolean;
+  global_negative?: string;
+}
+
+/** M8 — the full L1 World record. */
+export interface SpineCharacter {
+  id: string;
+  name: string;
+  snippet: string;
+  linked_asset_id?: string | null;
+}
+export interface BibleInfo {
+  id: string;
+  world?: string;
+  style: StyleInfo;
+  spine?: { premise?: string; characters?: SpineCharacter[] };
 }
 
 export interface AssetSummary {
@@ -258,14 +273,62 @@ export async function getStyle(signal?: AbortSignal): Promise<StyleInfo> {
   return (await res.json()) as StyleInfo;
 }
 
-export async function setStyle(fragment?: string, enabled_default?: boolean): Promise<StyleInfo> {
+export async function setStyle(fragment?: string, enabled_default?: boolean,
+                               global_negative?: string): Promise<StyleInfo> {
   const res = await fetch(`${orchestratorUrl()}/bible/style`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
-    body: JSON.stringify({ fragment, enabled_default }),
+    body: JSON.stringify({ fragment, enabled_default, global_negative }),
   });
   if (!res.ok) throw new Error(`set style ${res.status}: ${await res.text()}`);
   return (await res.json()) as StyleInfo;
+}
+
+// --- M8: L1 World (world prose + global negative + story spine) ------------------
+
+export async function getBible(signal?: AbortSignal): Promise<BibleInfo> {
+  const res = await fetch(`${orchestratorUrl()}/bible`, { signal });
+  if (!res.ok) throw new Error(`bible ${res.status}`);
+  return (await res.json()) as BibleInfo;
+}
+
+async function bibleWrite(path: string, method: string, body?: unknown): Promise<BibleInfo> {
+  const res = await fetch(`${orchestratorUrl()}/bible/${path}`, {
+    method,
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`${path} ${res.status}: ${await res.text()}`);
+  return (await res.json()) as BibleInfo;
+}
+
+export const setWorld = (world: string) => bibleWrite("world", "PUT", { world });
+export const setPremise = (premise: string) => bibleWrite("spine/premise", "PUT", { premise });
+export const upsertSpineCharacter = (b: { character_id?: string; name?: string; snippet?: string }) =>
+  bibleWrite("spine/character", "POST", b);
+export const removeSpineCharacter = (cid: string) =>
+  bibleWrite(`spine/character/${encodeURIComponent(cid)}`, "DELETE");
+
+/** Materialize a spine character into a stub AssetProfile (R55). */
+export async function createSpineStub(characterId: string):
+    Promise<{ profile: AssetSummary; linked_asset_id: string }> {
+  const res = await fetch(`${orchestratorUrl()}/bible/spine/character/stub`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ character_id: characterId }),
+  });
+  if (!res.ok) throw new Error(`stub ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+/** Push the spine snippet into the linked profile (manual, R55). */
+export async function resyncSpineStub(characterId: string):
+    Promise<{ linked_asset_id: string; prompt_template: string }> {
+  const res = await fetch(
+    `${orchestratorUrl()}/bible/spine/character/${encodeURIComponent(characterId)}/resync`,
+    { method: "POST", headers: { "X-Loom-Token": orchestratorToken() } });
+  if (!res.ok) throw new Error(`resync ${res.status}: ${await res.text()}`);
+  return await res.json();
 }
 
 export async function listAssets(signal?: AbortSignal): Promise<{ assets: AssetSummary[] }> {

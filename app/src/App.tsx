@@ -129,7 +129,7 @@ export default function App() {
   // P1/M3 bootstrap stages (A casting · B expansion · C curation) + their controls.
   const [stage, setStage] = useState<"A" | "B" | "C">("A");
   const [recipePreset, setRecipePreset] = useState<RecipePreset>("full_coverage");
-  const [stageBPipeline, setStageBPipeline] = useState<"zimage" | "sd35">("zimage");
+  const [stageBPipeline, setStageBPipeline] = useState<"zimage" | "sd35" | "flux2">("zimage");
   const [stageBModel, setStageBModel] = useState("");   // "" = the worker default variant
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [stageBStrength, setStageBStrength] = useState(0.55);
@@ -1465,17 +1465,20 @@ export default function App() {
                   {recipePresets.map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
               </label>
-              <label title="img2img model family for the sweep">
+              <label title="expansion family: zimage/sd35 = img2img sweep from the hero; flux2 = identity-preserving REFERENCE conditioning (hero carried into new poses/scenes — §11)">
                 pipeline
                 <select value={stageBPipeline}
                         onChange={(e) => {
-                          setStageBPipeline(e.target.value as "zimage" | "sd35");
+                          const v = e.target.value as "zimage" | "sd35" | "flux2";
+                          setStageBPipeline(v);
                           setStageBModel("");   // reset variant when the family changes
                           setAdvParamsB({});    // tunables are per-pipeline — a stale
                                                 // zimage-only key would 422 on sd35
+                          if (v === "flux2") setRealize("img2img");  // flux2 has no mixed axis
                         }}>
                   <option value="zimage">zimage</option>
                   <option value="sd35">sd35</option>
+                  <option value="flux2">flux2 — identity ✨</option>
                 </select>
               </label>
               <label title="model variant (default = the pipeline's; ⚠ gated variants need a fetch)">
@@ -1487,21 +1490,29 @@ export default function App() {
                   ))}
                 </select>
               </label>
-              <label className="n" title="img2img strength (0–1): higher = more variation, less identity">
-                strength
-                <input type="number" min={0.1} max={1} step={0.05} value={stageBStrength}
-                       onChange={(e) => setStageBStrength(clamp(parseFloat(e.target.value || "0.55"), 0.1, 1))} />
-              </label>
-              <label title="cell realization (M3.5): img2img only, or mixed — inpaint-method cells repaint the BACKGROUND around the held subject (background diversity; needs a hero matte)">
-                realize
-                <select value={realize}
-                        onChange={(e) => setRealize(e.target.value as "img2img" | "mixed")}>
-                  <option value="img2img">img2img</option>
-                  <option value="mixed" disabled={!bgMask}>
-                    mixed{bgMask ? "" : " (matte first)"}
-                  </option>
-                </select>
-              </label>
+              {stageBPipeline === "flux2" ? (
+                <span className="muted" title="flux2 (§11) conditions on the hero ★ as an in-context reference — identity is carried into each cell's pose/scene, so there is no img2img strength or mixed/inpaint axis">
+                  ✨ reference-conditioned (identity-preserving)
+                </span>
+              ) : (
+                <>
+                  <label className="n" title="img2img strength (0–1): higher = more variation, less identity">
+                    strength
+                    <input type="number" min={0.1} max={1} step={0.05} value={stageBStrength}
+                           onChange={(e) => setStageBStrength(clamp(parseFloat(e.target.value || "0.55"), 0.1, 1))} />
+                  </label>
+                  <label title="cell realization (M3.5): img2img only, or mixed — inpaint-method cells repaint the BACKGROUND around the held subject (background diversity; needs a hero matte)">
+                    realize
+                    <select value={realize}
+                            onChange={(e) => setRealize(e.target.value as "img2img" | "mixed")}>
+                      <option value="img2img">img2img</option>
+                      <option value="mixed" disabled={!bgMask}>
+                        mixed{bgMask ? "" : " (matte first)"}
+                      </option>
+                    </select>
+                  </label>
+                </>
+              )}
               <button
                 className="ghost"
                 onClick={onMatteHero}

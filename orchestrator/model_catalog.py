@@ -49,8 +49,9 @@ def _catalog() -> dict:
     return {
         # ── flux2 ──────────────────────────────────────────────────────────────
         "flux2": {
-            "loom_access": "via `multi` casting (preset-driven); a standalone flux2 adapter "
-                           "is the multi-ref research spike (§11) — deferred, not wired.",
+            "loom_access": "Stage-B identity-preserving expansion via the `ref` mode (multi-ref, "
+                           "§11/R147 — the hero rides as an in-context reference); also a `multi` "
+                           "casting member (preset-driven).",
             "variants": [
                 {"id": "flux.2-klein-4b", "repo_id": "black-forest-labs/FLUX.2-klein-4B",
                  "ae_repo_id": "black-forest-labs/FLUX.2-dev", "text_encoder": "Qwen/Qwen3-4B",
@@ -91,7 +92,10 @@ def _catalog() -> dict:
                  "modes": ["img2img"], "note": "0.20–0.25 polish, higher to re-roll"},
                 {"name": "cpu_offload", "flag": "--cpu-offload", "type": "flag", "default": False},
             ],
-            "modes": ["t2i", "img2img"],
+            # `ref` (§11): t2i conditioned on the hero as a reference image (identity-preserving
+            # Stage-B expansion). `ref_images` rides the batch jobs-file shared block (the worker
+            # encodes it once), not a per-cell catalog flag — so it's not in `params`.
+            "modes": ["t2i", "img2img", "ref"],
         },
         # ── sd35 ───────────────────────────────────────────────────────────────
         "sd35": {

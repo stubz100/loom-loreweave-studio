@@ -559,7 +559,8 @@ export interface StageBRequest {
   version_id?: string;
   preset?: RecipePreset;
   character_clause?: string | null;
-  pipeline?: "zimage" | "sd35";
+  /** "flux2" = identity-preserving reference conditioning (the hero rides as a reference, §11). */
+  pipeline?: "zimage" | "sd35" | "flux2";
   model_name?: string | null;
   strength?: number;
   width?: number;

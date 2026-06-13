@@ -16,7 +16,9 @@ import torch
 from PIL import Image
 
 from flux2.model import Flux2
-from flux2.sampling import batched_prc_img, default_prep, denoise, denoise_cfg, get_schedule
+from flux2.sampling import (
+    batched_prc_img, default_prep, denoise, denoise_cfg, encode_image_refs, get_schedule,
+)
 
 
 def run(
@@ -29,8 +31,16 @@ def run(
     num_steps: int = 4,
     guidance: float = 1.0,
     guidance_distilled: bool = True,
+    ae=None,
+    ref_images: list[str] | None = None,
 ) -> dict:
     """Create noise, build timestep schedule, and run denoising loop.
+
+    `ref_images` (loom multi-ref, §11): reference-image paths conditioned IN-CONTEXT —
+    `encode_image_refs` AE-encodes them into reference tokens that ride alongside the noise
+    tokens through the transformer (the native FLUX.2 pathway), carrying the subject/character
+    into a NEW scene/pose. `ae` is then required. This is t2i CONDITIONED on the refs (not
+    img2img — the refs are not the starting latent).
 
     Returns dict with keys: x, x_ids, seed, timesteps, noise_shape.
     """
@@ -40,6 +50,13 @@ def run(
     noise_shape = (1, 128, height // 16, width // 16)
 
     with torch.no_grad():
+        img_cond = img_cond_ids = None
+        if ref_images:
+            if ae is None:
+                raise ValueError("ref_images requires the autoencoder (ae=)")
+            refs = [Image.open(p).convert("RGB") for p in ref_images]
+            img_cond, img_cond_ids = encode_image_refs(ae, refs)
+
         generator = torch.Generator(device="cuda").manual_seed(seed)
         noise = torch.randn(noise_shape, generator=generator, dtype=torch.bfloat16, device="cuda")
 
@@ -55,6 +72,8 @@ def run(
                 ctx_ids,
                 timesteps=timesteps,
                 guidance=guidance,
+                img_cond_seq=img_cond,
+                img_cond_seq_ids=img_cond_ids,
             )
         else:
             x = denoise_cfg(
@@ -65,6 +84,8 @@ def run(
                 ctx_ids,
                 timesteps=timesteps,
                 guidance=guidance,
+                img_cond_seq=img_cond,
+                img_cond_seq_ids=img_cond_ids,
             )
 
     return {
@@ -77,6 +98,7 @@ def run(
         "height": height,
         "num_steps": num_steps,
         "guidance": guidance,
+        "ref_images": list(ref_images) if ref_images else [],
     }
 
 

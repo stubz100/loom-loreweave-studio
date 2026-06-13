@@ -57,6 +57,12 @@ size/zip-bomb guarded). **M10** — **MVP/P1 acceptance**: the §1 done-line
 test (`orchestrator/tests/test_acceptance.py`) and the new adapters' contract gaps are recorded
 (journal M10). 🟡 **Awaiting the user's GPU rig sign-off** (done-line + chained passes + mixed +
 identity + restore + video + curation + export/import round-trip) to declare P1 ACCEPTED.
+**P1-11 (Flux2 multi-ref) — ✅ GO + WIRED**: the §11 spike landed, so Stage-B gained a third
+expansion family — `pipeline=flux2`, the **`ref` mode**: the hero ★ rides as an in-context
+reference (FLUX.2 `encode_image_refs` + `denoise(img_cond_seq=…)`), so each coverage cell gets
+**identity-preserving** pose/angle/scene variation that img2img structurally can't (a front
+portrait can't be rotated to a profile). One `--jobs-file` batch job (two-phase offload, module-
+invoked); GPU batch smoke verified.
 Spec:
 > [`kb-loom-p1.md`](../../.github/copilot/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:

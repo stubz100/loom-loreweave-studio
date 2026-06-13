@@ -249,7 +249,7 @@ class StageBRequest(BaseModel):
     version_id: str | None = None
     preset: str = recipe.DEFAULT_PRESET
     character_clause: str | None = None
-    pipeline: Literal["zimage", "sd35"] = "zimage"
+    pipeline: Literal["zimage", "sd35", "flux2"] = "zimage"
     model_name: str | None = None
     strength: float = Field(default=0.55, ge=0.0, le=1.0)
     width: int = Field(default=1024, ge=256, le=2048, multiple_of=16)
@@ -1083,6 +1083,17 @@ def create_app() -> FastAPI:
             raise HTTPException(409, str(e))
         vid = version["id"]
 
+        # flux2 (§11/R147) realizes Stage-B by REFERENCE-conditioning: the hero rides as an
+        # in-context reference so identity carries into new poses/scenes (the variation img2img
+        # can't do). Its realization mode is `ref` — the img2img/inpaint `mixed` axis doesn't
+        # apply (flux2 changes the scene via the prompt, not an inpaint mask).
+        is_flux2 = req.pipeline == "flux2"
+        if is_flux2 and req.realize == "mixed":
+            raise HTTPException(422, "flux2 expansion is reference-conditioned (identity-preserving) "
+                                     "— realize='mixed' (inpaint background-diversity) is for "
+                                     "zimage/sd35; use those for mixed, or flux2 for identity-locked "
+                                     "pose/angle coverage")
+
         clause = (req.character_clause or version.get("prompt_template") or "").strip()
         if not clause:
             raise HTTPException(422, "no character_clause and the version has no prompt_template "
@@ -1145,7 +1156,8 @@ def create_app() -> FastAPI:
         # for both modes (img2img + inpaint).
         try:
             model_catalog.validate_model(req.pipeline, req.model_name)
-            extra = model_catalog.validate_params(req.pipeline, "img2img", req.params)
+            val_mode = "ref" if is_flux2 else "img2img"
+            extra = model_catalog.validate_params(req.pipeline, val_mode, req.params)
             if req.realize == "mixed":
                 model_catalog.validate_params(req.pipeline, "inpaint", req.params)
         except model_catalog.CatalogError as e:
@@ -1162,8 +1174,9 @@ def create_app() -> FastAPI:
         post_passes = _extract_post_passes(extra, dry_run=req.dry_run)
         # L1 global negative folded into the shared batch params (M8 review): both the
         # dry-run preview and every realization group spread `**extra`, so this reaches
-        # every cell of every Stage-B batch job.
-        if global_neg:
+        # every cell of every Stage-B batch job. Skipped for flux2 (distilled FLUX.2 takes no
+        # negative prompt — same as multi ideate).
+        if global_neg and not is_flux2:
             extra["negative_prompt"] = bible.join_negative(extra.get("negative_prompt"), global_neg)
 
         # M4 — identity-lock pass (R86/R93): swap every cell's face to the version's
@@ -1205,6 +1218,13 @@ def create_app() -> FastAPI:
         identity_note = None
         if req.identity is not None:
             want_identity = req.identity
+        elif is_flux2:
+            # flux2 reference-conditioning already carries identity — don't auto-stack the
+            # inswapper swap on top (set identity=true to add it explicitly).
+            want_identity = False
+            if anchor_path is not None:
+                identity_note = ("flux2 reference-conditioning carries identity; the inswapper "
+                                 "lock is NOT auto-applied (set identity=true to add it)")
         else:
             want_identity = anchor_path is not None and anchor_ok
             if anchor_path is not None and not anchor_ok:
@@ -1238,9 +1258,12 @@ def create_app() -> FastAPI:
             raise HTTPException(503, f"{req.pipeline} worker not found")
 
         # Realization groups (M3.5): img2img sweep cells + (mixed only) inpaint cells that
-        # repaint the background around the held subject. Each group = ONE batch job.
+        # repaint the background around the held subject. Each group = ONE batch job. flux2
+        # (§11) is ONE `ref` group — every cell is reference-conditioned on the hero.
         cells = built["cells"]
-        if req.realize == "mixed":
+        if is_flux2:
+            groups = [("ref", cells, None)]
+        elif req.realize == "mixed":
             i2i_cells = [c for c in cells if c["method"] != "inpaint"]
             inp_cells = [c for c in cells if c["method"] == "inpaint"]
             groups = [g for g in (("img2img", i2i_cells, req.strength),
@@ -1253,10 +1276,16 @@ def create_app() -> FastAPI:
             # Preview with a single-cell argv (a batch argv would write jobs.json into
             # out/); the real run is ONE --jobs-file batch job per realization group.
             cell0 = built["cells"][0]
-            p0 = {"prompt": cell0["prompt"], "init_image": str(hero_path),
-                  "strength": req.strength, "width": req.width, "height": req.height,
-                  "seed": cell0["seed"], "model_name": model_name, **extra}
-            spec = JobSpec(pipeline=req.pipeline, mode="img2img", params=p0, output_dir=ws.out_dir)
+            if is_flux2:
+                p0 = {"prompt": cell0["prompt"], "ref_images": [str(hero_path)],
+                      "width": req.width, "height": req.height, "seed": cell0["seed"],
+                      "model_name": model_name, **extra}
+                spec = JobSpec(pipeline="flux2", mode="ref", params=p0, output_dir=ws.out_dir)
+            else:
+                p0 = {"prompt": cell0["prompt"], "init_image": str(hero_path),
+                      "strength": req.strength, "width": req.width, "height": req.height,
+                      "seed": cell0["seed"], "model_name": model_name, **extra}
+                spec = JobSpec(pipeline=req.pipeline, mode="img2img", params=p0, output_dir=ws.out_dir)
             return {"dry_run": True, "preset": req.preset, "pipeline": req.pipeline,
                     "planned_jobs": len(groups), "items": built["target"], "split": split,
                     "realize": req.realize, "bg_mask": req.bg_mask,
@@ -1293,11 +1322,17 @@ def create_app() -> FastAPI:
                       "meta": {"coverage_cell": c["coverage_cell"], "method": c["method"]}}
                      for c in gcells]
             params = {"prompt": f"[dataset {req.preset} · {len(gcells)} {gmode} cells] {clause}",
-                      "init_image": str(hero_path), "strength": gstrength,
                       "width": req.width, "height": req.height,
                       "batch_items": items, **extra}
-            if gmode == "inpaint":
-                params["mask_image"] = bg_mask_abs
+            if gmode == "ref":
+                # flux2 (§11): the hero rides as an in-context reference for every cell
+                # (encoded once by the batch worker) — no init_image/strength.
+                params["ref_images"] = [str(hero_path)]
+            else:
+                params["init_image"] = str(hero_path)
+                params["strength"] = gstrength
+                if gmode == "inpaint":
+                    params["mask_image"] = bg_mask_abs
             if model_name:
                 params["model_name"] = model_name
             job_ids.append(RUNNER.submit(

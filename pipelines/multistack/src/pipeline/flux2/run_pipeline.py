@@ -2,11 +2,20 @@
 
 import argparse
 import random
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
+
+# The BFL `flux2` library lives at <repo>/flux2/src (multi's stage_runner puts it on
+# PYTHONPATH when IT spawns this worker). For a STANDALONE invocation (loom Stage-B fires
+# `-m pipeline.flux2.run_pipeline` directly), self-bootstrap the same path so `import
+# flux2.util` resolves — idempotent in the multi context (already on PYTHONPATH there).
+_FLUX2_LIB_SRC = Path(__file__).resolve().parents[3] / "flux2" / "src"
+if _FLUX2_LIB_SRC.is_dir() and str(_FLUX2_LIB_SRC) not in sys.path:
+    sys.path.insert(0, str(_FLUX2_LIB_SRC))
 
 from flux2.util import FLUX2_MODEL_INFO
 
@@ -29,20 +38,28 @@ def run(
     mode: str = "t2i",
     init_image: str | None = None,
     strength: float = 0.25,
+    ref_images: list[str] | None = None,
 ) -> PipelineManifest:
     """Run the full Flux2 image generation pipeline.
 
     When cpu_offload=True, models are swapped between CPU and GPU between
     stages to fit large models (e.g. dev 32B) in limited VRAM.
 
+    `mode="ref"` (loom multi-ref, §11): t2i generation CONDITIONED on `ref_images`
+    (reference tokens carried in-context) — the "insert this character into a new scene"
+    path. For a coverage-dataset SWEEP use the batch worker (`run_jobs`), which encodes the
+    shared reference ONCE; this single-run path re-encodes per call.
+
     Returns the completed PipelineManifest.
     """
     if seed is None:
         seed = random.randrange(2**31)
-    if mode not in ("t2i", "img2img"):
-        raise ValueError(f"--mode must be one of t2i, img2img (got {mode!r})")
+    if mode not in ("t2i", "img2img", "ref"):
+        raise ValueError(f"--mode must be one of t2i, img2img, ref (got {mode!r})")
     if mode == "img2img" and not init_image:
         raise ValueError("mode=img2img requires --init-image")
+    if mode == "ref" and not ref_images:
+        raise ValueError("mode=ref requires --ref-image (one or more)")
 
     model_info = FLUX2_MODEL_INFO[model_name]
     defaults = model_info.get("defaults", {})
@@ -139,6 +156,7 @@ def run(
                 strength=strength,
             )
         else:
+            # t2i, or `ref` (t2i conditioned on reference images — needs the AE).
             s3 = stage3_denoise.run(
                 model=s1["model"],
                 ctx=s2["ctx"],
@@ -149,6 +167,8 @@ def run(
                 num_steps=num_steps,
                 guidance=guidance,
                 guidance_distilled=guidance_distilled,
+                ae=s1["ae"] if mode == "ref" else None,
+                ref_images=ref_images if mode == "ref" else None,
             )
         manifest.end_stage(rec, stage3_denoise.get_manifest_outputs(s3), stage3_denoise.get_manifest_debug(s3))
         print(f"[stage3] Denoised in {rec.duration_s}s — x {s3['x'].shape} (mode={mode})")
@@ -199,9 +219,193 @@ def run(
     return manifest
 
 
+# --- Batch mode (--jobs-file): load the pipeline ONCE, generate N images ------------
+#
+# A coverage-dataset SWEEP (loom Stage-B) fires ONE invocation that loops the cells, so the
+# (slow) model load is paid once. The jobs file is JSON:
+#
+#   {"shared": {"mode": "ref", "model_name": "flux.2-klein-4b", "width": 1024, ...,
+#               "ref_images": ["/abs/hero.png"]},
+#    "items":  [{"prompt": "...", "seed": 101, "meta": {...}}, ...]}
+#
+# `mode="ref"` (loom multi-ref, §11): the SHARED `ref_images` (the hero ★) are encoded ONCE
+# into reference tokens that condition every cell's denoise — the identity-preserving
+# expansion img2img can't do. Memory: encode ALL prompts first (text encoder), free it, then
+# load the flow model + AE (so the 8 GB encoder and 8 GB flow model never co-reside on 16 GB).
+# A `STOP` file finishes the current item then stops gracefully; a `flux2_batch_<ts>.json`
+# summary records every item (each ok item also gets a PNG + .json sidecar).
+def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = "cuda") -> int:
+    import json as _json
+
+    from PIL import Image
+
+    from flux2.util import load_ae, load_flow_model
+    from flux2.sampling import (
+        batched_prc_img, batched_prc_txt, denoise, denoise_cfg, encode_image_refs, get_schedule,
+    )
+
+    spec = _json.loads(Path(jobs_file).read_text(encoding="utf-8"))
+    shared = dict(spec.get("shared") or {})
+    items = list(spec.get("items") or [])
+    if not items:
+        print("[batch-error] jobs file has no items")
+        return 2
+    for i, it in enumerate(items):
+        if not (it.get("prompt") or "").strip():
+            print(f"[batch-error] item {i} has no prompt")
+            return 2
+
+    model_name = shared.get("model_name", "flux.2-klein-4b")
+    if model_name not in FLUX2_MODEL_INFO:
+        print(f"[batch-error] unknown model_name {model_name!r}")
+        return 2
+    info = FLUX2_MODEL_INFO[model_name]
+    distilled = info.get("guidance_distilled", True)
+    defaults = info.get("defaults", {})
+    mode = shared.get("mode", "ref")
+    num_steps = shared.get("num_steps") or defaults.get("num_steps", 4)
+    guidance = shared.get("guidance")
+    if guidance is None:
+        guidance = defaults.get("guidance", 1.0)
+    width, height = int(shared.get("width", 1360)), int(shared.get("height", 768))
+    device = shared.get("device", device)
+    ref_paths = list(shared.get("ref_images") or [])
+    torch_device = torch.device(device)
+
+    out_dir = Path(shared.get("output_dir") or output_dir)
+    if not out_dir.is_absolute():
+        out_dir = Path(__file__).resolve().parents[3] / out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    batch_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    summary_path = out_dir / f"flux2_batch_{batch_ts}.json"
+    t0 = time.time()
+    print(f"[batch] {len(items)} item(s) | mode={mode} model={model_name} refs={len(ref_paths)}")
+    results: list[dict] = []
+
+    def _skip_rest(start: int, reason: str) -> None:
+        for j in range(start, len(items)):
+            results.append({"index": j, "status": "skipped", "seed": items[j].get("seed"),
+                            "prompt": items[j]["prompt"], "output_path": "", "manifest_path": "",
+                            "duration_s": 0.0, "error": reason, "meta": items[j].get("meta")})
+
+    def _finish(status: str, load_s: float, error: str | None = None) -> int:
+        n_ok = sum(1 for r in results if r["status"] == "ok")
+        n_fail = sum(1 for r in results if r["status"] == "failed")
+        n_skip = sum(1 for r in results if r["status"] == "skipped")
+        if n_ok == 0 and status == "completed":
+            status = "failed"
+        summary = {"kind": "jobs_batch", "schema_version": 1, "pipeline": "flux2",
+                   "model_name": model_name, "mode": mode, "status": status, "error": error,
+                   "count": len(items), "ok": n_ok, "failed": n_fail, "skipped": n_skip,
+                   "load_duration_s": load_s, "total_duration_s": round(time.time() - t0, 4),
+                   "items": results}
+        summary_path.write_text(_json.dumps(summary, indent=1), encoding="utf-8")
+        print(f"[batch-done] {n_ok} ok / {n_fail} failed / {n_skip} skipped in "
+              f"{summary['total_duration_s']}s ({status})")
+        print(f"  BatchManifest: {summary_path}")
+        return 0 if n_ok > 0 else 2
+
+    # --- Phase 1: encode ALL prompts, then free the text encoder ---
+    try:
+        enc = stage1_load_models._load_text_encoder_safe(model_name, torch_device)
+        enc.eval()
+        ctxs: list[tuple] = []
+        with torch.no_grad():
+            for it in items:
+                if distilled:
+                    c = enc([it["prompt"]]).to(torch.bfloat16)
+                else:
+                    c = torch.cat([enc([""]), enc([it["prompt"]])], dim=0).to(torch.bfloat16)
+                c, cid = batched_prc_txt(c)
+                ctxs.append((c.cpu(), cid.cpu()))
+        del enc
+        torch.cuda.empty_cache()
+    except Exception as e:  # noqa: BLE001
+        _skip_rest(0, "text encode failed")
+        return _finish("failed", round(time.time() - t0, 2), error=str(e))
+    load_s = round(time.time() - t0, 2)
+    print(f"[stage1] text encoded for {len(items)} item(s); encoder freed ({load_s}s)")
+
+    # --- Phase 2: flow model + AE; encode the shared reference(s) ONCE ---
+    try:
+        model = load_flow_model(model_name, device=torch_device)
+        model.eval()
+        ae = load_ae(model_name, device=torch_device)
+        ae.eval()
+    except Exception as e:  # noqa: BLE001
+        _skip_rest(0, "model load failed")
+        return _finish("failed", load_s, error=str(e))
+
+    ref_tokens = ref_ids = None
+    if ref_paths:
+        try:
+            with torch.no_grad():
+                refs = [Image.open(p).convert("RGB") for p in ref_paths]
+                ref_tokens, ref_ids = encode_image_refs(ae, refs)
+            if ref_tokens is not None:
+                ref_tokens, ref_ids = ref_tokens.to(torch_device), ref_ids.to(torch_device)
+            n_tok = int(ref_tokens.shape[1]) if ref_tokens is not None else 0
+            print(f"[stage1] encoded {len(refs)} reference image(s) -> {n_tok} ref tokens")
+        except Exception as e:  # noqa: BLE001
+            _skip_rest(0, "reference encode failed")
+            return _finish("failed", load_s, error=str(e))
+
+    status = "completed"
+    stop_file = out_dir / "STOP"
+    for idx, it in enumerate(items):
+        if stop_file.exists():
+            print(f"[batch] STOP file found -- stopping before item {idx + 1}/{len(items)}")
+            _skip_rest(idx, "stopped")
+            status = "stopped"
+            break
+        seed = it.get("seed")
+        if seed is None:
+            seed = random.randrange(2**31)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        output_path = out_dir / f"flux2_{ts}_i{idx:03d}_s{seed}.png"
+        manifest_path = output_path.with_suffix(".json")
+        rec = {"index": idx, "status": "failed", "seed": seed, "prompt": it["prompt"],
+               "output_path": "", "manifest_path": "", "duration_s": 0.0,
+               "error": None, "meta": it.get("meta")}
+        it0 = time.time()
+        try:
+            ctx, ctx_ids = ctxs[idx]
+            ctx, ctx_ids = ctx.to(torch_device), ctx_ids.to(torch_device)
+            noise_shape = (1, 128, height // 16, width // 16)
+            g = torch.Generator(device="cuda").manual_seed(int(seed))
+            noise = torch.randn(noise_shape, generator=g, dtype=torch.bfloat16, device="cuda")
+            x, x_ids = batched_prc_img(noise)
+            timesteps = get_schedule(num_steps, x.shape[1])
+            with torch.no_grad():
+                if distilled:
+                    x = denoise(model, x, x_ids, ctx, ctx_ids, timesteps=timesteps,
+                                guidance=guidance, img_cond_seq=ref_tokens,
+                                img_cond_seq_ids=ref_ids)
+                else:
+                    x = denoise_cfg(model, x, x_ids, ctx, ctx_ids, timesteps=timesteps,
+                                    guidance=guidance, img_cond_seq=ref_tokens,
+                                    img_cond_seq_ids=ref_ids)
+                s4 = stage4_decode.run(ae=ae, x=x, x_ids=x_ids, output_path=output_path)
+            manifest_path.write_text(_json.dumps({
+                "kind": "flux2_item", "model_name": model_name, "mode": mode,
+                "prompt": it["prompt"], "seed": seed, "ref_images": ref_paths,
+                "width": s4["width"], "height": s4["height"], "output_path": str(output_path),
+            }, indent=1), encoding="utf-8")
+            rec.update(status="ok", output_path=str(output_path),
+                       manifest_path=str(manifest_path), duration_s=round(time.time() - it0, 3))
+            print(f"[item {idx + 1}/{len(items)}] seed={seed} ok")
+            print(f"  Image: {output_path}")
+        except Exception as e:  # noqa: BLE001 — per-item failure doesn't fail the batch
+            rec["error"] = str(e)
+            print(f"[item {idx + 1}/{len(items)}] FAILED: {e}")
+        results.append(rec)
+
+    return _finish(status, load_s)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Flux2 image generation pipeline")
-    parser.add_argument("--prompt", required=True, help="Text prompt for generation")
+    parser.add_argument("--prompt", default=None, help="Text prompt (required unless --jobs-file)")
     parser.add_argument("--model-name", default="flux.2-klein-4b", choices=list(FLUX2_MODEL_INFO.keys()))
     parser.add_argument("--width", type=int, default=1360)
     parser.add_argument("--height", type=int, default=768)
@@ -211,14 +415,23 @@ def main():
     parser.add_argument("--output-dir", default="src/assets/pics")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cpu-offload", action="store_true", help="Swap models between CPU/GPU to save VRAM")
-    parser.add_argument("--mode", default="t2i", choices=["t2i", "img2img"],
-                        help="t2i (default), or img2img (--init-image + --strength; "
-                             "low-strength polish / global re-roll using flow-matching init mix).")
+    parser.add_argument("--mode", default="t2i", choices=["t2i", "img2img", "ref"],
+                        help="t2i (default); img2img (--init-image + --strength); or ref "
+                             "(--ref-image: t2i conditioned on reference images, the multi-ref §11 path).")
     parser.add_argument("--init-image", default=None,
                         help="Path to init image for img2img mode; centre-cropped to multiple of 16.")
     parser.add_argument("--strength", type=float, default=0.25,
                         help="img2img strength (0,1]; 0.20-0.25 typical for polish, higher for re-roll.")
+    parser.add_argument("--ref-image", action="append", default=None, dest="ref_image",
+                        help="Reference image path (repeatable, <=4 Klein/<=6 dev) for --mode ref.")
+    parser.add_argument("--jobs-file", default=None,
+                        help="Batch mode: a JSON {shared, items} file — one load, N images.")
     args = parser.parse_args()
+
+    if args.jobs_file:
+        raise SystemExit(run_jobs(args.jobs_file, output_dir=args.output_dir, device=args.device))
+    if not args.prompt:
+        parser.error("--prompt is required (unless --jobs-file)")
 
     run(
         prompt=args.prompt,
@@ -234,6 +447,7 @@ def main():
         mode=args.mode,
         init_image=args.init_image,
         strength=args.strength,
+        ref_images=args.ref_image,
     )
 
 

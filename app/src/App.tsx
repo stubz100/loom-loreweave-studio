@@ -2431,10 +2431,13 @@ function Inspector({ job, output }: { job: Job; output?: string }) {
           {ometa.faces != null ? ` (${ometa.faces} face${ometa.faces === 1 ? "" : "s"})` : ""}
         </div>
       )}
-      {typeof p.prompt === "string" && (
+      {(ometa?.prompt || typeof p.prompt === "string") && (
         <details className="insp-details">
           <summary>resolved prompt (as run)</summary>
-          <div className="insp-prompt">{p.prompt}</div>
+          {/* Prefer the per-OUTPUT prompt for a Stage-B batch image (its real cell prompt:
+              angle + shot-size + expression + clause + style). The job-level p.prompt is
+              only the `[dataset …]` summary label, shared by every cell. */}
+          <div className="insp-prompt">{ometa?.prompt ?? (p.prompt as string)}</div>
         </details>
       )}
       <details className="insp-details">

@@ -46,6 +46,9 @@ export interface OutputMeta {
   seed?: number | null;
   index?: number;
   method?: string | null;
+  /** the EXACT per-cell prompt this image was generated with (Stage-B batch items carry
+   * their own prompt; the job-level prompt is only the `[dataset …]` summary label). */
+  prompt?: string;
   role?: string;
   /** identity pass (M4): "locked" | "no_face_passthrough" + the measured anchor cosine. */
   identity?: string;

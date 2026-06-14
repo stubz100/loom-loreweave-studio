@@ -159,6 +159,90 @@ def _assign_to_kill_job(proc: subprocess.Popen) -> None:
         _warn(f"AssignProcessToJobObject raised ({e}) for worker pid={proc.pid}; "
               "this worker may orphan on a hard kill")
 
+
+# --- per-job cancel Job Object (review 2026-06-13, High) ----------------------------
+# Cancel must fell the WHOLE worker tree — `multi`/`flux2` do GPU work in a grandchild.
+# `taskkill /T` walks the tree but its success was unchecked + it can miss a reparented
+# descendant on some hosts. A per-job Job Object is authoritative: assign the worker to a
+# fresh job at spawn; `TerminateJobObject` kills every process in it (incl. descendants)
+# ATOMICALLY, no tree-walk. Nested under the process-wide `_KILL_JOB` (Win8+); additive —
+# `taskkill` stays as the fallback when the Job Object path is unavailable.
+
+def _create_kill_job():
+    """A fresh KILL_ON_JOB_CLOSE Job Object handle (int), or None (non-win32 / failure)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+
+        class _BASIC(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class _IO(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint64) for n in
+                        ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                         "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class _EXT(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", _BASIC), ("IoInfo", _IO),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        info = _EXT()
+        info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            k32.CloseHandle(job)
+            return None
+        return job
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _assign_to_job(proc: subprocess.Popen, job) -> bool:
+    if job is None or sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.WinDLL("kernel32", use_last_error=True)
+                    .AssignProcessToJobObject(job, int(proc._handle)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _terminate_job(job) -> bool:
+    if job is None or sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.WinDLL("kernel32", use_last_error=True).TerminateJobObject(job, 1))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _close_job(job) -> None:
+    if job is None or sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(job)
+    except Exception:  # noqa: BLE001
+        pass
+
 # Static per-pipeline VRAM estimate (GB) for admission (§7); refined by observed
 # peaks later. zimage-turbo @720p with cpu_offload peaks ~10–12 GB on the 16 GB rig.
 # multi runs its pipelines one-at-a-time as isolated subprocesses (VRAM isolation), so the
@@ -201,6 +285,7 @@ class JobRunner:
         self._lock = threading.RLock()
         self._cv = threading.Condition(self._lock)
         self._procs: dict[str, subprocess.Popen] = {}
+        self._cancel_jobs: dict[str, int] = {}   # job_id -> per-job kill Job Object handle (win32)
         self._canceled: set[str] = set()
         self._paused = False
         # Why the queue is paused — "resume" (resume-paused load, R88) | "user" (explicit
@@ -504,7 +589,9 @@ class JobRunner:
                 self._persist_locked()
                 self._clear_pause_if_empty_locked()   # don't leave "paused (0 queued)"
         if proc is not None and proc.poll() is None:
-            threading.Thread(target=self._kill_tree, args=(proc,), daemon=True).start()
+            cancel_job = self._cancel_jobs.get(job_id)
+            threading.Thread(target=self._kill_tree, args=(proc,),
+                             kwargs={"job_handle": cancel_job}, daemon=True).start()
         return True
 
     # Injected completion hook (M4 review — durable anchor verification). Class-level
@@ -568,19 +655,42 @@ class JobRunner:
         return True
 
     @staticmethod
-    def _kill_tree(proc: subprocess.Popen, grace_s: float = 5.0) -> None:
-        """Kill the worker and ALL its descendants. `multi` does its GPU work in a
-        grandchild (stage_runner → per-pipeline subprocess); `terminate()` on the direct
-        child orphans that grandchild mid-generation (the process-wide Job Object only
-        reaps on orchestrator death, not per-job cancel). Windows: `taskkill /T /F` fells
-        the tree. POSIX: terminate → kill (process-group kill is a later add, like the
-        PDEATHSIG reap path)."""
+    def _kill_tree(proc: subprocess.Popen, grace_s: float = 5.0, job_handle=None) -> None:
+        """Kill the worker and ALL its descendants. `multi`/`flux2` do GPU work in a
+        grandchild (stage_runner / -m subprocess); `terminate()` on the direct child orphans
+        it mid-generation (the process-wide Job Object only reaps on orchestrator death, not
+        per-job cancel).
+
+        Windows: the **per-job Job Object** (`job_handle`) is authoritative —
+        `TerminateJobObject` fells every process in it atomically, no tree-walk. `taskkill /T`
+        is the fallback (its return code is now CHECKED + retried — review 2026-06-13). POSIX:
+        terminate → kill (process-group kill is a later add, like the PDEATHSIG reap path).
+        Either way the handle is `wait()`ed (and re-waited after an escalated kill) so it's
+        never left unreaped."""
         if sys.platform == "win32":
-            try:
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                               capture_output=True, timeout=15)
-            except Exception as e:  # noqa: BLE001 - fall through to the direct kill below
-                _warn(f"taskkill /T failed for pid={proc.pid} ({e}); killing direct child only")
+            felled = _terminate_job(job_handle)   # atomic tree kill (preferred)
+            if not felled:
+                ok = False
+                for attempt in (1, 2):
+                    try:
+                        r = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                                           capture_output=True, text=True, timeout=15)
+                    except Exception as e:  # noqa: BLE001
+                        _warn(f"taskkill /T raised for pid={proc.pid} (attempt {attempt}): {e}")
+                        continue
+                    # rc 0 = felled; 128 = pid not found (already gone) — both acceptable.
+                    if r.returncode in (0, 128):
+                        ok = True
+                        break
+                    _warn(f"taskkill /T rc={r.returncode} for pid={proc.pid} (attempt "
+                          f"{attempt}): {(r.stderr or r.stdout or '').strip()[:200]}")
+                if not ok:
+                    # Couldn't confirm a tree kill — at least fell the direct child so the
+                    # worker stops (descendants logged above; the Job Object path is the fix).
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
         else:
             try:
                 proc.terminate()
@@ -591,6 +701,10 @@ class JobRunner:
         except subprocess.TimeoutExpired:
             try:
                 proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=grace_s)   # reap the handle after the escalated kill
             except Exception:
                 pass
 
@@ -684,8 +798,17 @@ class JobRunner:
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
         )
         _assign_to_kill_job(proc)   # die with the orchestrator — never orphan the GPU (review #1)
+        # Per-job kill Job Object (review 2026-06-13): cancel = TerminateJobObject → the WHOLE
+        # tree atomically (multi/flux2 grandchildren included). Nested under _KILL_JOB (Win8+);
+        # no-ops off win32 / on failure (cancel falls back to taskkill /T). Closed at finalize.
+        cancel_job = _create_kill_job()
+        if cancel_job is not None and not _assign_to_job(proc, cancel_job):
+            _close_job(cancel_job)            # couldn't nest → drop it, taskkill /T covers cancel
+            cancel_job = None
         with self._lock:
             self._procs[job_id] = proc
+            if cancel_job is not None:
+                self._cancel_jobs[job_id] = cancel_job
 
         # Full subprocess stdout/stderr → a persisted per-job log (P0-14); the in-memory
         # tail still drives the live UI pane. The log survives the process for post-mortem.
@@ -747,9 +870,11 @@ class JobRunner:
         log_text = "\n".join(tail)
         with self._lock:
             self._procs.pop(job_id, None)
+            cancel_job = self._cancel_jobs.pop(job_id, None)   # worker exited → free the handle
             canceled = job_id in self._canceled
             retry_count = self.jobs[job_id].get("retry_count", 0)
             shutting = self._shutting_down
+        _close_job(cancel_job)   # worker is dead (proc.wait above) — just frees the kernel handle
 
         # Shutdown wins over everything: re-queue the in-flight job (don't mark it
         # failed because we killed its worker) so it survives the restart (review #1).

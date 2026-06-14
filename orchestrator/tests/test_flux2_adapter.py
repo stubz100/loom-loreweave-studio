@@ -144,3 +144,30 @@ def test_stage_b_flux2_rejects_mixed(client):
                     json={"pipeline": "flux2", "preset": "npc_lite", "realize": "mixed",
                           "bg_mask": "x/y_bgmask.png", "dry_run": True})
     assert r.status_code == 422 and "reference-conditioned" in r.text
+
+
+def test_stage_b_flux2_items_record_ref_method(client, monkeypatch):
+    """Review 2026-06-13 Medium: a submitted flux2 cell's meta.method must be 'ref' (the actual
+    realization), not the recipe's preferred img2img/inpaint — P2 curation persists it into
+    ref_set.method and is metadata-driven."""
+    from orchestrator import components
+    from orchestrator.runner import RUNNER
+    monkeypatch.setattr(components, "image_model_present", lambda repo_id: True)  # skip weight gate
+    RUNNER.pause()                                          # queue it; never dispatch to the GPU
+    a = _asset_with_hero(client, RUNNER.workspace, name="RefMeta")
+    r = client.post(f"/assets/{a['id']}/stage-b", json={"pipeline": "flux2", "preset": "npc_lite"})
+    assert r.status_code == 200, r.text
+    jid = r.json()["job_ids"][0]
+    params = RUNNER.jobs[jid]["params"]
+    items = params["batch_items"]
+    assert items and all(it["meta"]["method"] == "ref" for it in items)
+    assert params["ref_images"] and "init_image" not in params   # hero rides as the reference
+
+
+def test_capabilities_includes_flux2(client):
+    """Review 2026-06-13 Low: the runner registers flux2 + the adapter exposes caps, so
+    /capabilities must list it."""
+    caps = client.get("/capabilities").json()["pipelines"]
+    assert "flux2" in caps
+    assert caps["flux2"]["present"] is True and caps["flux2"]["modes"] == ["ref"]
+    assert caps["flux2"]["multi_ref"]["via"] == "encode_image_refs"

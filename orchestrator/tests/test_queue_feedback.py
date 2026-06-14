@@ -162,3 +162,34 @@ def test_kill_tree_fells_grandchild():
     q = subprocess.run(["tasklist", "/FI", f"PID eq {grandchild_pid}"],
                        capture_output=True, text=True)
     assert str(grandchild_pid) not in q.stdout, "grandchild survived the cancel"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="per-job Job Object is the win32 path")
+def test_cancel_job_object_fells_tree():
+    """The per-job kill Job Object (review 2026-06-13, High): TerminateJobObject reaps the
+    worker AND its descendants ATOMICALLY — independent of taskkill tree-walking (which the
+    review flagged as unchecked + able to miss a reparented descendant). The descendant is
+    spawned AFTER the worker joins the job (as in the real spawn → assign → worker-runs flow),
+    so it auto-joins the job and TerminateJobObject takes it too."""
+    from orchestrator.runner import (_create_kill_job, _assign_to_job, _terminate_job, _close_job)
+    job = _create_kill_job()
+    assert job, "_create_kill_job returned no handle on win32"
+    # the worker waits on stdin before spawning its grandchild — so we can assign it to the
+    # job FIRST (the grandchild then inherits job membership, like a real multi/flux2 worker).
+    child_src = ("import subprocess,sys,time;"
+                 "sys.stdin.readline();"
+                 "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+                 "print(p.pid,flush=True);time.sleep(60)")
+    proc = subprocess.Popen([sys.executable, "-c", child_src],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    assert _assign_to_job(proc, job)            # worker joins the job
+    proc.stdin.write("go\n")
+    proc.stdin.flush()
+    grandchild_pid = int(proc.stdout.readline().strip())   # spawned AFTER joining → in the job
+    assert _terminate_job(job)                  # atomic tree kill
+    proc.wait(timeout=10)
+    assert proc.poll() is not None
+    q = subprocess.run(["tasklist", "/FI", f"PID eq {grandchild_pid}"],
+                       capture_output=True, text=True)
+    assert str(grandchild_pid) not in q.stdout, "grandchild survived TerminateJobObject"
+    _close_job(job)

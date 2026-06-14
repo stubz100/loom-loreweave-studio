@@ -37,6 +37,7 @@ try:
     from .adapters import zimage as zimage_adapter
     from .adapters import multi as multi_adapter
     from .adapters import sd35 as sd35_adapter
+    from .adapters import flux2 as flux2_adapter
     from .adapters import birefnet as birefnet_adapter
     from .adapters import identity as identity_adapter
     from .adapters import face_restore as face_restore_adapter
@@ -59,6 +60,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import zimage as zimage_adapter  # type: ignore
     from adapters import multi as multi_adapter  # type: ignore
     from adapters import sd35 as sd35_adapter  # type: ignore
+    from adapters import flux2 as flux2_adapter  # type: ignore
     from adapters import birefnet as birefnet_adapter  # type: ignore
     from adapters import identity as identity_adapter  # type: ignore
     from adapters import face_restore as face_restore_adapter  # type: ignore
@@ -240,10 +242,12 @@ class StarRequest(BaseModel):
 class StageBRequest(BaseModel):
     """Stage-B expansion (P1/M3, §7.1): expand the starred hero into a coverage-matrix dataset.
     Picks a recipe `preset`, auto-generates the per-cell prompts (no freeform typing, R107), and
-    fires **one img2img job per cell** from the hero — each carrying its frozen `coverage_cell`
-    (P1→P2). M3 realizes every cell via **img2img** (inpaint background-diversity + true angle
-    coverage need masking/video-sketch/Flux2-spike — later); the cell's preferred method is kept
-    in metadata. `character_clause` defaults to the version's `prompt_template` (R112)."""
+    fires **one batch job per realization group** (the worker loads once, loops the cells) — each
+    cell carrying its frozen `coverage_cell` (P1→P2). Realization by `pipeline`: **zimage/sd35**
+    img2img (+ `realize="mixed"` adds an inpaint background-diversity group, M3.5); **flux2** is
+    reference-conditioned (`ref` mode, §11/R147 — the hero rides as an in-context reference, so
+    identity carries into new poses/scenes that img2img can't reach). `character_clause` defaults
+    to the version's `prompt_template` (R112)."""
 
     model_config = ConfigDict(extra="forbid")
     version_id: str | None = None
@@ -1318,8 +1322,13 @@ def create_app() -> FastAPI:
         # subject — identity-safe, restores the §7.1 background-diversity axis.
         job_ids: list[str] = []
         for gmode, gcells, gstrength in groups:
+            # Provenance method = the ACTUAL realization. flux2 realizes every cell via `ref`
+            # (review 2026-06-13: the recipe's preferred c["method"] would mislabel flux2 refs
+            # as img2img/inpaint, and P2 is metadata-driven). zimage/sd35 keep the recipe method
+            # (in mixed it already equals the group; in plain img2img it's the cell's preference).
             items = [{"prompt": c["prompt"], "seed": c["seed"],
-                      "meta": {"coverage_cell": c["coverage_cell"], "method": c["method"]}}
+                      "meta": {"coverage_cell": c["coverage_cell"],
+                               "method": "ref" if gmode == "ref" else c["method"]}}
                      for c in gcells]
             params = {"prompt": f"[dataset {req.preset} · {len(gcells)} {gmode} cells] {clause}",
                       "width": req.width, "height": req.height,
@@ -1897,6 +1906,7 @@ def create_app() -> FastAPI:
             "zimage": zimage_adapter.capabilities(CONFIG.pipeline_roots),
             "multi": multi_adapter.capabilities(CONFIG.pipeline_roots),
             "sd35": sd35_adapter.capabilities(CONFIG.pipeline_roots),
+            "flux2": flux2_adapter.capabilities(CONFIG.pipeline_roots),
             "birefnet": birefnet_adapter.capabilities(CONFIG.pipeline_roots),
             "identity": identity_adapter.capabilities(CONFIG.pipeline_roots),
             "face_restore": face_restore_adapter.capabilities(CONFIG.pipeline_roots),

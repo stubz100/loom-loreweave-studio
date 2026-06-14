@@ -27,7 +27,8 @@ CATALOG_VERSION = 1
 # `default=None` means "the worker resolves the per-model preset" (don't send the flag).
 # `modes` limits a param to certain generation modes; omitted = all modes.
 
-# Shared across the t2i/img2img/inpaint pipelines (zimage + sd35; flux2 via multi only).
+# Shared across the t2i/img2img/inpaint pipelines (zimage + sd35). flux2 has its own param set
+# (it's a casting member AND the Stage-B `ref` mode — multi-ref expansion, §11/R147).
 _COMMON_PARAMS: list[dict] = [
     {"name": "width", "flag": "--width", "type": "int", "default": 1024,
      "min": 256, "max": 2048, "step": 16, "note": "divisible by 16"},

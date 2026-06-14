@@ -1522,16 +1522,22 @@ export default function App() {
                 {bgMask ? "Matte ✓" : "Matte hero"}
               </button>
               <label
-                title={!anchorInfo
+                title={stageBPipeline === "flux2"
+                  ? "flux2 reference-conditioning ALREADY carries identity — this is an OPTIONAL extra inswapper face-lock pass (off by default), tick to also run it"
+                  : !anchorInfo
                   ? "set a ⚓ face anchor first (select a face image → '⚓ anchor' in the inspector)"
                   : anchorVerified
                   ? "identity-lock pass (M4): swap every cell's face to the ⚓ anchor after generation (no-face cells pass through)"
                   : "anchor UNVERIFIED — tick to run identity now (the first run verifies the anchor face, then it defaults on)"}
               >
-                ⚓ identity{anchorInfo && !anchorVerified ? " ?" : ""}
+                {/* flux2 defaults identity OFF (the reference is the identity mechanism) — the
+                    checkbox must reflect that, not claim a lock the backend skips (review). */}
+                ⚓ identity{stageBPipeline === "flux2" ? " (extra)" : anchorInfo && !anchorVerified ? " ?" : ""}
                 <input
                   type="checkbox"
-                  checked={identityOn ?? (Boolean(anchorInfo) && anchorVerified)}
+                  checked={stageBPipeline === "flux2"
+                    ? (identityOn ?? false)
+                    : (identityOn ?? (Boolean(anchorInfo) && anchorVerified))}
                   disabled={!anchorInfo}
                   onChange={(e) => setIdentityOn(e.target.checked)}
                 />

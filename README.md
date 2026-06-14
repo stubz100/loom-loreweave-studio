@@ -17,7 +17,7 @@ React/TypeScript UI + a Python FastAPI orchestrator that wraps the
 > start on a missing P0 code component; missing P0 weight → explicit HF fetch, M7), and
 > the **§1 seven-step acceptance test green on real hardware** (M8).
 >
-> **Phase 1 (MVP creative layer) — underway.** **M1–M2 done:** L2 Asset Studio scaffold (StoryBible
+> **Phase 1 (MVP creative layer) — ✅ functionally complete (user sign-off 2026-06-14).** **M1–M2 done:** L2 Asset Studio scaffold (StoryBible
 > style fragment auto-applied R104 (appended after the user/character prompt since 2026-06-10);
 > AssetProfile + `v1_base`; library rail), **Stage-A casting** —
 > `casting[]` + hero-star ★ persisted into `version.json` (self-contained `casting/` copies), and the
@@ -55,14 +55,24 @@ its versions + files; `POST /assets/import` → ALWAYS a new profile with fresh 
 size/zip-bomb guarded). **M10** — **MVP/P1 acceptance**: the §1 done-line
 (style → cast → hero → expand → curate → save → **reopen**) is locked as an executable no-GPU
 test (`orchestrator/tests/test_acceptance.py`) and the new adapters' contract gaps are recorded
-(journal M10). 🟡 **Awaiting the user's GPU rig sign-off** (done-line + chained passes + mixed +
-identity + restore + video + curation + export/import round-trip) to declare P1 ACCEPTED.
+(journal M10). P1 is declared **functionally complete (2026-06-14)** and the journal is closed
+([`kb-loom-p1-imp.md`](../../.github/copilot/kb-loom-p1-imp.md)); 🟡 the **formal A–H rig sign-off**
+(done-line + chained passes + mixed + identity + restore + video + curation + export/import
+round-trip on the RX 9070 XT) remains the **user's to run** to stamp P1 ACCEPTED, and a **UI-rewire
+pass** is carried forward — neither blocks the move to Phase 2.
 **P1-11 (Flux2 multi-ref) — ✅ GO + WIRED**: the §11 spike landed, so Stage-B gained a third
 expansion family — `pipeline=flux2`, the **`ref` mode**: the hero ★ rides as an in-context
 reference (FLUX.2 `encode_image_refs` + `denoise(img_cond_seq=…)`), so each coverage cell gets
 **identity-preserving** pose/angle/scene variation that img2img structurally can't (a front
 portrait can't be rotated to a profile). One `--jobs-file` batch job (two-phase offload, module-
 invoked); GPU batch smoke verified.
+>
+> **Phase 2 (LoRA training) — kicked off 2026-06-14.** Stages D & E: take a P1 character's curated
+> ref set → **template-caption** it (no VLM) → **proxy-readiness** meter → train a **character LoRA**
+> (ai-toolkit default + diffusers-PEFT advanced; zimage first, then sd35) as a **staged** queued job
+> → promote into the version → test-gen reproduces it on-model. **P2-0 is a make-or-break front-gate:**
+> does ai-toolkit train on RX 9070 XT / ROCm at all? Spec: [`kb-loom-p2.md`](../../.github/copilot/kb-loom-p2.md),
+> journal: [`kb-loom-p2-imp.md`](../../.github/copilot/kb-loom-p2-imp.md).
 Spec:
 > [`kb-loom-p1.md`](../../.github/copilot/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:

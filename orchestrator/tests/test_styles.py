@@ -64,6 +64,20 @@ def test_set_active_unknown_404_and_empty_name_400(client):
     assert client.post("/bible/styles", json={"name": "  "}).status_code == 400
 
 
+def test_put_style_unknown_id_is_strict_404(client):
+    """Review 2026-06-13: a MUTATION with an unknown style_id must 404 — never silently edit
+    the active default (a stale client could overwrite it). Generation stays lenient."""
+    r = client.put("/bible/style", json={"fragment": "SHOULD-NOT-LAND", "style_id": "sty_ffffff"})
+    assert r.status_code == 404
+    # the active style is untouched
+    assert "SHOULD-NOT-LAND" not in client.get("/bible/style").json()["fragment"]
+    # generation with an unknown style_id still renders (lenient fallback to active)
+    g = client.post("/generate", json={"pipeline": "zimage", "prompt": "x",
+                                       "apply_style": True, "style_id": "sty_ffffff",
+                                       "dry_run": True})
+    assert g.status_code == 200
+
+
 def test_per_generation_style_id_selects_the_fragment(client):
     """A request's `style_id` picks WHICH style's fragment is appended; omitting it uses the
     active default."""

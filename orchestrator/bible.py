@@ -149,9 +149,19 @@ def set_style(ws: Workspace, *, fragment: str | None = None,
               style_id: str | None = None) -> dict:
     """Edit a style's fragment/global-negative (the ACTIVE one unless `style_id` given) +
     the story-level on/off gate (`enabled_default`). Back-compat shape (returns the active
-    mirror). Persists atomically; creates the story on first write."""
+    mirror). Persists atomically; creates the story on first write.
+
+    STRICT on `style_id` (review 2026-06-13): an unknown id RAISES — a mutation must never
+    silently fall back to the active style and overwrite the default (a stale client could
+    clobber it). Generation's `resolve_l1` stays lenient (fallback) — a bad id never errors
+    a render."""
     story = load_story(ws)
-    target = _find_style(story, style_id) or _active(story)
+    if style_id is not None:
+        target = _find_style(story, style_id)
+        if target is None:
+            raise ws_mod.WorkspaceError(f"style {style_id!r} not found")
+    else:
+        target = _active(story)
     if fragment is not None:
         target["fragment"] = fragment
     if global_negative is not None:

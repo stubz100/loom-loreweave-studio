@@ -1154,9 +1154,11 @@ def create_app() -> FastAPI:
     def stage_b(asset_id: str, req: StageBRequest,
                 _auth: None = Depends(require_token)) -> dict:
         """Stage-B expansion (P1/M3, §7.1): expand the starred hero into a coverage-matrix
-        dataset. Builds the recipe (auto prompts) and fires **one img2img job per cell** from
-        the hero, each carrying its frozen `coverage_cell` (→ Stage-C curation → ref_set → P2).
-        Token-gated; needs an open project + a starred hero. `dry_run` previews without the GPU."""
+        dataset. Builds the recipe (auto prompts) and fires **one batch job per realization
+        group** (the worker loads once, loops the cells) from the hero — zimage/sd35 via
+        img2img (+ `realize="mixed"` inpaint group), **flux2 via reference-conditioning**
+        (`ref` mode, §11) — each cell carrying its frozen `coverage_cell` (→ Stage-C curation
+        → ref_set → P2). Token-gated; needs an open project + a starred hero. `dry_run` previews."""
         ws = _require_ws()
         # Hero (Stage-A pick) seeds every img2img cell.
         try:

@@ -1799,7 +1799,7 @@ export default function App() {
                 Save
               </button>
               <label className="apply-style"
-                     title="prepend the style to generation (R104) — Save persists this as the default">
+                     title="apply the selected style to generation — appended after the character prompt (R104, amended 2026-06-10); Save persists the on/off as the default">
                 <input type="checkbox" checked={applyStyle}
                        onChange={(e) => setApplyStyle(e.target.checked)} />
                 apply

@@ -162,6 +162,7 @@ export interface GenerateRequest {
   version_id?: string;
   stage?: "A" | "B" | "C";
   apply_style?: boolean;
+  style_id?: string;        // which L1 style to apply; omit = the active default
   dry_run?: boolean;
 }
 
@@ -606,6 +607,7 @@ export interface StageBRequest {
   height?: number;
   base_seed?: number | null;
   apply_style?: boolean;
+  style_id?: string;        // which L1 style to apply; omit = the active default
   params?: Record<string, unknown>;
   dry_run?: boolean;
   /** M3.5 — "mixed" realizes inpaint-method cells against the hero's bg mask
@@ -624,7 +626,7 @@ export interface StageBRequest {
 export async function sketchHero(assetId: string, body: {
   version_id?: string; shot_size?: string; angle?: string; expression?: string;
   motion_prompt?: string | null; character_clause?: string | null;
-  every?: number; max_frames?: number;
+  every?: number; max_frames?: number; apply_style?: boolean; style_id?: string;
   params?: Record<string, unknown>;
 }): Promise<{ job_id: string; cell: CoverageCell; prompt: string }> {
   const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/stage-b/sketch`, {

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,7 +27,7 @@ from orchestrator.config import CONFIG
 def test_flux2_present_and_capabilities():
     caps = flux2.capabilities(CONFIG.pipeline_roots)
     assert caps["present"] is True and caps["pipeline"] == "flux2"
-    assert "ref" in caps["worker_modes"] and caps["modes"] == ["ref"]
+    assert "ref" in caps["worker_modes"] and caps["modes"] == ["ref", "t2i"]
     # the multi-ref capability flag (§11) the UI / future callers key on
     assert caps["multi_ref"]["via"] == "encode_image_refs"
     assert caps["multi_ref"]["max_refs"] >= 4
@@ -164,10 +165,33 @@ def test_stage_b_flux2_items_record_ref_method(client, monkeypatch):
     assert params["ref_images"] and "init_image" not in params   # hero rides as the reference
 
 
+def test_flux2_t2i_casting_dry_run(client):
+    """flux2 is now a first-class casting/sandbox t2i generator (not only inside `multi`).
+    /generate accepts pipeline=flux2 mode=t2i and module-invokes the worker with the offload
+    swap forced (klein flow + Qwen3 encoder don't co-fit 16 GB on a single run)."""
+    r = client.post("/generate",
+                    json={"pipeline": "flux2", "prompt": "a lone astronaut", "count": 1,
+                          "dry_run": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["pipeline"] == "flux2"
+    assert "-m" in body["argv"] and "pipeline.flux2.run_pipeline" in body["argv"]
+    assert "--mode" in body["argv"] and body["argv"][body["argv"].index("--mode") + 1] == "t2i"
+    assert "--cpu-offload" in body["argv"]      # forced — fits 16 GB via the CPU<->GPU swap
+
+
+def test_flux2_single_argv_forces_cpu_offload():
+    from orchestrator.adapters import flux2 as fx
+    from orchestrator.adapters.base import JobSpec
+    spec = JobSpec(pipeline="flux2", mode="t2i", params={"prompt": "x"}, output_dir=Path("."))
+    argv = fx.build_argv(spec, "python", fx.resolve_script(CONFIG.pipeline_roots))
+    assert argv.count("--cpu-offload") == 1     # added once, not duplicated
+
+
 def test_capabilities_includes_flux2(client):
     """Review 2026-06-13 Low: the runner registers flux2 + the adapter exposes caps, so
     /capabilities must list it."""
     caps = client.get("/capabilities").json()["pipelines"]
     assert "flux2" in caps
-    assert caps["flux2"]["present"] is True and caps["flux2"]["modes"] == ["ref"]
+    assert caps["flux2"]["present"] is True and caps["flux2"]["modes"] == ["ref", "t2i"]
     assert caps["flux2"]["multi_ref"]["via"] == "encode_image_refs"

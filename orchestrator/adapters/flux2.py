@@ -40,8 +40,9 @@ PIPELINE = "flux2"
 # Module-invoked (package-relative imports), like `multi` — NOT run by bare path.
 MODULE = "pipeline.flux2.run_pipeline"
 SUPPORTED_MODES = ("t2i", "img2img", "ref")
-# loom's flux2 role is identity-preserving Stage-B expansion → the `ref` mode (§11, R147).
-WIRED_MODES = ("ref",)
+# loom wires `ref` (identity-preserving Stage-B expansion, §11/R147) + `t2i` (standalone
+# casting/sandbox — flux2 as a first-class generator, not only inside `multi`).
+WIRED_MODES = ("ref", "t2i")
 WIRED_PARAMS = (
     "prompt", "mode", "width", "height", "seed", "model_name",
     "num_steps", "guidance", "ref_images",
@@ -137,6 +138,11 @@ def build_argv(spec: JobSpec, python: str, script: Path) -> list[str]:
     for ref in (p.get("ref_images") or []):
         argv += ["--ref-image", str(ref)]
     argv += model_catalog.emit_argv(PIPELINE, p, mode)
+    # Single-run flux2 (t2i casting / ref preview) loads the 8 GB klein flow model AND the
+    # 8 GB Qwen3 text encoder — force the CPU<->GPU swap so they don't co-reside on 16 GB.
+    # (The batch `ref` sweep does its own two-phase offload in run_jobs, never this path.)
+    if "--cpu-offload" not in argv:
+        argv.append("--cpu-offload")
     return argv
 
 

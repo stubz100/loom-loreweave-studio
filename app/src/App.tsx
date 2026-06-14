@@ -102,12 +102,13 @@ export default function App() {
   const [count, setCount] = useState(3);
   // Generation pipeline — selectable everywhere since 2026-06-10 #3 (the sandbox is the
   // experimentation surface: multi casting + zimage/sd35 t2i all work unscoped).
-  const [castPipeline, setCastPipeline] = useState<"multi" | "zimage" | "sd35">("multi");
+  const [castPipeline, setCastPipeline] = useState<"multi" | "zimage" | "sd35" | "flux2">("multi");
   const [numCandidates, setNumCandidates] = useState(2);
   const [ideationMode, setIdeationMode] = useState<"fast" | "refined">("fast");
   const [batchIds, setBatchIds] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Record<string, Job>>({});
   const [selected, setSelected] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<string | null>(null);   // full-res lightbox image src
   const [error, setError] = useState<string | null>(null);
   const [counts, setCounts] = useState({ queued: 0, running: 0, done: 0, failed: 0, canceled: 0 });
   const [paused, setPaused] = useState(false);
@@ -181,6 +182,14 @@ export default function App() {
     // Load the model catalog once (drives the Stage-B model-variant selector).
     getModels().then(setCatalog).catch(() => {});
   }, []);
+
+  // Full-res viewer: ESC closes the lightbox.
+  useEffect(() => {
+    if (!viewer) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setViewer(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [viewer]);
 
   // Apply a /jobs payload to the UI — the single place queue state lands (review
   // 2026-06-10: the old second 1.2 s poll loop is gone; the steady 2 s probe + an
@@ -1320,13 +1329,14 @@ export default function App() {
               <select
                 value={castPipeline}
                 onChange={(e) => {
-                  setCastPipeline(e.target.value as "multi" | "zimage" | "sd35");
+                  setCastPipeline(e.target.value as "multi" | "zimage" | "sd35" | "flux2");
                   setAdvParamsA({});   // tunables are per-pipeline
                 }}
               >
                 <option value="multi">multi</option>
                 <option value="zimage">zimage</option>
                 <option value="sd35">sd35</option>
+                <option value="flux2">flux2 🔒</option>
               </select>
             </label>
             <label>
@@ -1817,6 +1827,7 @@ export default function App() {
                 interim={c.interim ?? false}
                 selected={selected === c.key}
                 onClick={() => setSelected(c.key)}
+                onView={(src) => setViewer(src)}
                 onCancel={() => c.job && onCancel(c.job.id)}
                 onDelete={() => c.job && onDelete(c.job.id)}
                 castable={!!activeAsset && stage === "A"}
@@ -2017,6 +2028,16 @@ export default function App() {
           </div>
         </div>
       )}
+      {viewer && (
+        <div className="viewer-backdrop" onClick={() => setViewer(null)}
+             title="click anywhere / Esc to close">
+          <img className="viewer-img" src={viewer} alt="full resolution"
+               onClick={(e) => e.stopPropagation()} />
+          <button className="viewer-close" onClick={() => setViewer(null)} title="close (Esc)">
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2069,6 +2090,7 @@ function GridCell({
   interim = false,
   selected,
   onClick,
+  onView,
   onCancel,
   onDelete,
   castable = false,
@@ -2090,6 +2112,7 @@ function GridCell({
   interim?: boolean;
   selected: boolean;
   onClick: () => void;
+  onView?: (src: string) => void;
   onCancel: () => void;
   onDelete: () => void;
   castable?: boolean;
@@ -2153,6 +2176,15 @@ function GridCell({
           {status === "canceled" && "⊘ canceled"}
           {status === "done" && (isVideo ? "🎬 video sketch (frames follow ⤵)" : "—")}
         </span>
+      )}
+      {showImg && onView && (
+        <button
+          className="view"
+          title="view full resolution"
+          onClick={(e) => { e.stopPropagation(); onView(isRef ? refSrc! : outputUrl(name!)); }}
+        >
+          🔍
+        </button>
       )}
       {status === "running" && !interim && (
         <div className="progress">

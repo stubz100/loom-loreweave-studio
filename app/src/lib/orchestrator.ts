@@ -139,8 +139,8 @@ export interface QueueState {
 }
 
 export interface GenerateRequest {
-  pipeline?: "zimage" | "multi" | "sd35";
-  mode?: "t2i" | "ideate" | "img2img" | "inpaint";
+  pipeline?: "zimage" | "multi" | "sd35" | "flux2";
+  mode?: "t2i" | "ideate" | "img2img" | "inpaint" | "ref";
   prompt: string;
   count?: number;
   num_candidates?: number;

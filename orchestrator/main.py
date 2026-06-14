@@ -106,8 +106,8 @@ class GenerateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    pipeline: Literal["zimage", "multi", "sd35"] = "zimage"
-    mode: Literal["t2i", "ideate", "img2img", "inpaint"] = "t2i"
+    pipeline: Literal["zimage", "multi", "sd35", "flux2"] = "zimage"
+    mode: Literal["t2i", "ideate", "img2img", "inpaint", "ref"] = "t2i"
     prompt: str
     count: int = Field(default=3, ge=1, le=MAX_BATCH)
     # P1/M2 multi casting: one cast = ONE job → a pool of num_candidates × pipelines

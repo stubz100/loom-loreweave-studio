@@ -197,6 +197,19 @@ export interface StyleInfo {
   global_negative?: string;
 }
 
+/** A named L1 style in the collection (2026-06-13). */
+export interface StyleEntry {
+  id: string;
+  name: string;
+  fragment: string;
+  global_negative?: string;
+}
+export interface StylesInfo {
+  styles: StyleEntry[];
+  active_style_id: string;
+  enabled_default: boolean;
+}
+
 /** M8 — the full L1 World record. */
 export interface SpineCharacter {
   id: string;
@@ -277,15 +290,41 @@ export async function getStyle(signal?: AbortSignal): Promise<StyleInfo> {
 }
 
 export async function setStyle(fragment?: string, enabled_default?: boolean,
-                               global_negative?: string): Promise<StyleInfo> {
+                               global_negative?: string, style_id?: string): Promise<StyleInfo> {
   const res = await fetch(`${orchestratorUrl()}/bible/style`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
-    body: JSON.stringify({ fragment, enabled_default, global_negative }),
+    body: JSON.stringify({ fragment, enabled_default, global_negative, style_id }),
   });
   if (!res.ok) throw new Error(`set style ${res.status}: ${await res.text()}`);
   return (await res.json()) as StyleInfo;
 }
+
+// --- L1 style COLLECTION (2026-06-13): multiple named styles --------------------
+export async function getStyles(signal?: AbortSignal): Promise<StylesInfo> {
+  const res = await fetch(`${orchestratorUrl()}/bible/styles`, { signal });
+  if (!res.ok) throw new Error(`styles ${res.status}`);
+  return (await res.json()) as StylesInfo;
+}
+
+async function stylesMutate(path: string, method: string, body?: unknown): Promise<StylesInfo> {
+  const res = await fetch(`${orchestratorUrl()}/bible/styles${path}`, {
+    method,
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) throw new Error(`styles ${res.status}: ${await res.text()}`);
+  return (await res.json()) as StylesInfo;
+}
+
+export const addStyle = (name: string, fragment = "", global_negative = "") =>
+  stylesMutate("", "POST", { name, fragment, global_negative });
+export const updateStyle = (id: string, patch: Partial<Pick<StyleEntry, "name" | "fragment" | "global_negative">>) =>
+  stylesMutate(`/${encodeURIComponent(id)}`, "PUT", patch);
+export const deleteStyle = (id: string) =>
+  stylesMutate(`/${encodeURIComponent(id)}`, "DELETE");
+export const setActiveStyle = (style_id: string) =>
+  stylesMutate("/active", "POST", { style_id });
 
 // --- M8: L1 World (world prose + global negative + story spine) ------------------
 

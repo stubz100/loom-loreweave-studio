@@ -18,6 +18,11 @@ import {
   getHealth,
   getProject,
   getStyle,
+  getStyles,
+  addStyle,
+  updateStyle,
+  deleteStyle,
+  setActiveStyle,
   getBible,
   exportProfile,
   importProfile,
@@ -76,6 +81,8 @@ import {
   type StageBPreview,
   type StageBRequest,
   type StyleInfo,
+  type StylesInfo,
+  type StyleEntry,
 } from "./lib/orchestrator";
 import { log } from "./lib/log";
 
@@ -123,6 +130,8 @@ export default function App() {
   const [activeAsset, setActiveAsset] = useState<AssetSummary | null>(null);
   const [casting, setCasting] = useState<CastingCandidate[]>([]);
   const [style, setStyleState] = useState<StyleInfo | null>(null);
+  const [styles, setStyles] = useState<StylesInfo | null>(null);   // L1 style collection
+  const [genStyleId, setGenStyleId] = useState("");                // which style for this gen/edit
   const [styleDraft, setStyleDraft] = useState("");
   // M8 — L1 World view toggle (ASSETS bootstrap vs the WORLD authoring surface).
   const [view, setView] = useState<"assets" | "world">("assets");
@@ -335,6 +344,7 @@ export default function App() {
         ideation_mode: ideationMode,
         ...scope,
         apply_style: applyStyle,
+        ...(genStyleId ? { style_id: genStyleId } : {}),
         ...(top.width !== undefined ? { width: top.width as number } : {}),
         ...(top.height !== undefined ? { height: top.height as number } : {}),
         ...(top.seed !== undefined ? { seed: top.seed as number } : {}),
@@ -347,6 +357,7 @@ export default function App() {
         count,
         ...scope,
         apply_style: applyStyle,
+        ...(genStyleId ? { style_id: genStyleId } : {}),
         ...top,
         ...(Object.keys(channel).length ? { params: channel } : {}),
       };
@@ -506,14 +517,33 @@ export default function App() {
   // --- L2 Asset Studio (P1/M1) ---
   const refreshAssets = async () => {
     try {
-      const [a, s] = await Promise.all([listAssets(), getStyle()]);
+      const [a, s, st] = await Promise.all([listAssets(), getStyle(), getStyles()]);
       setAssets(a.assets);
       setStyleState(s);
-      setStyleDraft(s.fragment);
+      setStyles(st);
+      setGenStyleId(st.active_style_id);   // per-gen selection resets to the active default
+      const sel = st.styles.find((x) => x.id === st.active_style_id);
+      setStyleDraft(sel?.fragment ?? s.fragment);
       setApplyStyle(s.enabled_default);
     } catch {
       /* no project / transient */
     }
+  };
+
+  // Reload just the style collection (after add/delete/set-active/edit in L1 or the bar).
+  const refreshStyles = async () => {
+    try {
+      const st = await getStyles();
+      setStyles(st);
+      setGenStyleId((cur) => (cur && st.styles.some((x) => x.id === cur)) ? cur : st.active_style_id);
+    } catch { /* transient */ }
+  };
+
+  // Pick which L1 style applies to the next generation (and is the one the bar edits).
+  const onSelectGenStyle = (id: string) => {
+    setGenStyleId(id);
+    const sel = styles?.styles.find((x) => x.id === id);
+    if (sel) setStyleDraft(sel.fragment);
   };
 
   // Load the library + style whenever the open project changes.
@@ -844,6 +874,7 @@ export default function App() {
       ...(identityOn !== null ? { identity: identityOn } : {}),   // omit = auto (R93)
       character_clause: characterClause.trim() || undefined,
       apply_style: applyStyle,
+      ...(genStyleId ? { style_id: genStyleId } : {}),
       ...(top.width !== undefined ? { width: top.width as number } : {}),
       ...(top.height !== undefined ? { height: top.height as number } : {}),
       ...(top.seed !== undefined ? { base_seed: top.seed as number } : {}),
@@ -950,11 +981,13 @@ export default function App() {
 
   const onSaveStyle = async () => {
     try {
-      // Persist both the fragment and the apply toggle as the saved default (review:
-      // enabled_default must be settable, not just stored).
-      const s = await setStyle(styleDraft, applyStyle);
+      // Save the fragment into the SELECTED style (genStyleId) + the on/off gate (review:
+      // enabled_default must be settable, not just stored). 2026-06-13: styles are a
+      // collection, so the bar edits whichever style is picked.
+      const s = await setStyle(styleDraft, applyStyle, undefined, genStyleId || undefined);
       setStyleState(s);
-      log.info("style saved (apply default:", applyStyle, ")");
+      await refreshStyles();
+      log.info("style saved", genStyleId ? `(${genStyleId})` : "", "apply:", applyStyle);
     } catch (e) {
       setError(String(e));
     }
@@ -1253,11 +1286,7 @@ export default function App() {
               project={project}
               onError={setError}
               onStubCreated={() => void refreshAssets()}
-              onStyleSaved={(s) => {           // keep the L2 Assets style bar in sync (M8 review)
-                setStyleState(s);
-                setStyleDraft(s.fragment);
-                setApplyStyle(s.enabled_default);
-              }}
+              onStylesChanged={() => { void refreshStyles(); void refreshAssets(); }}
             />
           ) : (
           <>
@@ -1746,6 +1775,15 @@ export default function App() {
           {project?.open && (
             <div className="style-bar">
               <span className="style-label">L1 style</span>
+              <select className="style-sel" value={genStyleId}
+                      onChange={(e) => onSelectGenStyle(e.target.value)}
+                      title="which L1 style applies to THIS generation (★ = the project default). Edit its fragment here; add/delete/set-default in L1·World.">
+                {(styles?.styles ?? []).map((st) => (
+                  <option key={st.id} value={st.id}>
+                    {st.name}{styles && st.id === styles.active_style_id ? " ★" : ""}
+                  </option>
+                ))}
+              </select>
               <input
                 className="style-frag"
                 placeholder="style fragment (auto-applied — appended; full editor in L1·World)…"
@@ -1756,8 +1794,8 @@ export default function App() {
                 }}
               />
               <button className="proj-btn" onClick={onSaveStyle}
-                      disabled={!style || (styleDraft === style.fragment
-                                           && applyStyle === style.enabled_default)}>
+                      disabled={styleDraft === (styles?.styles.find((x) => x.id === genStyleId)?.fragment ?? "")
+                                && applyStyle === (style?.enabled_default ?? true)}>
                 Save
               </button>
               <label className="apply-style"
@@ -2278,29 +2316,28 @@ function GridCell({
 
 // M8 — L1 World authoring: world prose, the style fragment + global negative, and the
 // story spine (premise + characters that materialize into stub AssetProfiles, R55).
-function WorldWorkspace({ project, onError, onStubCreated, onStyleSaved }: {
+function WorldWorkspace({ project, onError, onStubCreated, onStylesChanged }: {
   project: ProjectInfo | null;
   onError: (e: string) => void;
   onStubCreated: () => void;
-  onStyleSaved: (s: StyleInfo) => void;
+  onStylesChanged: () => void;    // tell the parent to reload styles (the L2 bar selector)
 }) {
   const [bible, setBible] = useState<BibleInfo | null>(null);
+  const [stylesData, setStylesData] = useState<StylesInfo | null>(null);
   const [worldDraft, setWorldDraft] = useState("");
-  const [fragDraft, setFragDraft] = useState("");
-  const [negDraft, setNegDraft] = useState("");
   const [premiseDraft, setPremiseDraft] = useState("");
   const [newName, setNewName] = useState("");
   const [newSnippet, setNewSnippet] = useState("");
+  const [newStyleName, setNewStyleName] = useState("");
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => {
-    if (!project?.open) { setBible(null); return; }
+    if (!project?.open) { setBible(null); setStylesData(null); return; }
     try {
-      const b = await getBible();
+      const [b, st] = await Promise.all([getBible(), getStyles()]);
       setBible(b);
+      setStylesData(st);
       setWorldDraft(b.world ?? "");
-      setFragDraft(b.style.fragment);
-      setNegDraft(b.style.global_negative ?? "");
       setPremiseDraft(b.spine?.premise ?? "");
     } catch (e) { onError(String(e)); }
   };
@@ -2309,6 +2346,12 @@ function WorldWorkspace({ project, onError, onStubCreated, onStyleSaved }: {
   const guard = async (fn: () => Promise<BibleInfo>) => {
     setBusy(true);
     try { setBible(await fn()); } catch (e) { onError(String(e)); } finally { setBusy(false); }
+  };
+  // Style-collection mutations return the full StylesInfo; refresh local + notify the parent.
+  const guardStyles = async (fn: () => Promise<StylesInfo>) => {
+    setBusy(true);
+    try { setStylesData(await fn()); onStylesChanged(); }
+    catch (e) { onError(String(e)); } finally { setBusy(false); }
   };
 
   if (!project?.open) {
@@ -2320,27 +2363,23 @@ function WorldWorkspace({ project, onError, onStubCreated, onStyleSaved }: {
       <div className="rail-head">L1 WORLD — the bible every generation inherits</div>
 
       <section className="world-sec">
-        <h3>Visual style <span className="muted">(auto-applied to every generation, R104)</span></h3>
-        <label className="world-field">
-          style fragment <span className="muted">— appended after the character prompt</span>
-          <textarea rows={2} value={fragDraft} onChange={(e) => setFragDraft(e.target.value)} />
-        </label>
-        <label className="world-field">
-          global negative <span className="muted">— appended to every negative prompt</span>
-          <textarea rows={2} value={negDraft} onChange={(e) => setNegDraft(e.target.value)}
-                    placeholder="blurry, extra fingers, watermark, lowres…" />
-        </label>
-        <button className="proj-btn" disabled={busy}
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    const s = await setStyle(fragDraft, undefined, negDraft);
-                    onStyleSaved(s);           // sync the parent (L2 toolbar) — no stale overwrite
-                    await refresh();
-                  } catch (e) { onError(String(e)); } finally { setBusy(false); }
-                }}>
-          Save style
-        </button>
+        <h3>Visual styles <span className="muted">(named snippets — pick one per generation; ★ = the project default, R104)</span></h3>
+        {(stylesData?.styles ?? []).map((st) => (
+          <StyleRow key={st.id} st={st} busy={busy}
+            isActive={stylesData?.active_style_id === st.id}
+            canDelete={(stylesData?.styles.length ?? 0) > 1}
+            onSave={(name, fragment, neg) => void guardStyles(() =>
+              updateStyle(st.id, { name, fragment, global_negative: neg }))}
+            onDelete={() => void guardStyles(() => deleteStyle(st.id))}
+            onSetActive={() => void guardStyles(() => setActiveStyle(st.id))} />
+        ))}
+        <div className="style-add">
+          <input className="prompt" placeholder="new style name (e.g. Noir, Watercolor)…"
+                 value={newStyleName} onChange={(e) => setNewStyleName(e.target.value)} />
+          <button className="proj-btn" disabled={busy || !newStyleName.trim()}
+                  onClick={() => { void guardStyles(() => addStyle(newStyleName.trim()));
+                                   setNewStyleName(""); }}>+ add style</button>
+        </div>
       </section>
 
       <section className="world-sec">
@@ -2423,6 +2462,38 @@ function SpineRow({ ch, busy, onSave, onDelete, onStub, onResync }: {
       )}
       <button className="ghost" disabled={busy} onClick={onDelete} title="remove from spine (a linked profile is left intact)">✕</button>
       {linked && <span className="muted spine-linked" title={ch.linked_asset_id!}>● linked</span>}
+    </div>
+  );
+}
+
+function StyleRow({ st, busy, isActive, canDelete, onSave, onDelete, onSetActive }: {
+  st: StyleEntry; busy: boolean; isActive: boolean; canDelete: boolean;
+  onSave: (name: string, fragment: string, global_negative: string) => void;
+  onDelete: () => void; onSetActive: () => void;
+}) {
+  const [name, setName] = useState(st.name);
+  const [fragment, setFragment] = useState(st.fragment);
+  const [neg, setNeg] = useState(st.global_negative ?? "");
+  const dirty = name !== st.name || fragment !== st.fragment || neg !== (st.global_negative ?? "");
+  return (
+    <div className={`style-row ${isActive ? "active" : ""}`}>
+      <div className="style-row-head">
+        <input className="prompt style-name" value={name} onChange={(e) => setName(e.target.value)}
+               placeholder="style name…" />
+        {isActive
+          ? <span className="muted" title="the project default (used when a generation doesn't pick one)">★ default</span>
+          : <button className="ghost" disabled={busy} onClick={onSetActive}
+                    title="make this the project default">set default</button>}
+        <button className="ghost" disabled={busy || !dirty} onClick={() => onSave(name, fragment, neg)}>save</button>
+        <button className="ghost" disabled={busy || !canDelete} onClick={onDelete}
+                title={canDelete ? "delete this style" : "can't delete the last style"}>✕</button>
+      </div>
+      <textarea rows={2} className="style-frag-edit" value={fragment}
+                onChange={(e) => setFragment(e.target.value)}
+                placeholder="style fragment — appended after the character prompt…" />
+      <textarea rows={1} className="style-neg-edit" value={neg}
+                onChange={(e) => setNeg(e.target.value)}
+                placeholder="global negative — appended to every negative prompt…" />
     </div>
   );
 }

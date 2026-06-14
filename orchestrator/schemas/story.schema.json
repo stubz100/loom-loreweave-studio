@@ -13,6 +13,7 @@
     },
     "style": {
       "type": "object",
+      "description": "MIRROR of the ACTIVE style (id/fragment/enabled_default/global_negative) — kept for back-compat + this required field; the canonical store is `styles[]` + `active_style_id` (2026-06-13: multiple named styles).",
       "required": ["id", "fragment", "enabled_default"],
       "properties": {
         "id": { "type": "string", "pattern": "^sty_[0-9a-f]{6}$" },
@@ -23,6 +24,29 @@
           "description": "M8: a negative prompt auto-applied to every generation (same apply_style gate as the fragment) — appended to the request's negative_prompt."
         }
       }
+    },
+    "styles": {
+      "type": "array",
+      "description": "L1 style COLLECTION (2026-06-13): named prompt/style snippets, selectable per generation. `active_style_id` is the default; `style` mirrors the active entry.",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "fragment"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^sty_[0-9a-f]{6}$" },
+          "name": { "type": "string", "minLength": 1 },
+          "fragment": { "type": "string" },
+          "global_negative": { "type": "string" }
+        }
+      }
+    },
+    "active_style_id": {
+      "type": "string",
+      "pattern": "^sty_[0-9a-f]{6}$",
+      "description": "the default style id (used when a generation doesn't pick one)."
+    },
+    "style_enabled_default": {
+      "type": "boolean",
+      "description": "the story-level style on/off gate (a per-gen apply_style overrides it)."
     },
     "spine": {
       "type": "object",

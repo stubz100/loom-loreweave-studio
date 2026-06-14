@@ -19,18 +19,74 @@ except ImportError:  # pragma: no cover - direct-run convenience
 STORY_SCHEMA_VERSION = 1
 # A sensible generic starting style — the user edits it in L1; it auto-appends (R104).
 DEFAULT_STYLE_FRAGMENT = "cinematic, dramatic lighting, highly detailed, sharp focus"
+# The seeded default style's id is FIXED (not random) so an UNPERSISTED default story reads
+# back the same id every call — otherwise GET-then-DELETE/set-active would reference an id
+# the next default regenerated (a 404). Persists with this id on first edit.
+DEFAULT_STYLE_ID = "sty_000000"
 
+
+# --- L1 styles: a COLLECTION of named prompt/style snippets (was a single fragment) ----
+# The original storyboard envisioned a Visual Style with a `style_id` + revisions; the user
+# (2026-06-13) asked for multiple named styles, selectable per generation. Canonical store =
+# `styles[]` + `active_style_id` + a story-level on/off gate `style_enabled_default`. The
+# legacy single `style` object is KEPT as a MIRROR of the ACTIVE style (id/fragment/
+# enabled_default/global_negative) so older readers + the schema's `required: style` still
+# work, and a project written before this migrates transparently on load.
 
 def _default_story() -> dict:
-    return {
+    story = {
         "schema_version": STORY_SCHEMA_VERSION,
         "id": new_id("sto"),
-        "style": {"id": new_id("sty"), "fragment": DEFAULT_STYLE_FRAGMENT,
-                  "enabled_default": True},
+        "styles": [{"id": DEFAULT_STYLE_ID, "name": "Default",
+                    "fragment": DEFAULT_STYLE_FRAGMENT, "global_negative": ""}],
+        "active_style_id": DEFAULT_STYLE_ID,
+        "style_enabled_default": True,
     }
+    return _sync_mirror(story)
+
+
+def _normalize(story: dict) -> dict:
+    """Migrate a legacy single-`style` story to the `styles[]` collection (in-memory;
+    persisted on next write) + keep the active id valid + the gate present."""
+    if not story.get("styles"):
+        legacy = story.get("style") or {}
+        sid = legacy.get("id") or new_id("sty")
+        story["styles"] = [{
+            "id": sid, "name": legacy.get("name") or "Default",
+            "fragment": legacy.get("fragment", DEFAULT_STYLE_FRAGMENT),
+            "global_negative": legacy.get("global_negative", ""),
+        }]
+        story.setdefault("active_style_id", sid)
+        story.setdefault("style_enabled_default", legacy.get("enabled_default", True))
+    ids = [s["id"] for s in story["styles"]]
+    if story.get("active_style_id") not in ids:
+        story["active_style_id"] = ids[0]
+    story.setdefault("style_enabled_default", True)
+    return story
+
+
+def _active(story: dict) -> dict:
+    return next(s for s in story["styles"] if s["id"] == story["active_style_id"])
+
+
+def _find_style(story: dict, style_id: str | None) -> dict | None:
+    if not style_id:
+        return None
+    return next((s for s in story["styles"] if s["id"] == style_id), None)
+
+
+def _sync_mirror(story: dict) -> dict:
+    """Keep `story['style']` = the ACTIVE style (+ the gate) for back-compat + schema."""
+    _normalize(story)
+    a = _active(story)
+    story["style"] = {"id": a["id"], "fragment": a.get("fragment", ""),
+                      "enabled_default": bool(story.get("style_enabled_default", True)),
+                      "global_negative": a.get("global_negative", "")}
+    return story
 
 
 def _save(ws: Workspace, story: dict) -> dict:
+    _sync_mirror(story)
     ws_mod.validate(story, "story.schema.json")
     ws.bible_dir.mkdir(parents=True, exist_ok=True)
     ws_mod.atomic_write_json(ws.story_json, story)
@@ -39,32 +95,43 @@ def _save(ws: Workspace, story: dict) -> dict:
 
 def load_story(ws: Workspace) -> dict:
     """Load `story.json` (schema-validated); seed a default in-memory story if absent
-    (file is written on first edit, not on read)."""
+    (file is written on first edit, not on read). Normalizes legacy single-style stories
+    into the `styles[]` collection + refreshes the active-style mirror."""
     if not ws.story_json.is_file():
         return _default_story()
     story = ws_mod.read_json(ws.story_json)
     ws_mod.validate(story, "story.schema.json")
-    return story
+    return _sync_mirror(story)
 
 
 def load_style(ws: Workspace) -> dict:
-    """The active style block `{id, fragment, enabled_default}`."""
+    """The ACTIVE style block `{id, fragment, enabled_default, global_negative}` (the mirror)."""
     return load_story(ws)["style"]
 
 
-def resolve_l1(ws: Workspace, apply_style_req: bool | None) -> tuple[bool, str, str]:
+def list_styles(ws: Workspace) -> dict:
+    """The full style collection for the L1 manager + per-gen selectors."""
+    story = load_story(ws)
+    return {"styles": story["styles"], "active_style_id": story["active_style_id"],
+            "enabled_default": bool(story.get("style_enabled_default", True))}
+
+
+def resolve_l1(ws: Workspace, apply_style_req: bool | None,
+               style_id: str | None = None) -> tuple[bool, str, str]:
     """The L1 style GATE, single source of truth (R104; M8 global negative): returns
-    `(apply, fragment, global_negative)`. `apply_style_req` is the per-gen override —
-    None honors the StoryBible's `enabled_default`. Every generation surface (/generate,
-    Stage-B, sketch) must resolve the style + negative through THIS so the global negative
-    is genuinely global (M8 review 2026-06-13). Both strings are "" when the gate is off."""
-    style = load_style(ws)
+    `(apply, fragment, global_negative)`. `apply_style_req` is the per-gen on/off override —
+    None honors the story-level `style_enabled_default`. `style_id` picks WHICH style (the
+    per-gen selection); None / unknown → the active style. Every generation surface
+    (/generate, Stage-B, sketch) resolves through THIS so the choice is consistent. Both
+    strings are "" when the gate is off."""
+    story = load_story(ws)
     apply = apply_style_req if apply_style_req is not None \
-        else bool(style.get("enabled_default", True))
+        else bool(story.get("style_enabled_default", True))
     if not apply:
         return False, "", ""
-    return (True, (style.get("fragment") or "").strip(),
-            (style.get("global_negative") or "").strip())
+    sty = _find_style(story, style_id) or _active(story)
+    return (True, (sty.get("fragment") or "").strip(),
+            (sty.get("global_negative") or "").strip())
 
 
 def join_negative(existing: str | None, global_negative: str) -> str | None:
@@ -78,17 +145,75 @@ def join_negative(existing: str | None, global_negative: str) -> str | None:
 
 def set_style(ws: Workspace, *, fragment: str | None = None,
               enabled_default: bool | None = None,
-              global_negative: str | None = None) -> dict:
-    """Update the style fragment / default-on flag / global negative (M8) and persist
-    `story.json` atomically. Creates the story on first write."""
+              global_negative: str | None = None,
+              style_id: str | None = None) -> dict:
+    """Edit a style's fragment/global-negative (the ACTIVE one unless `style_id` given) +
+    the story-level on/off gate (`enabled_default`). Back-compat shape (returns the active
+    mirror). Persists atomically; creates the story on first write."""
     story = load_story(ws)
+    target = _find_style(story, style_id) or _active(story)
     if fragment is not None:
-        story["style"]["fragment"] = fragment
-    if enabled_default is not None:
-        story["style"]["enabled_default"] = bool(enabled_default)
+        target["fragment"] = fragment
     if global_negative is not None:
-        story["style"]["global_negative"] = global_negative
+        target["global_negative"] = global_negative
+    if enabled_default is not None:
+        story["style_enabled_default"] = bool(enabled_default)
     return _save(ws, story)["style"]
+
+
+def add_style(ws: Workspace, *, name: str, fragment: str = "",
+              global_negative: str = "") -> dict:
+    """Append a new named style to the collection. Returns the full styles view."""
+    if not (name and name.strip()):
+        raise ws_mod.WorkspaceError("style name must not be empty")
+    story = load_story(ws)
+    story["styles"].append({"id": new_id("sty"), "name": name.strip(),
+                            "fragment": fragment, "global_negative": global_negative})
+    _save(ws, story)
+    return list_styles(ws)
+
+
+def update_style(ws: Workspace, style_id: str, *, name: str | None = None,
+                 fragment: str | None = None, global_negative: str | None = None) -> dict:
+    """Edit any style by id (name/fragment/negative). Returns the full styles view."""
+    story = load_story(ws)
+    sty = _find_style(story, style_id)
+    if sty is None:
+        raise ws_mod.WorkspaceError(f"style {style_id!r} not found")
+    if name is not None:
+        if not name.strip():
+            raise ws_mod.WorkspaceError("style name must not be empty")
+        sty["name"] = name.strip()
+    if fragment is not None:
+        sty["fragment"] = fragment
+    if global_negative is not None:
+        sty["global_negative"] = global_negative
+    _save(ws, story)
+    return list_styles(ws)
+
+
+def remove_style(ws: Workspace, style_id: str) -> dict:
+    """Drop a style. Refuses the last one; re-points `active_style_id` if it was active."""
+    story = load_story(ws)
+    if _find_style(story, style_id) is None:
+        raise ws_mod.WorkspaceError(f"style {style_id!r} not found")
+    if len(story["styles"]) <= 1:
+        raise ws_mod.WorkspaceError("can't delete the last style — edit it instead")
+    story["styles"] = [s for s in story["styles"] if s["id"] != style_id]
+    if story["active_style_id"] == style_id:
+        story["active_style_id"] = story["styles"][0]["id"]
+    _save(ws, story)
+    return list_styles(ws)
+
+
+def set_active_style(ws: Workspace, style_id: str) -> dict:
+    """Set the default style (the one used when a generation doesn't pick one)."""
+    story = load_story(ws)
+    if _find_style(story, style_id) is None:
+        raise ws_mod.WorkspaceError(f"style {style_id!r} not found")
+    story["active_style_id"] = style_id
+    _save(ws, story)
+    return list_styles(ws)
 
 
 # --- M8: L1 World — world prose + story spine -------------------------------------

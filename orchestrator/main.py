@@ -143,6 +143,8 @@ class GenerateRequest(BaseModel):
     # Tri-state (review): True/False = explicit per-gen override (R104); None/omitted =
     # fall back to the StoryBible's saved `enabled_default`.
     apply_style: bool | None = None
+    # Which L1 style to apply (2026-06-13: styles are a collection); None = the active default.
+    style_id: str | None = None
 
     @field_validator("prompt")
     @classmethod
@@ -188,13 +190,38 @@ class CreateAssetRequest(BaseModel):
 
 
 class StyleRequest(BaseModel):
-    """Edit the L1 style fragment (R104 auto-append + default-on toggle) + the M8 global
-    negative (a negative prompt auto-applied to every generation under the same gate)."""
+    """Edit a style's fragment/global-negative (the ACTIVE one unless `style_id` given) + the
+    story-level default-on gate (R104 auto-append; M8 global negative). 2026-06-13: L1 styles
+    are a COLLECTION — see /bible/styles for add/delete/set-active."""
 
     model_config = ConfigDict(extra="forbid")
     fragment: str | None = None
     enabled_default: bool | None = None
     global_negative: str | None = None
+    style_id: str | None = None        # edit a specific style; omit = the active one
+
+
+class AddStyleRequest(BaseModel):
+    """Add a named style to the L1 collection (2026-06-13)."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    fragment: str = ""
+    global_negative: str = ""
+
+
+class UpdateStyleRequest(BaseModel):
+    """Edit a style by id (name/fragment/global-negative)."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    fragment: str | None = None
+    global_negative: str | None = None
+
+
+class ActiveStyleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    style_id: str
 
 
 class WorldRequest(BaseModel):
@@ -260,6 +287,7 @@ class StageBRequest(BaseModel):
     height: int = Field(default=1024, ge=256, le=2048, multiple_of=16)
     base_seed: int | None = None
     apply_style: bool | None = None
+    style_id: str | None = None        # which L1 style; None = the active default
     params: dict = Field(default_factory=dict)
     dry_run: bool = False
     # M3.5 — mixed realization (background-diversity axis, §7.1): inpaint-method cells
@@ -313,6 +341,7 @@ class SketchRequest(BaseModel):
     every: int = Field(default=6, ge=1, le=60)
     max_frames: int = Field(default=24, ge=1, le=120)
     apply_style: bool | None = None
+    style_id: str | None = None        # which L1 style; None = the active default
     params: dict = Field(default_factory=dict)
     dry_run: bool = False
 
@@ -528,7 +557,10 @@ def create_app() -> FastAPI:
                                "DELETE /jobs/{id}", "POST /queue/pause",
                                "POST /queue/unpause", "POST /project", "POST /project/open",
                                "POST /project/close",
-                               "POST /project/forget", "PUT /bible/style", "PUT /bible/world",
+                               "POST /project/forget", "PUT /bible/style",
+                               "POST /bible/styles", "PUT /bible/styles/{id}",
+                               "DELETE /bible/styles/{id}", "POST /bible/styles/active",
+                               "PUT /bible/world",
                                "PUT /bible/spine/premise", "POST /bible/spine/character",
                                "DELETE /bible/spine/character/{cid}",
                                "POST /bible/spine/character/stub",
@@ -768,7 +800,7 @@ def create_app() -> FastAPI:
         # stored but never consulted). **Appended, not prepended** (user decision 2026-06-10,
         # amends R104's wording): the character/user prompt leads — front tokens dominate,
         # and the style mostly restates the look the model already renders.
-        _apply, fragment, global_neg = bible.resolve_l1(ws, req.apply_style)
+        _apply, fragment, global_neg = bible.resolve_l1(ws, req.apply_style, req.style_id)
         if fragment:
             base["prompt"] = f"{base['prompt']}, {fragment}"
         # L1 global negative (M8) pairs with the fragment under the same gate. Skipped for
@@ -864,16 +896,62 @@ def create_app() -> FastAPI:
 
     @app.get("/bible/style")
     def get_style() -> dict:
-        """The L1 style fragment (auto-prepended to generation, R104). Unauthenticated read."""
+        """The ACTIVE L1 style (the mirror: id/fragment/enabled_default/global_negative).
+        Unauthenticated read. (The full collection is GET /bible/styles.)"""
         return bible.load_style(_require_ws())
 
     @app.put("/bible/style")
     def put_style(req: StyleRequest, _auth: None = Depends(require_token)) -> dict:
-        """Edit the style fragment / default-on flag / global negative (writes story.json).
-        Token-gated."""
-        return bible.set_style(_require_ws(), fragment=req.fragment,
-                               enabled_default=req.enabled_default,
-                               global_negative=req.global_negative)
+        """Edit a style's fragment/global-negative (the ACTIVE one unless `style_id`) + the
+        default-on gate (writes story.json). Token-gated."""
+        try:
+            return bible.set_style(_require_ws(), fragment=req.fragment,
+                                   enabled_default=req.enabled_default,
+                                   global_negative=req.global_negative, style_id=req.style_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
+    # --- L1 style COLLECTION (2026-06-13): multiple named styles, selectable per gen ---
+    @app.get("/bible/styles")
+    def get_styles() -> dict:
+        """The L1 style collection `{styles[], active_style_id, enabled_default}` — drives
+        the L1 manager + the per-generation style selectors. Unauthenticated read."""
+        return bible.list_styles(_require_ws())
+
+    @app.post("/bible/styles")
+    def add_style(req: AddStyleRequest, _auth: None = Depends(require_token)) -> dict:
+        """Add a named style to the collection. Token-gated."""
+        try:
+            return bible.add_style(_require_ws(), name=req.name, fragment=req.fragment,
+                                   global_negative=req.global_negative)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+
+    @app.put("/bible/styles/{style_id}")
+    def update_style(style_id: str, req: UpdateStyleRequest,
+                     _auth: None = Depends(require_token)) -> dict:
+        """Edit a style by id (name/fragment/global-negative). Token-gated."""
+        try:
+            return bible.update_style(_require_ws(), style_id, name=req.name,
+                                      fragment=req.fragment, global_negative=req.global_negative)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
+    @app.delete("/bible/styles/{style_id}")
+    def delete_style(style_id: str, _auth: None = Depends(require_token)) -> dict:
+        """Delete a style (refuses the last one; re-points the active default). Token-gated."""
+        try:
+            return bible.remove_style(_require_ws(), style_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/bible/styles/active")
+    def set_active_style(req: ActiveStyleRequest, _auth: None = Depends(require_token)) -> dict:
+        """Set the default style (used when a generation doesn't pick one). Token-gated."""
+        try:
+            return bible.set_active_style(_require_ws(), req.style_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
 
     @app.get("/bible")
     def get_bible() -> dict:
@@ -1107,7 +1185,7 @@ def create_app() -> FastAPI:
         # recipe places it LAST: cell fragment → clause → style, user 2026-06-10).
         # L1 gate, single source of truth (M8 review): the fragment weaves into each recipe
         # prompt, the global negative rides the batch params — both under the same gate.
-        _apply, style_fragment, global_neg = bible.resolve_l1(ws, req.apply_style)
+        _apply, style_fragment, global_neg = bible.resolve_l1(ws, req.apply_style, req.style_id)
 
         try:
             built = recipe.build_recipe(req.preset, character_clause=clause,
@@ -1470,7 +1548,7 @@ def create_app() -> FastAPI:
         model_name = extra.pop("model_name", None)
         # L1 gate, single source of truth (M8 review). Prompt order (user 2026-06-10):
         # cell fragment leads → clause → motion → style; the global negative rides params.
-        _apply, fragment, global_neg = bible.resolve_l1(ws, req.apply_style)
+        _apply, fragment, global_neg = bible.resolve_l1(ws, req.apply_style, req.style_id)
         motion = (req.motion_prompt or "").strip() or \
             "slow steady camera, the character turns and moves naturally"
         prompt = ", ".join(p for p in

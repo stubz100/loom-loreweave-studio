@@ -568,10 +568,13 @@ export default function App() {
       log.info("created asset:", name);
       const a = await listAssets();
       setAssets(a.assets);
-      setActiveAsset(a.assets.find((x) => x.id === r.profile.id) ?? null);
-      setCasting([]); // a fresh asset has no casting yet
-      setSelected(null);
-      void refreshJobs();
+      // Switch to the new asset through the SAME full per-asset reset the rail uses
+      // (stage→A, selection/bulk/filters/Stage-B controls cleared, refreshCasting
+      // repopulates casting/refSet/rejected/anchor/versions for the new id). A partial
+      // reset here left the PREVIOUS asset's curated refSet in state, so its Stage-C ref
+      // tiles rendered as broken placeholders under the new asset's id until the next real
+      // switch (user-reported 2026-06-14; same leak class as the asset switch, line ~651).
+      onSelectAsset(a.assets.find((x) => x.id === r.profile.id) ?? null);
     } catch (e) {
       log.error("create asset failed:", e);
       setError(String(e));
@@ -604,18 +607,15 @@ export default function App() {
       const res = await importProfile(await file.arrayBuffer());
       const a = await listAssets();
       setAssets(a.assets);
-      setActiveAsset(a.assets.find((x) => x.id === res.profile.id) ?? null);
-      onSelectAssetReset();
+      // Full per-asset reset (same leak class as create, above): refreshCasting rescopes
+      // refSet/rejected/anchor/versions to the imported id so no stale tiles linger.
+      onSelectAsset(a.assets.find((x) => x.id === res.profile.id) ?? null);
       log.info("imported:", res.profile.name,
                res.renamed_from ? `(renamed from ${res.renamed_from})` : "");
     } catch (e) {
       log.error("import failed:", e);
       setError(String(e));
     }
-  };
-  // Reset the per-asset view bits after an import switches the active asset.
-  const onSelectAssetReset = () => {
-    setCasting([]); setSelected(null); setStage("A"); void refreshJobs();
   };
 
   // Load the active version's casting set (candidates + which one is the hero ★) so the

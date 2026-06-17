@@ -189,6 +189,33 @@ def test_multi_unset_size_uses_catalog_default_not_project_default(client):
     assert argv3[argv3.index("--width") + 1] == "1536"
 
 
+def test_single_pipeline_unset_size_uses_catalog_default_not_project_default(client):
+    """User 2026-06-14: a 1024² sd35 cast silently ran at 1280×720. The multi branch got the
+    M6 review #2 display==reality fix but the SINGLE pipelines (sd35/zimage/flux2) didn't —
+    so an unset cast kept the 1280×720 GenerateRequest default instead of the catalog default
+    the drawer advertises. Unset → the pipeline's catalog default; explicit values (top-level
+    or params channel) still win."""
+    for pipe, w, h in (("sd35", "1024", "1024"), ("zimage", "1024", "1024"),
+                       ("flux2", "1360", "768")):
+        r = client.post("/generate", json={"pipeline": pipe, "prompt": "a hero",
+                                           "count": 1, "dry_run": True})
+        assert r.status_code == 200, r.text
+        argv = r.json()["argv"]
+        assert argv[argv.index("--width") + 1] == w, f"{pipe} width"
+        assert argv[argv.index("--height") + 1] == h, f"{pipe} height"
+    # explicit top-level dims still win
+    r2 = client.post("/generate", json={"pipeline": "sd35", "prompt": "a hero", "count": 1,
+                                        "width": 1280, "height": 720, "dry_run": True})
+    argv2 = r2.json()["argv"]
+    assert argv2[argv2.index("--width") + 1] == "1280"
+    assert argv2[argv2.index("--height") + 1] == "720"
+    # an explicit params-channel dim still wins over the catalog default
+    r3 = client.post("/generate", json={"pipeline": "sd35", "prompt": "a hero", "count": 1,
+                                        "params": {"width": 1536}, "dry_run": True})
+    argv3 = r3.json()["argv"]
+    assert argv3[argv3.index("--width") + 1] == "1536"
+
+
 def test_generate_multi_footgun_subparams_without_toggle_422(client):
     r = client.post("/generate", json={
         "pipeline": "multi", "prompt": "a hero",

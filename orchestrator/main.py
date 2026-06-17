@@ -755,6 +755,18 @@ def create_app() -> FastAPI:
                     base.update(model_catalog.validate_params(req.pipeline, mode, req.params))
                 except model_catalog.CatalogError as e:
                     raise HTTPException(422, str(e))
+            # Same display==reality fix the multi branch got (M6 review #2), now for the
+            # single pipelines: the TOP-LEVEL width/height Pydantic defaults (1280×720 — the
+            # P0/Wan project default) must not shadow THIS pipeline's native catalog default
+            # that the drawer advertises (sd35/zimage 1024², flux2 1360×768). An UNSET cast
+            # must actually GET the advertised default — else a 1024² sd35 cast silently ran
+            # at 1280×720 (user-reported 2026-06-14). Explicit values — top-level
+            # (model_fields_set) or via the params channel — still win.
+            for dim in ("width", "height"):
+                if dim not in req.model_fields_set and dim not in req.params:
+                    cat_default = model_catalog.param_default(req.pipeline, dim)
+                    if cat_default is not None:
+                        base[dim] = cat_default
             # Per-model weight pre-flight keyed to the model the worker will ACTUALLY load
             # (review 2026-06-11): `model_name` is also a catalog param and the params
             # channel overrides the top-level field on merge, so resolve from the MERGED

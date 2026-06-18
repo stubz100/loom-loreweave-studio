@@ -125,7 +125,9 @@ body {
   border-radius: 4px; padding: 5px 6px; font-size: 11px; resize: vertical; margin-bottom: 4px;
   box-sizing: border-box;
 }
-.style-add { display: flex; gap: 6px; margin-top: 4px; }
+/* M0b — the add-style form sits ABOVE the list; separate them with space + a divider. */
+.style-add { display: flex; gap: 6px; margin: 4px 0 16px; padding-bottom: 14px;
+  border-bottom: 1px solid var(--line); }
 .style-add .prompt { flex: 1; padding: 5px 6px; background: var(--panel-2); color: var(--text);
   border: 1px solid var(--line); border-radius: 4px; font-size: 12px; }
 

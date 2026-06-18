@@ -1176,19 +1176,32 @@ export default function App() {
     <div className="app">
       <header className="titlebar">
         <span className="title">Loreweave Studio</span>
-        <span className="sep">—</span>
-        <span className="project">
-          {project?.open ? project.name : <span className="muted">no project</span>}
-        </span>
-        <button className="proj-btn" onClick={onNewProject} disabled={conn !== "online"}>
-          + New
-        </button>
-        <div className="picker-wrap">
-          <button className="proj-btn" onClick={onTogglePicker} disabled={conn !== "online"}>
-            Open ▾
+        {/* M0a — project actions live in a conventional File menu; the top bar keeps the
+            current project + orchestrator status only (no more inline New/Open/Close strip). */}
+        <div className="filemenu-wrap">
+          <button className="proj-btn" onClick={onTogglePicker} disabled={conn !== "online"}
+                  title="project actions">
+            File ▾
           </button>
           {showPicker && (
-            <div className="picker">
+            <div className="filemenu" role="menu">
+              <button className="filemenu-item" disabled={conn !== "online"}
+                      onClick={() => { setShowPicker(false); void onNewProject(); }}>
+                New project…
+              </button>
+              <button className="filemenu-item" disabled={conn !== "online"}
+                      onClick={onBrowseProject}>
+                Open folder…
+              </button>
+              {project?.open && (
+                <button className="filemenu-item" disabled={conn !== "online"}
+                        onClick={() => { setShowPicker(false); void onCloseProject(); }}
+                        title="close this project (nothing is deleted — its queue resumes paused on reopen)">
+                  Close project
+                </button>
+              )}
+              <div className="filemenu-sep" />
+              <div className="filemenu-label">RECENT</div>
               {projectList.length === 0 && (
                 <div className="picker-empty">no recent projects</div>
               )}
@@ -1198,7 +1211,7 @@ export default function App() {
                     className="picker-open"
                     disabled={!p.exists}
                     title={p.path}
-                    onClick={() => openByPath(p.path)}
+                    onClick={() => { setShowPicker(false); void openByPath(p.path); }}
                   >
                     <span className="picker-name">
                       {p.name || "(unknown)"} {p.active && <span className="picker-active">● open</span>}
@@ -1213,16 +1226,12 @@ export default function App() {
                           onClick={() => onForgetProject(p.path)}>✕</button>
                 </div>
               ))}
-              <button className="picker-browse" onClick={onBrowseProject}>Browse folder…</button>
             </div>
           )}
         </div>
-        {project?.open && (
-          <button className="proj-btn" onClick={onCloseProject} disabled={conn !== "online"}
-                  title="close this project (nothing is deleted — its queue resumes paused on reopen)">
-            Close
-          </button>
-        )}
+        <span className="project">
+          {project?.open ? project.name : <span className="muted">no project</span>}
+        </span>
         <span className="spacer" />
         <span className={`status dot-${dot}`}>
           <i className="dot" /> orchestrator: {conn}
@@ -1239,45 +1248,55 @@ export default function App() {
                     onClick={() => setView("world")}
                     title="L1 World — style, world prose, story spine (M8)">L1 · World</button>
           </div>
-          <div className="rail-head">
-            ASSETS
-            <button className="rail-add" onClick={onCreateAsset}
-                    disabled={conn !== "online" || !project?.open} title="new character">
-              + Character
-            </button>
-            <button className="rail-add" onClick={() => importFileRef.current?.click()}
-                    disabled={conn !== "online" || !project?.open}
-                    title="import a profile bundle (.zip) — always a NEW profile, rename on collision (R67)">
-              ⤒ Import
-            </button>
-            <input ref={importFileRef} type="file" accept=".zip,application/zip"
-                   style={{ display: "none" }}
-                   onChange={(e) => {
-                     const f = e.target.files?.[0];
-                     if (f) void onImportFile(f);
-                     e.target.value = "";   // allow re-importing the same file
-                   }} />
-          </div>
-          {!project?.open && <div className="muted">open a project first</div>}
-          {project?.open && assets.length === 0 && (
-            <div className="muted">no assets yet — add a character</div>
+          {/* M0a — each workspace owns its rail: L2 → the asset library; L1 → the World nav
+              (Visual Styles / World / Story Spine sub-tabs land in M0b). The asset list no
+              longer bleeds into the L1 workspace. */}
+          {view === "assets" && (
+            <>
+              <div className="rail-head">
+                ASSETS
+                <button className="rail-add" onClick={onCreateAsset}
+                        disabled={conn !== "online" || !project?.open} title="new character">
+                  + Character
+                </button>
+                <button className="rail-add" onClick={() => importFileRef.current?.click()}
+                        disabled={conn !== "online" || !project?.open}
+                        title="import a profile bundle (.zip) — always a NEW profile, rename on collision (R67)">
+                  ⤒ Import
+                </button>
+                <input ref={importFileRef} type="file" accept=".zip,application/zip"
+                       style={{ display: "none" }}
+                       onChange={(e) => {
+                         const f = e.target.files?.[0];
+                         if (f) void onImportFile(f);
+                         e.target.value = "";   // allow re-importing the same file
+                       }} />
+              </div>
+              {!project?.open && <div className="muted">open a project first</div>}
+              {project?.open && assets.length === 0 && (
+                <div className="muted">no assets yet — add a character</div>
+              )}
+              <button
+                className={`asset-row sandbox ${activeAsset === null ? "sel" : ""}`}
+                onClick={() => onSelectAsset(null)}
+              >
+                ▦ Sandbox <span className="muted">(unscoped)</span>
+              </button>
+              {assets.map((a) => (
+                <button
+                  key={a.id}
+                  className={`asset-row ${activeAsset?.id === a.id ? "sel" : ""}`}
+                  onClick={() => onSelectAsset(a)}
+                  title={`${a.asset_class} · ${a.version_count} version(s)`}
+                >
+                  <span className="asset-dot" /> {a.name}
+                </button>
+              ))}
+            </>
           )}
-          <button
-            className={`asset-row sandbox ${activeAsset === null ? "sel" : ""}`}
-            onClick={() => onSelectAsset(null)}
-          >
-            ▦ Sandbox <span className="muted">(unscoped)</span>
-          </button>
-          {assets.map((a) => (
-            <button
-              key={a.id}
-              className={`asset-row ${activeAsset?.id === a.id ? "sel" : ""}`}
-              onClick={() => onSelectAsset(a)}
-              title={`${a.asset_class} · ${a.version_count} version(s)`}
-            >
-              <span className="asset-dot" /> {a.name}
-            </button>
-          ))}
+          {view === "world" && (
+            <div className="rail-head">WORLD <span className="muted">L1 bible</span></div>
+          )}
         </nav>
 
         <main className="stage">

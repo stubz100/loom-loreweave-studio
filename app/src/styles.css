@@ -40,12 +40,21 @@ body {
 .proj-btn:disabled { opacity: 0.4; cursor: default; }
 .spacer { flex: 1; }
 
-.picker-wrap { position: relative; }
-.picker {
-  position: absolute; top: 26px; left: 0; z-index: 20; min-width: 320px; max-width: 520px;
-  max-height: 60vh; overflow: auto; background: var(--panel-2); border: 1px solid var(--line);
+/* M0a — File menu (in-app dropdown): project actions + a RECENT list (reuses .picker-row). */
+.filemenu-wrap { position: relative; }
+.filemenu {
+  position: absolute; top: 26px; left: 0; z-index: 20; min-width: 260px; max-width: 480px;
+  max-height: 70vh; overflow: auto; background: var(--panel-2); border: 1px solid var(--line);
   border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 4px;
 }
+.filemenu-item {
+  display: block; width: 100%; text-align: left; background: transparent; border: 0;
+  color: var(--text); padding: 7px 8px; border-radius: 4px; cursor: pointer; font-size: 13px;
+}
+.filemenu-item:hover:not(:disabled) { background: rgba(255,255,255,0.06); }
+.filemenu-item:disabled { opacity: 0.4; cursor: default; }
+.filemenu-sep { border-top: 1px solid var(--line); margin: 4px 0; }
+.filemenu-label { font-size: 10px; letter-spacing: 0.08em; color: var(--muted); padding: 4px 8px 2px; }
 .picker-empty { color: var(--muted); font-size: 12px; padding: 8px; }
 .picker-row { display: flex; align-items: stretch; gap: 2px; }
 .picker-open {
@@ -64,11 +73,6 @@ body {
   border-radius: 4px; font-size: 11px;
 }
 .picker-forget:hover { color: var(--err); background: rgba(255,255,255,0.06); }
-.picker-browse {
-  width: 100%; text-align: left; background: transparent; border: 0; border-top: 1px solid var(--line);
-  color: var(--amber); cursor: pointer; padding: 7px 8px; font-size: 12px; margin-top: 2px;
-}
-.picker-browse:hover { background: rgba(255,255,255,0.06); }
 
 /* L2 asset rail (P1) */
 .rail-head { display: flex; align-items: center; justify-content: space-between; }
@@ -144,7 +148,8 @@ body {
 .dot-warn .dot { background: var(--warn); }
 .dot-err .dot { background: var(--err); }
 
-.panes { display: grid; grid-template-columns: 200px 1fr 240px; flex: 1; min-height: 0; }
+/* M0a — asset panel widened 20% (200 → 240px) for a less cramped library/World rail. */
+.panes { display: grid; grid-template-columns: 240px 1fr 240px; flex: 1; min-height: 0; }
 .rail, .inspector { background: var(--panel); padding: 10px; overflow: auto; }
 .rail { border-right: 1px solid var(--line); }
 .inspector { border-left: 1px solid var(--line); }

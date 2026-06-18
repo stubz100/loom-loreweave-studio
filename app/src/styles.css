@@ -389,7 +389,9 @@ a.ghost { text-decoration: none; display: inline-block; }
   border-radius: 4px; padding: 4px 6px; font-size: 11px; cursor: pointer;
 }
 .view-tab.on { background: var(--amber); color: #1a1a1a; border-color: var(--amber); font-weight: 600; }
-.world { max-width: 760px; padding: 4px 2px; overflow-y: auto; }
+/* M0b — extra right padding so the cards don't butt against the scrollbar (the block scrolls
+   internally; max-width keeps it well clear of the inspector). */
+.world { max-width: 760px; padding: 6px 16px 6px 4px; overflow-y: auto; }
 .world-sec { margin: 14px 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .world-sec h3 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }
 .world-sec h3 .muted { font-weight: 400; font-size: 11px; }

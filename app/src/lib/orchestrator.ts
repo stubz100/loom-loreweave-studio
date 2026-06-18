@@ -491,8 +491,6 @@ export interface ProfileVersion {
   casting: CastingCandidate[];
   /** P1-12: out/-relative output names rejected during Stage-C culling (persistent). */
   rejected?: string[];
-  /** M0c: per-base-image postprocess stacks. */
-  postproc_stacks?: PostprocStack[];
 }
 
 /** P1-12: mark/unmark a Stage-B candidate output rejected (persistent cull-from-view). */
@@ -671,31 +669,46 @@ export async function matteHero(assetId: string, versionId?: string, params?: Re
   return await res.json();
 }
 
+/** M0c: the project's postprocess stacks (project-level — works on ANY image). */
+export async function getPostprocStacks(): Promise<PostprocStack[]> {
+  const res = await fetch(`${orchestratorUrl()}/postproc/stacks`);
+  if (!res.ok) throw new Error(`postproc/stacks ${res.status}: ${await res.text()}`);
+  return ((await res.json()) as { stacks: PostprocStack[] }).stacks;
+}
+
 /** M0c: configure (persist, NOT queue) a postprocess step onto a base image's stack. */
-export function addPostprocStep(assetId: string, body: {
+export async function addPostprocStep(body: {
   base: string; preset?: PostprocStep["preset"]; backend?: string;
   params?: Record<string, unknown>; mask?: string | null; requires_mask?: boolean;
-  version_id?: string | null;
-}): Promise<ProfileVersion> {
-  return postAsset(assetId, "postproc/step", body);
+}): Promise<PostprocStack[]> {
+  const res = await fetch(`${orchestratorUrl()}/postproc/step`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`postproc/step ${res.status}: ${await res.text()}`);
+  return ((await res.json()) as { stacks: PostprocStack[] }).stacks;
 }
 
 /** M0c: fire a configured step's job over its source image (the runner records its output). */
-export function queuePostprocStep(assetId: string, stepId: string, versionId?: string):
-    Promise<ProfileVersion> {
-  return postAsset(assetId, `postproc/step/${stepId}/queue`, { version_id: versionId ?? null });
+export async function queuePostprocStep(stepId: string): Promise<PostprocStack[]> {
+  const res = await fetch(`${orchestratorUrl()}/postproc/step/${stepId}/queue`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) throw new Error(`postproc queue ${res.status}: ${await res.text()}`);
+  return ((await res.json()) as { stacks: PostprocStack[] }).stacks;
 }
 
 /** M0c: remove the LAST step of its stack (the chain tail). */
-export async function removePostprocStep(assetId: string, stepId: string, versionId?: string):
-    Promise<ProfileVersion> {
-  const q = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
-  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/postproc/step/${stepId}${q}`, {
+export async function removePostprocStep(stepId: string): Promise<PostprocStack[]> {
+  const res = await fetch(`${orchestratorUrl()}/postproc/step/${stepId}`, {
     method: "DELETE",
     headers: { "X-Loom-Token": orchestratorToken() },
   });
   if (!res.ok) throw new Error(`postproc remove ${res.status}: ${await res.text()}`);
-  return (await res.json()) as ProfileVersion;
+  return ((await res.json()) as { stacks: PostprocStack[] }).stacks;
 }
 
 async function postAsset(assetId: string, path: string, body: unknown): Promise<ProfileVersion> {

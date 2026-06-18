@@ -58,6 +58,7 @@ import {
   activateVersion,
   cullRef,
   saveProfile,
+  getPostprocStacks,
   addPostprocStep,
   queuePostprocStep,
   removePostprocStep,
@@ -562,9 +563,11 @@ export default function App() {
       setActiveAsset(null);
       setCasting([]);
       setStyleState(null);
+      setPostprocStacks([]);
       return;
     }
     void refreshAssets();
+    void refreshPostproc();   // M0c — project-level stacks (independent of the active asset)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.open, project?.id]);
 
@@ -637,7 +640,6 @@ export default function App() {
       setAnchorInfo(null);
       setRejected([]);
       setVersionList([]);
-      setPostprocStacks([]);
       return;
     }
     try {
@@ -649,56 +651,56 @@ export default function App() {
       setAnchorInfo(v?.anchor ?? null);
       setRejected(v?.rejected ?? []);
       setVersionList(detail.versions ?? []);
-      setPostprocStacks(v?.postproc_stacks ?? []);
     } catch {
       setCasting([]);
       setRefSet([]);
       setAnchorInfo(null);
       setRejected([]);
       setVersionList([]);
-      setPostprocStacks([]);
     }
   };
 
-  // M0c — postprocess stack handlers (the inline Inspector panel on a selected image).
+  // M0c — postprocess stacks are PROJECT-level (any image): loaded independently of the
+  // active asset (work in the Sandbox too), refreshed on project open + after step changes.
+  const refreshPostproc = async () => {
+    if (!project?.open) { setPostprocStacks([]); return; }
+    try { setPostprocStacks(await getPostprocStacks()); }
+    catch (e) { log.error("postproc stacks load failed:", e); }
+  };
+
+  // M0c — postprocess stack handlers (the inline Inspector panel on any selected image,
+  // project-level — no asset required, works in the Sandbox too).
   const onAddPostprocStep = async (base: string, preset: PostprocStep["preset"],
                                    backend: string | undefined,
                                    params: Record<string, unknown>) => {
-    if (!activeAsset) return;
+    if (!project?.open) return;
     setBusy(true); setError(null);
     try {
-      const v = await addPostprocStep(activeAsset.id,
-        { base, preset, backend, params, version_id: activeAsset.active_version });
-      setPostprocStacks(v.postproc_stacks ?? []);
+      setPostprocStacks(await addPostprocStep({ base, preset, backend, params }));
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
   const onQueuePostprocStep = async (stepId: string) => {
-    if (!activeAsset) return;
     setBusy(true); setError(null);
     try {
-      const v = await queuePostprocStep(activeAsset.id, stepId, activeAsset.active_version);
-      setPostprocStacks(v.postproc_stacks ?? []);
+      setPostprocStacks(await queuePostprocStep(stepId));
       void refreshJobs();
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
   const onRemovePostprocStep = async (stepId: string) => {
-    if (!activeAsset) return;
     setBusy(true); setError(null);
     try {
-      const v = await removePostprocStep(activeAsset.id, stepId, activeAsset.active_version);
-      setPostprocStacks(v.postproc_stacks ?? []);
+      setPostprocStacks(await removePostprocStep(stepId));
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
   // The step output is recorded by the runner's completion observer (server-side). When a
-  // queued step's job finishes, re-fetch the version so the persisted output lands (which
-  // also re-opens the "add next step" gate). Self-terminating: once persisted, status flips
-  // off "queued" so this stops firing.
+  // queued step's job finishes, re-fetch the project stacks so the persisted output lands
+  // (which also re-opens the "add next step" gate). Self-terminating: once persisted, status
+  // flips off "queued" so this stops firing.
   useEffect(() => {
-    if (!activeAsset) return;
     const lagging = postprocStacks.some((s) => s.steps.some((st) =>
       st.job_id && st.status === "queued"
       && ["done", "failed"].includes(jobs[st.job_id]?.status ?? "")));
-    if (lagging) void refreshCasting(activeAsset);
+    if (lagging) void refreshPostproc();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobs]);
 
@@ -2009,8 +2011,9 @@ export default function App() {
             </>
           )}
           {selJob && <Inspector job={selJob} output={selOutput} />}
-          {/* M0c — inline postprocess stack BELOW the selected image (not videos). */}
-          {selJob && activeAsset && selJob.status === "done" && !activeVersionLocked
+          {/* M0c — inline postprocess stack BELOW the selected image. PROJECT-level: works on
+              ANY done image (Sandbox or any character, any pipeline) — not videos. */}
+          {selJob && project?.open && selJob.status === "done"
             && selBase && !/\.(mp4|webm|mov)$/i.test(selBase) && (
             <PostprocPanel
               stack={postprocStacks.find((s) => s.base === selBase)}
@@ -2020,6 +2023,7 @@ export default function App() {
                 void onAddPostprocStep(selBase, preset, backend, params)}
               onQueue={onQueuePostprocStep}
               onRemove={onRemovePostprocStep}
+              onView={(o) => setViewer(outputUrl(o))}
             />
           )}
         </aside>
@@ -2621,7 +2625,7 @@ function StyleRow({ st, busy, isActive, canDelete, onSave, onDelete, onSetActive
 // Clean/Refine/custom (i2i) + Restore (GFPGAN) steps; each is configured, then queued
 // independently, and records its source → output (the chain). Live status reads the job
 // (the persisted record lags one poll); the "add" gate opens once the tail step is done.
-function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove }: {
+function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove, onView }: {
   stack: PostprocStack | undefined;
   jobs: Record<string, Job>;
   busy: boolean;
@@ -2629,6 +2633,7 @@ function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove }: {
           params: Record<string, unknown>) => void;
   onQueue: (stepId: string) => void;
   onRemove: (stepId: string) => void;
+  onView: (output: string) => void;     // open a step's result in the full-res lightbox
 }) {
   const [preset, setPreset] = useState<PostprocStep["preset"]>("clean");
   const [backend, setBackend] = useState("zimage");
@@ -2681,6 +2686,10 @@ function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove }: {
                 <span className="pp-num">{i + 1}</span>
                 <span className="pp-preset">{st.preset}</span>
                 <span className={`pp-status pp-${status}`}>{status}</span>
+                {status === "done" && st.output && (
+                  <button className="ghost" onClick={() => onView(st.output!)}
+                          title="view the result (full resolution)">🔍</button>
+                )}
                 {status === "configured" && (
                   <button className="ghost" disabled={busy} onClick={() => onQueue(st.id)}
                           title="queue this step (uses GPU)">▶</button>

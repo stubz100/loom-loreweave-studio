@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "loom:postproc_store.schema.json",
+  "title": "Project-level postprocess stacks (M0c, P2) — <project>/postproc_stacks.json",
+  "type": "object",
+  "required": ["stacks"],
+  "properties": {
+    "stacks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["base", "steps"],
+        "properties": {
+          "base": { "type": "string" },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "preset", "backend", "mode", "source", "status"],
+              "properties": {
+                "id": { "type": "string", "pattern": "^pps_[0-9a-f]{6}$" },
+                "preset": { "type": "string", "enum": ["clean", "refine", "restore", "identity"] },
+                "backend": { "type": "string" },
+                "mode": { "type": "string" },
+                "params": { "type": "object" },
+                "mask": { "type": ["string", "null"] },
+                "requires_mask": { "type": "boolean" },
+                "source": { "type": "string" },
+                "output": { "type": ["string", "null"] },
+                "job_id": { "type": ["string", "null"] },
+                "status": { "type": "string", "enum": ["configured", "queued", "running", "done", "failed"] },
+                "added_at": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

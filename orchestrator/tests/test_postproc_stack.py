@@ -120,6 +120,21 @@ def test_queue_dry_run_real_and_completion_records_output(client):
     assert r2.json()["stacks"][0]["steps"][1]["source"] == f"{jid}/clean_x.png"
 
 
+def test_queue_routes_tile_to_requester_context(client):
+    """The UI passes its current context so the queued tile lands in that grid: requester_id
+    (a character version) + stage are stamped on the job; omitted ⇒ the project (Sandbox)."""
+    from orchestrator.runner import RUNNER
+    base = _base_image()
+    sid = client.post("/postproc/step", json={"base": base, "preset": "clean"}
+                      ).json()["stacks"][0]["steps"][0]["id"]
+    jid = client.post(f"/postproc/step/{sid}/queue",
+                      json={"requester_id": "ver_abc123", "stage": "A"}
+                      ).json()["stacks"][0]["steps"][0]["job_id"]
+    job = RUNNER.jobs[jid]
+    assert job["requester_id"] == "ver_abc123"
+    assert job["profile_version_id"] == "ver_abc123" and job["stage"] == "A"
+
+
 def test_restore_preset_queues_io_job(client):
     base = _base_image()
     sid = client.post("/postproc/step",

@@ -441,10 +441,14 @@ class AddPostprocStepRequest(BaseModel):
 
 
 class QueuePostprocStepRequest(BaseModel):
-    """M0c: fire a configured step's job over its source image. `dry_run` returns the planned
-    job/argv without spending GPU."""
+    """M0c: fire a configured step's job over its source image. `requester_id` + `stage` route
+    the produced tile into a specific grid (the UI's current context — a character version +
+    bootstrap stage); omitted ⇒ inherit the source's producing job, else the project (Sandbox).
+    `dry_run` returns the planned job/argv without spending GPU."""
 
     model_config = ConfigDict(extra="forbid")
+    requester_id: str | None = None
+    stage: str | None = None
     dry_run: bool = False
 
 
@@ -2031,14 +2035,19 @@ def create_app() -> FastAPI:
         if req.dry_run:
             return {"dry_run": True, "pipeline": backend, "mode": mode,
                     "source": src, "params": job_params, "step_id": step_id}
-        # Route the output into the SAME grid as its source (inherit requester/version);
-        # fall back to the project (Sandbox) when the source has no tracked producing job.
-        parent = _producing_job(src) or {}
-        requester = parent.get("requester_id") or ws.load_project()["id"]
+        # Route the produced tile into a grid: the UI's explicit current context
+        # (requester_id + stage) when given — so a queued tile appears where the author is
+        # working — else inherit the source's producing job, else the project (Sandbox). A
+        # scoped requester IS the version id (matches /generate's requester==version rule).
+        if req.requester_id:
+            requester, pvid, stage = req.requester_id, req.requester_id, req.stage
+        else:
+            parent = _producing_job(src) or {}
+            requester = parent.get("requester_id") or ws.load_project()["id"]
+            pvid, stage = parent.get("profile_version_id"), parent.get("stage")
         jid = RUNNER.submit(pipeline=backend, mode=mode, params=job_params,
                             batch_id="", index=0, batch_size=1, requester_id=requester,
-                            profile_version_id=parent.get("profile_version_id"),
-                            stage=parent.get("stage"), pass_name=step["preset"])
+                            profile_version_id=pvid, stage=stage, pass_name=step["preset"])
         try:
             return postproc.mark_queued(ws, step_id=step_id, job_id=jid)
         except ws_mod.WorkspaceError as e:

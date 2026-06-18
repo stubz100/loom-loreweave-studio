@@ -682,7 +682,17 @@ export default function App() {
   const onQueuePostprocStep = async (stepId: string) => {
     setBusy(true); setError(null);
     try {
-      setPostprocStacks(await queuePostprocStep(stepId));
+      // Route the new queued tile into the grid the author is looking at: a character →
+      // its version + current bootstrap stage; the Sandbox → the project default + track the
+      // job id so its tile streams into the (batch-id-driven) Sandbox grid.
+      const requester = activeAsset?.active_version;
+      const st = activeAsset ? (stage === "A" ? "A" : "B") : undefined;
+      const stacks = await queuePostprocStep(stepId, requester, st);
+      setPostprocStacks(stacks);
+      const jid = stacks.flatMap((s) => s.steps).find((x) => x.id === stepId)?.job_id;
+      if (jid && !activeAsset) {
+        setBatchIds((prev) => (prev.includes(jid) ? prev : [...prev, jid]));
+      }
       void refreshJobs();
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };

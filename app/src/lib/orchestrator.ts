@@ -690,12 +690,15 @@ export async function addPostprocStep(body: {
   return ((await res.json()) as { stacks: PostprocStack[] }).stacks;
 }
 
-/** M0c: fire a configured step's job over its source image (the runner records its output). */
-export async function queuePostprocStep(stepId: string): Promise<PostprocStack[]> {
+/** M0c: fire a configured step's job over its source image (the runner records its output).
+ * `requesterId`/`stage` route the produced tile into the caller's current grid (a character
+ * version + bootstrap stage); omit for the Sandbox (the project default). */
+export async function queuePostprocStep(stepId: string, requesterId?: string,
+                                        stage?: string): Promise<PostprocStack[]> {
   const res = await fetch(`${orchestratorUrl()}/postproc/step/${stepId}/queue`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ requester_id: requesterId ?? null, stage: stage ?? null }),
   });
   if (!res.ok) throw new Error(`postproc queue ${res.status}: ${await res.text()}`);
   return ((await res.json()) as { stacks: PostprocStack[] }).stacks;

@@ -422,15 +422,15 @@ class SaveProfileRequest(BaseModel):
 class AddPostprocStepRequest(BaseModel):
     """M0c: configure (NOT queue) one postprocess step onto a base image's stack. `base` is
     the out/-relative image the stack postprocesses (the first step reads it; later steps read
-    the previous step's output). `preset` picks Clean/Refine (i2i strength presets), custom
-    (author-set i2i), or restore (GFPGAN face-restore). `backend` overrides the i2i family
-    (zimage|sd35); `params` carries strength/prompt/negative_prompt/model_name (i2i) or blend
-    (restore). `mask` is the mask-ready contract (out/-relative; stored + carried for future
-    mask-aware steps, not consumed in M0)."""
+    the previous step's output). `preset` picks Clean/Refine (img2img strength presets) or
+    restore (GFPGAN face-restore). `backend` picks the i2i family (zimage|sd35); `params`
+    carries strength/prompt/negative_prompt/model_name (i2i) or blend (restore). `mask` is the
+    mask-ready contract (out/-relative; stored + carried for future mask-aware steps, not
+    consumed in M0)."""
 
     model_config = ConfigDict(extra="forbid")
     base: str
-    preset: Literal["clean", "refine", "custom", "restore"] = "clean"
+    preset: Literal["clean", "refine", "restore"] = "clean"
     backend: str | None = None
     params: dict = Field(default_factory=dict)
     mask: str | None = None
@@ -1917,7 +1917,6 @@ def create_app() -> FastAPI:
     _PP_PRESETS = {
         "clean":   {"backend": "zimage", "mode": "img2img", "params": {"strength": 0.5}},
         "refine":  {"backend": "zimage", "mode": "img2img", "params": {"strength": 0.25}},
-        "custom":  {"backend": "zimage", "mode": "img2img", "params": {}},
         "restore": {"backend": "face_restore", "mode": "restore", "params": {"blend": 0.8}},
     }
 

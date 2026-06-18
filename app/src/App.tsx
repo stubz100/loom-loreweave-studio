@@ -662,12 +662,13 @@ export default function App() {
 
   // M0c — postprocess stack handlers (the inline Inspector panel on a selected image).
   const onAddPostprocStep = async (base: string, preset: PostprocStep["preset"],
+                                   backend: string | undefined,
                                    params: Record<string, unknown>) => {
     if (!activeAsset) return;
     setBusy(true); setError(null);
     try {
       const v = await addPostprocStep(activeAsset.id,
-        { base, preset, params, version_id: activeAsset.active_version });
+        { base, preset, backend, params, version_id: activeAsset.active_version });
       setPostprocStacks(v.postproc_stacks ?? []);
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
@@ -2007,19 +2008,20 @@ export default function App() {
               </button>
             </>
           )}
-          {/* M0c — inline postprocess stack on the selected image (not videos). */}
+          {selJob && <Inspector job={selJob} output={selOutput} />}
+          {/* M0c — inline postprocess stack BELOW the selected image (not videos). */}
           {selJob && activeAsset && selJob.status === "done" && !activeVersionLocked
             && selBase && !/\.(mp4|webm|mov)$/i.test(selBase) && (
             <PostprocPanel
               stack={postprocStacks.find((s) => s.base === selBase)}
               jobs={jobs}
               busy={busy}
-              onAdd={(preset, params) => void onAddPostprocStep(selBase, preset, params)}
+              onAdd={(preset, backend, params) =>
+                void onAddPostprocStep(selBase, preset, backend, params)}
               onQueue={onQueuePostprocStep}
               onRemove={onRemovePostprocStep}
             />
           )}
-          {selJob && <Inspector job={selJob} output={selOutput} />}
         </aside>
       </div>
 
@@ -2623,18 +2625,37 @@ function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove }: {
   stack: PostprocStack | undefined;
   jobs: Record<string, Job>;
   busy: boolean;
-  onAdd: (preset: PostprocStep["preset"], params: Record<string, unknown>) => void;
+  onAdd: (preset: PostprocStep["preset"], backend: string | undefined,
+          params: Record<string, unknown>) => void;
   onQueue: (stepId: string) => void;
   onRemove: (stepId: string) => void;
 }) {
   const [preset, setPreset] = useState<PostprocStep["preset"]>("clean");
+  const [backend, setBackend] = useState("zimage");
   const [strength, setStrength] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [neg, setNeg] = useState("");
+  const [blend, setBlend] = useState("");
   const steps = stack?.steps ?? [];
   const liveStatus = (st: PostprocStep): string =>
     (st.job_id ? jobs[st.job_id]?.status : undefined) ?? st.status;
   const last = steps[steps.length - 1];
   const canAdd = !last || last.output != null || liveStatus(last) === "done";
   const isI2i = preset !== "restore";
+
+  const submit = () => {
+    const params: Record<string, unknown> = {};
+    if (isI2i) {
+      if (strength.trim()) params.strength = Number(strength);
+      if (prompt.trim()) params.prompt = prompt.trim();
+      if (neg.trim()) params.negative_prompt = neg.trim();
+    } else if (blend.trim()) {
+      params.blend = Number(blend);
+    }
+    onAdd(preset, isI2i ? backend : undefined, params);
+    setStrength(""); setPrompt(""); setNeg(""); setBlend("");
+  };
+
   return (
     <div className="postproc">
       <div className="rail-head">POSTPROCESS <span className="muted">stack</span></div>
@@ -2644,47 +2665,69 @@ function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove }: {
       <ol className="pp-steps">
         {steps.map((st, i) => {
           const status = liveStatus(st);
-          const strNum = typeof st.params?.strength === "number" ? st.params.strength : null;
+          const p = st.params ?? {};
+          // List every set attribute (not just strength) so a step's full recipe is visible.
+          const attrs = [
+            st.backend,
+            typeof p.strength === "number" ? `str ${p.strength}` : null,
+            typeof p.blend === "number" ? `blend ${p.blend}` : null,
+            p.model_name ? String(p.model_name) : null,
+            p.prompt ? `“${String(p.prompt).slice(0, 28)}”` : null,
+            p.negative_prompt ? `neg “${String(p.negative_prompt).slice(0, 18)}”` : null,
+          ].filter(Boolean).join(" · ");
           return (
             <li key={st.id} className="pp-step">
-              <span className="pp-num">{i + 1}</span>
-              <span className="pp-preset">
-                {st.preset}{st.backend === "sd35" ? " · sd35" : ""}{strNum != null ? ` · ${strNum}` : ""}
-              </span>
-              <span className={`pp-status pp-${status}`}>{status}</span>
-              {status === "configured" && (
-                <button className="ghost" disabled={busy} onClick={() => onQueue(st.id)}
-                        title="queue this step (uses GPU)">▶</button>
-              )}
-              {i === steps.length - 1 && status !== "queued" && status !== "running" && (
-                <button className="ghost" disabled={busy} onClick={() => onRemove(st.id)}
-                        title="remove this (tail) step">✕</button>
-              )}
+              <div className="pp-step-head">
+                <span className="pp-num">{i + 1}</span>
+                <span className="pp-preset">{st.preset}</span>
+                <span className={`pp-status pp-${status}`}>{status}</span>
+                {status === "configured" && (
+                  <button className="ghost" disabled={busy} onClick={() => onQueue(st.id)}
+                          title="queue this step (uses GPU)">▶</button>
+                )}
+                {i === steps.length - 1 && status !== "queued" && status !== "running" && (
+                  <button className="ghost" disabled={busy} onClick={() => onRemove(st.id)}
+                          title="remove this (tail) step">✕</button>
+                )}
+              </div>
+              {attrs && <div className="pp-step-attrs">{attrs}</div>}
             </li>
           );
         })}
       </ol>
       {canAdd ? (
         <div className="pp-add">
-          <select value={preset}
-                  onChange={(e) => setPreset(e.target.value as PostprocStep["preset"])}>
-            <option value="clean">Clean (i2i 0.5)</option>
-            <option value="refine">Refine (i2i 0.25)</option>
-            <option value="custom">Custom i2i</option>
-            <option value="restore">Restore (GFPGAN)</option>
-          </select>
-          {isI2i && (
+          <div className="pp-add-row">
+            <select value={preset}
+                    onChange={(e) => setPreset(e.target.value as PostprocStep["preset"])}>
+              <option value="clean">Clean (i2i 0.5)</option>
+              <option value="refine">Refine (i2i 0.25)</option>
+              <option value="restore">Restore (GFPGAN)</option>
+            </select>
+            {isI2i && (
+              <select value={backend} onChange={(e) => setBackend(e.target.value)}
+                      title="img2img backend family">
+                <option value="zimage">zimage</option>
+                <option value="sd35">sd35</option>
+              </select>
+            )}
+          </div>
+          {isI2i ? (
+            <>
+              <input className="prompt" type="number" step="0.05" min="0" max="1"
+                     placeholder={`strength (default ${preset === "clean" ? "0.5" : "0.25"})`}
+                     value={strength} onChange={(e) => setStrength(e.target.value)} />
+              <input className="prompt" placeholder="prompt (optional — defaults to the image's own)"
+                     value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+              <input className="prompt" placeholder="negative prompt (optional)"
+                     value={neg} onChange={(e) => setNeg(e.target.value)} />
+            </>
+          ) : (
             <input className="prompt" type="number" step="0.05" min="0" max="1"
-                   placeholder="strength (optional)" value={strength}
-                   onChange={(e) => setStrength(e.target.value)} />
+                   placeholder="blend (default 0.8)" value={blend}
+                   onChange={(e) => setBlend(e.target.value)} />
           )}
-          <button className="proj-btn" disabled={busy}
-                  onClick={() => {
-                    const params: Record<string, unknown> = {};
-                    if (isI2i && strength.trim()) params.strength = Number(strength);
-                    onAdd(preset, params);
-                    setStrength("");
-                  }}>+ add step</button>
+          <button className="proj-btn" disabled={busy} onClick={submit}>+ add step</button>
         </div>
       ) : (
         <div className="muted pp-gate">Queue + finish the last step to stack another.</div>

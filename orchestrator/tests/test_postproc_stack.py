@@ -1,5 +1,5 @@
 """M0c (P2) — per-image postprocess stack: persisted, independently-queued steps over a
-selected base image (Clean/Refine/custom i2i presets + GFPGAN restore). No GPU — dry-run +
+selected base image (Clean/Refine img2img presets + GFPGAN restore). No GPU — dry-run +
 paused queue + a directly-invoked completion observer (the same pattern test_identity_anchor
 uses to drive the anchor-verification observer).
 """
@@ -74,7 +74,7 @@ def test_param_validation(client):
                        ).status_code == 422
     # an unknown model for the chosen backend
     assert client.post(f"/assets/{a['id']}/postproc/step",
-                       json={"base": base, "preset": "custom", "params": {"model_name": "nope"}}
+                       json={"base": base, "preset": "clean", "params": {"model_name": "nope"}}
                        ).status_code == 422
 
 
@@ -145,7 +145,7 @@ def test_remove_only_last_step(client):
 def test_mask_is_stored_on_the_step(client):
     a, base = _asset_with_base_image()
     r = client.post(f"/assets/{a['id']}/postproc/step",
-                    json={"base": base, "preset": "custom",
+                    json={"base": base, "preset": "clean",
                           "mask": "job_base01/mask.png", "requires_mask": True})
     assert r.status_code == 200, r.text
     step = r.json()["postproc_stacks"][0]["steps"][0]

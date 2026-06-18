@@ -22,14 +22,20 @@ def client(monkeypatch, tmp_path):
         yield c
 
 
-def _base_image(base="job_base01/base.png"):
-    """A base image on disk in the open project's out/ (no asset, no producing job needed —
-    postproc is project-level)."""
+def _base_image(base="job_base01/base.png", prompt="a portrait"):
+    """A base image on disk in the open project's out/, with a completed producing job so a
+    clean/refine step inherits its prompt + grid context (postproc is project-level — no asset
+    needed). Pass prompt=None for an 'orphan' image with no inheritable prompt."""
     from orchestrator.runner import RUNNER
     RUNNER.pause()                                  # queued jobs must not actually run
     p = RUNNER.workspace.out_dir / base
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"\x89PNG\r\n\x1a\n")
+    if prompt is not None:
+        jid = RUNNER.submit(pipeline="zimage", mode="t2i", params={"prompt": prompt},
+                            batch_id="bat_pp", index=0, batch_size=1, requester_id="sandbox")
+        RUNNER.jobs[jid]["status"] = "done"
+        RUNNER.jobs[jid]["result"] = {"ok": True, "output_name": base, "output_names": [base]}
     return base
 
 
@@ -118,6 +124,33 @@ def test_queue_dry_run_real_and_completion_records_output(client):
     r2 = client.post("/postproc/step", json={"base": base, "preset": "refine"})
     assert r2.status_code == 200, r2.text
     assert r2.json()["stacks"][0]["steps"][1]["source"] == f"{jid}/clean_x.png"
+
+
+def test_clean_inherits_source_prompt(client):
+    """A clean/refine step has no prompt of its own → it must re-diffuse with the SOURCE
+    image's prompt (the worker rejects an empty-prompt item → the job fails)."""
+    base = _base_image(prompt="a red-haired ranger in a forest")
+    sid = client.post("/postproc/step", json={"base": base, "preset": "clean"}
+                      ).json()["stacks"][0]["steps"][0]["id"]
+    d = client.post(f"/postproc/step/{sid}/queue", json={"dry_run": True}).json()
+    assert d["params"]["batch_items"][0]["prompt"] == "a red-haired ranger in a forest"
+
+
+def test_clean_without_inheritable_prompt_needs_one(client):
+    """An orphan image (no producing job) + no typed prompt → 422 (never an empty-prompt job);
+    an explicit prompt unblocks it."""
+    base = _base_image("orphan/x.png", prompt=None)
+    sid = client.post("/postproc/step", json={"base": base, "preset": "clean"}
+                      ).json()["stacks"][0]["steps"][0]["id"]
+    assert client.post(f"/postproc/step/{sid}/queue", json={"dry_run": True}).status_code == 422
+    # a step that carries an explicit prompt is fine
+    base2 = _base_image("orphan/y.png", prompt=None)
+    stacks2 = client.post("/postproc/step",
+                          json={"base": base2, "preset": "clean", "params": {"prompt": "a knight"}}
+                          ).json()["stacks"]
+    sid2 = next(s for s in stacks2 if s["base"] == base2)["steps"][0]["id"]
+    d = client.post(f"/postproc/step/{sid2}/queue", json={"dry_run": True}).json()
+    assert d["params"]["batch_items"][0]["prompt"] == "a knight"
 
 
 def test_queue_routes_tile_to_requester_context(client):

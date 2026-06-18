@@ -2017,10 +2017,25 @@ def create_app() -> FastAPI:
             if estimate_vram(backend) > CONFIG.vram_budget_gb:
                 raise HTTPException(422, f"{backend} needs ~{estimate_vram(backend)} GB VRAM "
                                          f"> budget {CONFIG.vram_budget_gb} GB")
-        w, h = _image_dims(src_abs)   # preserve the source aspect (img2img dims + tile aspect)
+        # img2img (clean/refine) re-diffuses the source, so it NEEDS a prompt — the worker
+        # rejects an empty-prompt batch item (returns 2 → the whole job fails). Default to the
+        # SOURCE image's own prompt (the natural "refine THIS image" behavior, mirroring the
+        # chained clean/polish passes): the source's producing job, or — for a chained step —
+        # the previous step's per-output meta prompt; else an author-typed prompt; else 422.
+        parent = _producing_job(src) or {}
         is_io = mode != "img2img"
+        item_prompt = ""
+        if not is_io:
+            pmeta = (parent.get("result") or {}).get("output_meta") or {}
+            src_prompt = ((pmeta.get(src) or {}).get("prompt")
+                          or (parent.get("params") or {}).get("prompt"))
+            item_prompt = (params_in.get("prompt") or src_prompt or "").strip()
+            if not item_prompt:
+                raise HTTPException(422, "this image has no source prompt to re-diffuse from — "
+                                         "type a prompt for the clean/refine step")
+        w, h = _image_dims(src_abs)   # preserve the source aspect (img2img dims + tile aspect)
         items = ([{"input": str(src_abs)}] if is_io
-                 else [{"prompt": params_in.get("prompt") or "", "init_image": str(src_abs)}])
+                 else [{"prompt": item_prompt, "init_image": str(src_abs)}])
         job_params: dict = {"prompt": f"[{step['preset']} postproc of {src}]",
                             "batch_items": items, "width": w, "height": h}
         if is_io:
@@ -2042,7 +2057,6 @@ def create_app() -> FastAPI:
         if req.requester_id:
             requester, pvid, stage = req.requester_id, req.requester_id, req.stage
         else:
-            parent = _producing_job(src) or {}
             requester = parent.get("requester_id") or ws.load_project()["id"]
             pvid, stage = parent.get("profile_version_id"), parent.get("stage")
         jid = RUNNER.submit(pipeline=backend, mode=mode, params=job_params,

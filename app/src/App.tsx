@@ -135,6 +135,8 @@ export default function App() {
   const [styleDraft, setStyleDraft] = useState("");
   // M8 — L1 World view toggle (ASSETS bootstrap vs the WORLD authoring surface).
   const [view, setView] = useState<"assets" | "world">("assets");
+  // M0b — L1 authoring sub-tab (rail nav for the World workspace): styles / world / spine.
+  const [l1Tab, setL1Tab] = useState<"styles" | "world" | "spine">("styles");
   const [applyStyle, setApplyStyle] = useState(true);
   // P1/M3 bootstrap stages (A casting · B expansion · C curation) + their controls.
   const [stage, setStage] = useState<"A" | "B" | "C">("A");
@@ -1295,7 +1297,24 @@ export default function App() {
             </>
           )}
           {view === "world" && (
-            <div className="rail-head">WORLD <span className="muted">L1 bible</span></div>
+            <>
+              <div className="rail-head">WORLD <span className="muted">L1 bible</span></div>
+              <button className={`asset-row ${l1Tab === "styles" ? "sel" : ""}`}
+                      onClick={() => setL1Tab("styles")}
+                      title="named style snippets — pick one per generation (R104)">
+                🎨 Visual styles
+              </button>
+              <button className={`asset-row ${l1Tab === "world" ? "sel" : ""}`}
+                      onClick={() => setL1Tab("world")}
+                      title="long-form world summary (authoring context)">
+                🌍 World
+              </button>
+              <button className={`asset-row ${l1Tab === "spine" ? "sel" : ""}`}
+                      onClick={() => setL1Tab("spine")}
+                      title="premise + characters → stub profiles (R55)">
+                🧬 Story spine
+              </button>
+            </>
           )}
         </nav>
 
@@ -1303,6 +1322,7 @@ export default function App() {
           {view === "world" ? (
             <WorldWorkspace
               project={project}
+              tab={l1Tab}
               onError={setError}
               onStubCreated={() => void refreshAssets()}
               onStylesChanged={() => { void refreshStyles(); void refreshAssets(); }}
@@ -2335,8 +2355,9 @@ function GridCell({
 
 // M8 — L1 World authoring: world prose, the style fragment + global negative, and the
 // story spine (premise + characters that materialize into stub AssetProfiles, R55).
-function WorldWorkspace({ project, onError, onStubCreated, onStylesChanged }: {
+function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged }: {
   project: ProjectInfo | null;
+  tab: "styles" | "world" | "spine";   // M0b — which L1 sub-tab the rail selected
   onError: (e: string) => void;
   onStubCreated: () => void;
   onStylesChanged: () => void;    // tell the parent to reload styles (the L2 bar selector)
@@ -2379,8 +2400,9 @@ function WorldWorkspace({ project, onError, onStubCreated, onStylesChanged }: {
   const chars = bible?.spine?.characters ?? [];
   return (
     <div className="world">
-      <div className="rail-head">L1 WORLD — the bible every generation inherits</div>
-
+      {/* M0b — one L1 sub-tab at a time (the rail picks it), each with only its own controls
+          and readable multi-line editors instead of one long cramped scroll. */}
+      {tab === "styles" && (
       <section className="world-sec">
         <h3>Visual styles <span className="muted">(named snippets — pick one per generation; ★ = the project default, R104)</span></h3>
         {(stylesData?.styles ?? []).map((st) => (
@@ -2400,19 +2422,24 @@ function WorldWorkspace({ project, onError, onStubCreated, onStylesChanged }: {
                                    setNewStyleName(""); }}>+ add style</button>
         </div>
       </section>
+      )}
 
+      {tab === "world" && (
       <section className="world-sec">
         <h3>World <span className="muted">(long-form summary — authoring context, not injected)</span></h3>
-        <textarea className="world-prose" rows={6} value={worldDraft}
+        <textarea className="world-prose" rows={18} value={worldDraft}
                   onChange={(e) => setWorldDraft(e.target.value)}
                   placeholder="# The world…  (markdown)" />
         <button className="proj-btn" disabled={busy}
                 onClick={() => void guard(() => setWorld(worldDraft))}>Save world</button>
       </section>
+      )}
 
+      {tab === "spine" && (
       <section className="world-sec">
         <h3>Story spine <span className="muted">(premise + characters → stub profiles, R55)</span></h3>
-        <textarea className="world-prose" rows={3} value={premiseDraft}
+        <label className="world-field">Premise / arc / factions</label>
+        <textarea className="world-prose" rows={8} value={premiseDraft}
                   onChange={(e) => setPremiseDraft(e.target.value)}
                   placeholder="premise / arc / factions…" />
         <button className="proj-btn" disabled={busy}
@@ -2441,8 +2468,9 @@ function WorldWorkspace({ project, onError, onStubCreated, onStylesChanged }: {
         <div className="spine-add">
           <input className="prompt" placeholder="character name (e.g. Mara)…"
                  value={newName} onChange={(e) => setNewName(e.target.value)} />
-          <input className="prompt" placeholder="prompt-template snippet (the fixed identity clause)…"
-                 value={newSnippet} onChange={(e) => setNewSnippet(e.target.value)} />
+          <textarea className="spine-snippet" rows={2}
+                    placeholder="prompt-template snippet (the fixed identity clause)…"
+                    value={newSnippet} onChange={(e) => setNewSnippet(e.target.value)} />
           <button className="proj-btn" disabled={busy || !newName.trim()}
                   onClick={() => void guard(async () => {
                     const b = await upsertSpineCharacter({ name: newName.trim(),
@@ -2452,6 +2480,7 @@ function WorldWorkspace({ project, onError, onStubCreated, onStylesChanged }: {
                   })}>+ character</button>
         </div>
       </section>
+      )}
     </div>
   );
 }
@@ -2467,20 +2496,24 @@ function SpineRow({ ch, busy, onSave, onDelete, onStub, onResync }: {
   const linked = !!ch.linked_asset_id;
   return (
     <div className="spine-row">
-      <input className="prompt" value={name} onChange={(e) => setName(e.target.value)} />
-      <input className="prompt" value={snippet} onChange={(e) => setSnippet(e.target.value)}
-             placeholder="identity clause snippet…" />
-      <button className="ghost" disabled={busy || !dirty}
-              onClick={() => onSave(name, snippet)} title="save name/snippet (does NOT touch a linked profile — R55)">save</button>
-      {linked ? (
-        <button className="ghost" disabled={busy} onClick={onResync}
-                title="push this snippet into the linked profile's active version (overwrites — manual, R55)">⟳ re-sync</button>
-      ) : (
-        <button className="ghost" disabled={busy} onClick={onStub}
-                title="materialize a stub AssetProfile seeded with this snippet (R112)">+ stub profile</button>
-      )}
-      <button className="ghost" disabled={busy} onClick={onDelete} title="remove from spine (a linked profile is left intact)">✕</button>
-      {linked && <span className="muted spine-linked" title={ch.linked_asset_id!}>● linked</span>}
+      <div className="spine-row-head">
+        <input className="prompt spine-name" value={name} onChange={(e) => setName(e.target.value)}
+               placeholder="character name…" />
+        <button className="ghost" disabled={busy || !dirty}
+                onClick={() => onSave(name, snippet)} title="save name/snippet (does NOT touch a linked profile — R55)">save</button>
+        {linked ? (
+          <button className="ghost" disabled={busy} onClick={onResync}
+                  title="push this snippet into the linked profile's active version (overwrites — manual, R55)">⟳ re-sync</button>
+        ) : (
+          <button className="ghost" disabled={busy} onClick={onStub}
+                  title="materialize a stub AssetProfile seeded with this snippet (R112)">+ stub profile</button>
+        )}
+        <button className="ghost" disabled={busy} onClick={onDelete} title="remove from spine (a linked profile is left intact)">✕</button>
+        {linked && <span className="muted spine-linked" title={ch.linked_asset_id!}>● linked</span>}
+      </div>
+      <textarea className="spine-snippet" rows={2} value={snippet}
+                onChange={(e) => setSnippet(e.target.value)}
+                placeholder="identity clause snippet — the fixed prompt-template text…" />
     </div>
   );
 }
@@ -2507,10 +2540,10 @@ function StyleRow({ st, busy, isActive, canDelete, onSave, onDelete, onSetActive
         <button className="ghost" disabled={busy || !canDelete} onClick={onDelete}
                 title={canDelete ? "delete this style" : "can't delete the last style"}>✕</button>
       </div>
-      <textarea rows={2} className="style-frag-edit" value={fragment}
+      <textarea rows={4} className="style-frag-edit" value={fragment}
                 onChange={(e) => setFragment(e.target.value)}
                 placeholder="style fragment — appended after the character prompt…" />
-      <textarea rows={1} className="style-neg-edit" value={neg}
+      <textarea rows={3} className="style-neg-edit" value={neg}
                 onChange={(e) => setNeg(e.target.value)}
                 placeholder="global negative — appended to every negative prompt…" />
     </div>

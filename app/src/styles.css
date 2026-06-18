@@ -398,15 +398,18 @@ a.ghost { text-decoration: none; display: inline-block; }
   border-radius: 4px; padding: 6px; font: inherit; font-size: 12px; resize: vertical;
 }
 .world-prose { font-family: ui-monospace, monospace; }
-.spine-list { margin: 10px 0; display: flex; flex-direction: column; gap: 6px; }
-.spine-row { display: flex; gap: 4px; align-items: center; }
-.spine-row .prompt { flex: 1; padding: 4px 6px; font-size: 11px;
+.spine-list { margin: 10px 0; display: flex; flex-direction: column; gap: 8px; }
+/* M0b — spine entries are cards: name + actions on top, the snippet a readable textarea below. */
+.spine-row { border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.spine-row-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.spine-row-head .spine-name { flex: 1; padding: 4px 6px; font-size: 12px; font-weight: 600;
   background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 4px; }
-.spine-row .prompt:first-of-type { flex: 0 0 120px; }
 .spine-linked { font-size: 10px; color: #4caf78; white-space: nowrap; }
-.spine-add { display: flex; gap: 4px; margin-top: 8px; }
-.spine-add .prompt { flex: 1; padding: 5px 6px;
+.spine-add { display: flex; flex-direction: column; gap: 6px; margin-top: 10px;
+  border-top: 1px solid var(--line); padding-top: 10px; }
+.spine-add .prompt { padding: 5px 6px;
   background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 4px; }
+.spine-add .proj-btn { align-self: flex-start; }
 
 /* Params drawer blocks (user request 2026-06-11): base / clean / polish / postproc */
 .p-group {

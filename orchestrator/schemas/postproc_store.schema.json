@@ -28,7 +28,7 @@
                 "source": { "type": "string" },
                 "output": { "type": ["string", "null"] },
                 "job_id": { "type": ["string", "null"] },
-                "status": { "type": "string", "enum": ["configured", "queued", "running", "done", "failed"] },
+                "status": { "type": "string", "enum": ["configured", "queued", "running", "done", "failed", "canceled"] },
                 "added_at": { "type": "string" }
               }
             }

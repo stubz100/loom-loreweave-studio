@@ -168,6 +168,39 @@ def test_queue_routes_tile_to_requester_context(client):
     assert job["profile_version_id"] == "ver_abc123" and job["stage"] == "A"
 
 
+def test_canceled_or_deleted_job_unsticks_the_step(client):
+    """A queued step whose job is canceled/failed/deleted must not stay stuck 'queued':
+    GET /postproc/stacks reconciles it with the live queue, and it can be re-queued."""
+    from orchestrator.runner import RUNNER
+    base = _base_image()
+    sid = client.post("/postproc/step", json={"base": base, "preset": "clean"}
+                      ).json()["stacks"][0]["steps"][0]["id"]
+    jid = client.post(f"/postproc/step/{sid}/queue", json={}
+                      ).json()["stacks"][0]["steps"][0]["job_id"]
+    # the job is canceled (the completion observer never fires for non-OK jobs)
+    RUNNER.jobs[jid]["status"] = "canceled"
+    # GET reconciles the stuck 'queued' step to the job's real (canceled) state
+    step = _stacks(client)[0]["steps"][0]
+    assert step["status"] == "canceled"
+    # and it can be re-queued (the stale 'queued' no longer 409s — the live job isn't active)
+    rq = client.post(f"/postproc/step/{sid}/queue", json={})
+    assert rq.status_code == 200, rq.text
+    assert rq.json()["stacks"][0]["steps"][0]["status"] == "queued"
+
+
+def test_deleted_job_reconciles_to_canceled(client):
+    """A step whose job was DELETED from the queue (gone entirely) reconciles to canceled
+    (so the UI can remove/re-queue it instead of being stuck)."""
+    from orchestrator.runner import RUNNER
+    base = _base_image()
+    sid = client.post("/postproc/step", json={"base": base, "preset": "clean"}
+                      ).json()["stacks"][0]["steps"][0]["id"]
+    jid = client.post(f"/postproc/step/{sid}/queue", json={}
+                      ).json()["stacks"][0]["steps"][0]["job_id"]
+    RUNNER.jobs.pop(jid, None)                     # deleted from the queue
+    assert _stacks(client)[0]["steps"][0]["status"] == "canceled"
+
+
 def test_restore_preset_queues_io_job(client):
     base = _base_image()
     sid = client.post("/postproc/step",

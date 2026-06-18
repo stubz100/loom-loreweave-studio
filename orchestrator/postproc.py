@@ -141,6 +141,38 @@ def mark_queued(ws: Workspace, *, step_id: str, job_id: str) -> dict:
     return _save(ws, store)
 
 
+def reconcile(ws: Workspace, resolve) -> list[dict]:
+    """Sync queued/running steps with live job state before returning the stacks — the
+    completion observer only fires for SUCCESSFUL jobs, so a step whose job failed, was
+    canceled, or was deleted from the queue would otherwise stay stuck 'queued' (blocking
+    the stack). `resolve(job_id)` returns `(status, output)` for the job, or **None** if it's
+    gone (deleted/pruned → the step is treated as canceled). Persists corrections so the
+    state survives a reload; returns the stacks. Caller (main.py) owns the runner glue."""
+    store = _load(ws)
+    changed = False
+    for stack in store["stacks"]:
+        for st in stack["steps"]:
+            if st.get("status") not in ("queued", "running") or not st.get("job_id"):
+                continue
+            info = resolve(st["job_id"])
+            if info is None:                                  # job gone (deleted/pruned)
+                st["status"] = "canceled"
+                changed = True
+                continue
+            status, output = info
+            if status in ("done", "failed", "canceled") and status != st["status"]:
+                st["status"] = status
+                if status == "done" and output:
+                    st["output"] = output
+                changed = True
+            elif status == "running" and st["status"] != "running":
+                st["status"] = "running"
+                changed = True
+    if changed:
+        _save(ws, store)
+    return store["stacks"]
+
+
 def record_result(ws: Workspace, job_id: str, *, output: str | None, ok: bool) -> bool:
     """Completion-observer side: find the step whose `job_id` matches the finished job and
     record its produced `output` + final status. Best-effort; True when a step was updated.

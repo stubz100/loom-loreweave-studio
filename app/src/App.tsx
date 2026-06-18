@@ -702,15 +702,19 @@ export default function App() {
       setPostprocStacks(await removePostprocStep(stepId));
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
-  // The step output is recorded by the runner's completion observer (server-side). When a
-  // queued step's job finishes, re-fetch the project stacks so the persisted output lands
-  // (which also re-opens the "add next step" gate). Self-terminating: once persisted, status
-  // flips off "queued" so this stops firing.
+  // The persisted step status only catches up via the server-side completion observer, which
+  // fires for SUCCESSFUL jobs only. So when a queued/running step's job reaches ANY terminal
+  // state — done, failed, canceled — or vanishes from the queue (deleted), re-fetch the
+  // project stacks; GET /postproc/stacks reconciles the step with the live queue (server-side)
+  // so it never stays stuck 'queued'. Self-terminating: once reconciled, status leaves
+  // queued/running so this stops firing.
   useEffect(() => {
-    const lagging = postprocStacks.some((s) => s.steps.some((st) =>
-      st.job_id && st.status === "queued"
-      && ["done", "failed"].includes(jobs[st.job_id]?.status ?? "")));
-    if (lagging) void refreshPostproc();
+    const stale = postprocStacks.some((s) => s.steps.some((st) => {
+      if (!st.job_id || (st.status !== "queued" && st.status !== "running")) return false;
+      const js = jobs[st.job_id]?.status;
+      return js === undefined || ["done", "failed", "canceled"].includes(js);
+    }));
+    if (stale) void refreshPostproc();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobs]);
 
@@ -2655,10 +2659,17 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, onAdd, onQueue, onRemove,
   const [neg, setNeg] = useState("");
   const [blend, setBlend] = useState("");
   const steps = stack?.steps ?? [];
-  const liveStatus = (st: PostprocStep): string =>
-    (st.job_id ? jobs[st.job_id]?.status : undefined) ?? st.status;
+  // Live status from the job queue (the persisted status lags / goes stale on cancel/delete):
+  // a queued/running step whose job vanished from the queue is dead → treat as canceled.
+  const liveStatus = (st: PostprocStep): string => {
+    if (!st.job_id) return st.status;
+    const live = jobs[st.job_id]?.status;
+    if (live) return live;
+    return st.status === "queued" || st.status === "running" ? "canceled" : st.status;
+  };
   const last = steps[steps.length - 1];
   const canAdd = !last || last.output != null || liveStatus(last) === "done";
+  const dead = (s: string) => s === "failed" || s === "canceled";
   const isI2i = preset !== "restore";
 
   const submit = () => {
@@ -2704,9 +2715,12 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, onAdd, onQueue, onRemove,
                   <button className="ghost" onClick={() => onView(st.output!)}
                           title="view the result (full resolution)">🔍</button>
                 )}
-                {status === "configured" && (
+                {(status === "configured" || dead(status)) && (
                   <button className="ghost" disabled={busy} onClick={() => onQueue(st.id)}
-                          title="queue this step (uses GPU)">▶</button>
+                          title={status === "configured" ? "queue this step (uses GPU)"
+                                                         : "re-queue this step (its job ended)"}>
+                    {status === "configured" ? "▶" : "↻"}
+                  </button>
                 )}
                 {i === steps.length - 1 && status !== "queued" && status !== "running" && (
                   <button className="ghost" disabled={busy} onClick={() => onRemove(st.id)}

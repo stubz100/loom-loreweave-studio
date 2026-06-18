@@ -1937,10 +1937,22 @@ def create_app() -> FastAPI:
                 return j
         return None
 
+    def _job_state(jid: str):
+        """`(status, ok-output)` for a job, or None if it's gone from the queue (deleted/
+        pruned). Feeds postproc.reconcile so a step tracks its job's real state."""
+        j = RUNNER.get(jid)
+        if j is None:
+            return None
+        res = j.get("result") or {}
+        out = res.get("output_name") or (res.get("output_names") or [None])[0]
+        return (j.get("status"), out if res.get("ok") else None)
+
     @app.get("/postproc/stacks")
     def get_postproc_stacks() -> dict:
-        """The project's postprocess stacks (M0c). Unauthenticated read (mirrors /jobs)."""
-        return {"stacks": postproc.list_stacks(_require_ws())}
+        """The project's postprocess stacks (M0c) — reconciled with the live job queue first
+        (a step whose job failed / was canceled / was deleted no longer stays stuck 'queued').
+        Unauthenticated read (mirrors /jobs)."""
+        return {"stacks": postproc.reconcile(_require_ws(), _job_state)}
 
     @app.post("/postproc/step")
     def add_postproc_step(req: AddPostprocStepRequest,
@@ -1986,8 +1998,12 @@ def create_app() -> FastAPI:
             step = postproc.resolve_step(ws, step_id)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(404, str(e))
-        if step["status"] in ("queued", "running"):
-            raise HTTPException(409, f"step already {step['status']}")
+        # Block only if the linked job is ACTUALLY still active — a canceled/failed/deleted
+        # job leaves a stale 'queued' status, but the step should be re-queueable (the queue
+        # is the source of truth, not the persisted status). A live re-fire resets the step.
+        live = RUNNER.get(step["job_id"]) if step.get("job_id") else None
+        if live and live.get("status") in ("queued", "running"):
+            raise HTTPException(409, f"step already {live['status']}")
         backend, mode = step["backend"], step["mode"]
         params_in = step.get("params") or {}
         # Resolve + traversal-guard the source image (out/-relative, like init_image).

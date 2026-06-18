@@ -792,10 +792,16 @@ class JobRunner:
         # multi cast look hung (no progress, empty per-job log) for minutes. PYTHONUNBUFFERED is
         # inherited by the child's children (stage_runner copies os.environ), so the whole tree
         # streams live → real-time progress + log.
-        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        # PYTHONIOENCODING=utf-8 forces the worker (+ its children) to ENCODE stdout as UTF-8
+        # instead of the Windows console default (cp1252), which crashed on any non-cp1252
+        # char a worker prints (e.g. flux2's "→" offload line, "★", "≤"). We DECODE the pipe
+        # as utf-8/replace below so the two sides agree and a stray byte never fells the read
+        # loop. Both env keys are inherited by sub-subprocesses (multi's stage_runner).
+        env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
         proc = subprocess.Popen(
             argv, cwd=str(script.parents[2]), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            encoding="utf-8", errors="replace",
         )
         _assign_to_kill_job(proc)   # die with the orchestrator — never orphan the GPU (review #1)
         # Per-job kill Job Object (review 2026-06-13): cancel = TerminateJobObject → the WHOLE

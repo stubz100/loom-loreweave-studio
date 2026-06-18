@@ -2405,6 +2405,13 @@ function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged 
       {tab === "styles" && (
       <section className="world-sec">
         <h3>Visual styles <span className="muted">(named snippets — pick one per generation; ★ = the project default, R104)</span></h3>
+        <div className="style-add">
+          <input className="prompt" placeholder="new style name (e.g. Noir, Watercolor)…"
+                 value={newStyleName} onChange={(e) => setNewStyleName(e.target.value)} />
+          <button className="proj-btn" disabled={busy || !newStyleName.trim()}
+                  onClick={() => { void guardStyles(() => addStyle(newStyleName.trim()));
+                                   setNewStyleName(""); }}>+ add style</button>
+        </div>
         {(stylesData?.styles ?? []).map((st) => (
           <StyleRow key={st.id} st={st} busy={busy}
             isActive={stylesData?.active_style_id === st.id}
@@ -2414,13 +2421,6 @@ function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged 
             onDelete={() => void guardStyles(() => deleteStyle(st.id))}
             onSetActive={() => void guardStyles(() => setActiveStyle(st.id))} />
         ))}
-        <div className="style-add">
-          <input className="prompt" placeholder="new style name (e.g. Noir, Watercolor)…"
-                 value={newStyleName} onChange={(e) => setNewStyleName(e.target.value)} />
-          <button className="proj-btn" disabled={busy || !newStyleName.trim()}
-                  onClick={() => { void guardStyles(() => addStyle(newStyleName.trim()));
-                                   setNewStyleName(""); }}>+ add style</button>
-        </div>
       </section>
       )}
 
@@ -2540,10 +2540,10 @@ function StyleRow({ st, busy, isActive, canDelete, onSave, onDelete, onSetActive
         <button className="ghost" disabled={busy || !canDelete} onClick={onDelete}
                 title={canDelete ? "delete this style" : "can't delete the last style"}>✕</button>
       </div>
-      <textarea rows={4} className="style-frag-edit" value={fragment}
+      <textarea rows={8} className="style-frag-edit" value={fragment}
                 onChange={(e) => setFragment(e.target.value)}
                 placeholder="style fragment — appended after the character prompt…" />
-      <textarea rows={3} className="style-neg-edit" value={neg}
+      <textarea rows={2} className="style-neg-edit" value={neg}
                 onChange={(e) => setNeg(e.target.value)}
                 placeholder="global negative — appended to every negative prompt…" />
     </div>

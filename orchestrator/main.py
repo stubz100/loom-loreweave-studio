@@ -419,6 +419,34 @@ class SaveProfileRequest(BaseModel):
     version_id: str | None = None
 
 
+class AddPostprocStepRequest(BaseModel):
+    """M0c: configure (NOT queue) one postprocess step onto a base image's stack. `base` is
+    the out/-relative image the stack postprocesses (the first step reads it; later steps read
+    the previous step's output). `preset` picks Clean/Refine (i2i strength presets), custom
+    (author-set i2i), or restore (GFPGAN face-restore). `backend` overrides the i2i family
+    (zimage|sd35); `params` carries strength/prompt/negative_prompt/model_name (i2i) or blend
+    (restore). `mask` is the mask-ready contract (out/-relative; stored + carried for future
+    mask-aware steps, not consumed in M0)."""
+
+    model_config = ConfigDict(extra="forbid")
+    base: str
+    preset: Literal["clean", "refine", "custom", "restore"] = "clean"
+    backend: str | None = None
+    params: dict = Field(default_factory=dict)
+    mask: str | None = None
+    requires_mask: bool = False
+    version_id: str | None = None
+
+
+class QueuePostprocStepRequest(BaseModel):
+    """M0c: fire a configured step's job over its source image. `dry_run` returns the planned
+    job/argv without spending GPU."""
+
+    model_config = ConfigDict(extra="forbid")
+    version_id: str | None = None
+    dry_run: bool = False
+
+
 def require_token(x_loom_token: str | None = Header(default=None)) -> None:
     """Auth gate for mutating/expensive endpoints (review #1, R101 transport).
 
@@ -446,6 +474,42 @@ def _persist_anchor_verification(job: dict) -> None:
                                     job_id=job.get("id", ""))
     except Exception as e:  # noqa: BLE001 - observer is best-effort, never fail the job
         logsetup.get_logger().warning("anchor verification persist failed: %s", e)
+
+
+def _record_postproc_output(job: dict) -> None:
+    """Completion observer (M0c): when a queued postprocess-STEP job finishes, record its
+    produced output + final status on the matching stack step (matched by job_id on the
+    version). A no-op for non-postproc jobs (no step matches). Best-effort — never fails
+    the job (mirrors the anchor-verification observer)."""
+    ws = RUNNER.workspace
+    vid = job.get("profile_version_id")
+    if not (ws and vid):
+        return
+    result = job.get("result") or {}
+    output = result.get("output_name") or (result.get("output_names") or [None])[0]
+    try:
+        assets.record_postproc_result(ws, vid, job.get("id", ""),
+                                      output=output, ok=bool(result.get("ok")))
+    except Exception as e:  # noqa: BLE001 - observer is best-effort, never fail the job
+        logsetup.get_logger().warning("postproc result persist failed: %s", e)
+
+
+def _on_job_complete(job: dict) -> None:
+    """The single runner completion observer — fans out to the per-feature persisters."""
+    _persist_anchor_verification(job)
+    _record_postproc_output(job)
+
+
+def _image_dims(path, default: tuple[int, int] = (1024, 1024)) -> tuple[int, int]:
+    """(width, height) of an image, or `default` if it can't be read. Used so a postprocess
+    step preserves its SOURCE aspect (img2img output dims + the grid's tile aspect) instead
+    of defaulting to the project 1280×720."""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return im.size
+    except Exception:  # noqa: BLE001 - best-effort; fall back to a square default
+        return default
 
 
 @asynccontextmanager
@@ -502,7 +566,7 @@ async def lifespan(app: FastAPI):
     RUNNER.set_disk_gate(GUARD.is_hard_blocked)
     # Anchor verification (M4 review): persist the fact the moment an identity job
     # succeeds — durable on version.anchor, independent of queue history/pruning.
-    RUNNER.set_completion_observer(_persist_anchor_verification)
+    RUNNER.set_completion_observer(_on_job_complete)
     GUARD.start()
     log.info("ready at %s", CONFIG.base_url)
     print(f"LOOM_ORCH_READY url={CONFIG.base_url} token={CONFIG.token}", flush=True)
@@ -1848,6 +1912,131 @@ def create_app() -> FastAPI:
         except ws_mod.WorkspaceError as e:
             raise HTTPException(404, str(e))
         return FileResponse(path)
+
+    # --- M0c (P2): per-image postprocess stack -----------------------------------
+    _PP_PRESETS = {
+        "clean":   {"backend": "zimage", "mode": "img2img", "params": {"strength": 0.5}},
+        "refine":  {"backend": "zimage", "mode": "img2img", "params": {"strength": 0.25}},
+        "custom":  {"backend": "zimage", "mode": "img2img", "params": {}},
+        "restore": {"backend": "face_restore", "mode": "restore", "params": {"blend": 0.8}},
+    }
+
+    @app.post("/assets/{asset_id}/postproc/step")
+    def add_postproc_step(asset_id: str, req: AddPostprocStepRequest,
+                          _auth: None = Depends(require_token)) -> dict:
+        """M0c — configure (persist, NOT queue) a postprocess step onto a base image's stack.
+        Clean/Refine/custom = img2img presets (backend zimage|sd35); restore = GFPGAN.
+        A separate queue call fires the job. Token-gated; finalized version → 409."""
+        spec = _PP_PRESETS[req.preset]
+        is_i2i = spec["mode"] == "img2img"
+        backend = (req.backend or spec["backend"]) if is_i2i else spec["backend"]
+        if is_i2i and backend not in ("zimage", "sd35"):
+            raise HTTPException(422, f"img2img backend must be zimage|sd35, got {backend!r}")
+        if not is_i2i and req.backend and req.backend != spec["backend"]:
+            raise HTTPException(422, f"{req.preset!r} backend is fixed ({spec['backend']})")
+        allowed = ({"strength", "prompt", "negative_prompt", "model_name"} if is_i2i
+                   else {"blend"})
+        params = dict(spec["params"])
+        for k, v in req.params.items():
+            if k not in allowed:
+                raise HTTPException(422, f"param {k!r} not valid for a {req.preset!r} step "
+                                         f"(allowed: {sorted(allowed)})")
+            params[k] = v
+        model = params.get("model_name")
+        if model and model_catalog.find_variant(backend, model) is None:
+            raise HTTPException(422, f"model {model!r} is not a {backend} variant")
+        try:
+            return assets.add_postproc_step(_require_ws(), asset_id, base=req.base,
+                                            preset=req.preset, backend=backend,
+                                            mode=spec["mode"], params=params, mask=req.mask,
+                                            requires_mask=req.requires_mask,
+                                            version_id=req.version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(409, str(e))
+
+    @app.post("/assets/{asset_id}/postproc/step/{step_id}/queue")
+    def queue_postproc_step(asset_id: str, step_id: str, req: QueuePostprocStepRequest,
+                            _auth: None = Depends(require_token)) -> dict:
+        """M0c — fire a configured step's job over its source image: one batch job (img2img
+        for clean/refine/custom; the GFPGAN restore worker for restore). On completion the
+        runner observer records the produced output on the step. `dry_run` previews the job.
+        Token-gated; weight pre-flight (412) + VRAM admission (422); finalized → 409."""
+        ws = _require_ws()
+        try:
+            version, step = assets.resolve_postproc_step(ws, asset_id, step_id, req.version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+        if version.get("finalized"):
+            raise HTTPException(409, "version is finalized (locked, R60)")
+        if step["status"] in ("queued", "running"):
+            raise HTTPException(409, f"step already {step['status']}")
+        vid = version["id"]
+        backend, mode = step["backend"], step["mode"]
+        params_in = step.get("params") or {}
+        # Resolve + traversal-guard the source image (out/-relative, like init_image).
+        obase = ws.out_dir.resolve()
+        src = step["source"]
+        if ".." in src or "\\" in src:
+            raise HTTPException(400, f"invalid source {src!r}")
+        src_abs = (obase / src).resolve()
+        if not src_abs.is_relative_to(obase) or not src_abs.is_file():
+            raise HTTPException(404, f"source image {src!r} not found in out/")
+        # Weight pre-flight + VRAM admission (skipped on dry_run — a no-GPU preview).
+        if not req.dry_run:
+            if backend == "face_restore":
+                ok, missing = components.postproc_weights_status("face_restore")
+                if not ok:
+                    raise HTTPException(412, {"error": "face-restore weight(s) missing",
+                                              "missing": missing,
+                                              "hint": "POST /components/fetch?postproc=face_restore"})
+            else:
+                resolved = params_in.get("model_name") or model_catalog.default_model(backend)
+                variant = model_catalog.find_variant(backend, resolved)
+                if variant and not components.image_model_present(variant["repo_id"]):
+                    raise HTTPException(412, {
+                        "error": f"{backend} model {variant['id']!r} not in cache",
+                        "repo_id": variant["repo_id"], "gated": variant["gated"],
+                        "hint": "fetch it first (gated repos need a HF license + token)"})
+            if estimate_vram(backend) > CONFIG.vram_budget_gb:
+                raise HTTPException(422, f"{backend} needs ~{estimate_vram(backend)} GB VRAM "
+                                         f"> budget {CONFIG.vram_budget_gb} GB")
+        w, h = _image_dims(src_abs)   # preserve the source aspect (img2img dims + tile aspect)
+        is_io = mode != "img2img"
+        items = ([{"input": str(src_abs)}] if is_io
+                 else [{"prompt": params_in.get("prompt") or "", "init_image": str(src_abs)}])
+        job_params: dict = {"prompt": f"[{step['preset']} postproc of {src}]",
+                            "batch_items": items, "width": w, "height": h}
+        if is_io:
+            job_params["blend"] = params_in.get("blend", 0.8)
+        else:
+            if params_in.get("strength") is not None:
+                job_params["strength"] = params_in["strength"]
+            if params_in.get("negative_prompt"):
+                job_params["negative_prompt"] = params_in["negative_prompt"]
+            if params_in.get("model_name"):
+                job_params["model_name"] = params_in["model_name"]
+        if req.dry_run:
+            return {"dry_run": True, "pipeline": backend, "mode": mode,
+                    "source": src, "params": job_params, "step_id": step_id}
+        jid = RUNNER.submit(pipeline=backend, mode=mode, params=job_params,
+                            batch_id="", index=0, batch_size=1,
+                            requester_id=vid, profile_version_id=vid, pass_name=step["preset"])
+        try:
+            return assets.mark_postproc_step_queued(ws, asset_id, step_id=step_id,
+                                                    job_id=jid, version_id=req.version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(409, str(e))
+
+    @app.delete("/assets/{asset_id}/postproc/step/{step_id}")
+    def remove_postproc_step(asset_id: str, step_id: str, version_id: str | None = None,
+                             _auth: None = Depends(require_token)) -> dict:
+        """M0c — remove the LAST step of its stack (the chain tail; prunes an empty stack).
+        Token-gated; finalized → 409."""
+        try:
+            return assets.remove_postproc_step(_require_ws(), asset_id, step_id=step_id,
+                                               version_id=version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(409, str(e))
 
     @app.post("/project")
     def create_project(req: CreateProjectRequest, _auth: None = Depends(require_token)) -> dict:

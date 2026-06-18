@@ -58,6 +58,11 @@ import {
   activateVersion,
   cullRef,
   saveProfile,
+  addPostprocStep,
+  queuePostprocStep,
+  removePostprocStep,
+  type PostprocStack,
+  type PostprocStep,
   getModels,
   recipePresets,
   type GeneratePreview,
@@ -177,6 +182,8 @@ export default function App() {
   const [characterClause, setCharacterClause] = useState("");
   const [promptTemplate, setPromptTemplate] = useState("");
   const [refSet, setRefSet] = useState<RefItem[]>([]);
+  // M0c — per-base-image postprocess stacks for the active version (inline panel).
+  const [postprocStacks, setPostprocStacks] = useState<PostprocStack[]>([]);
   const [busy, setBusy] = useState(false);
   // Parameter drawers (review 2026-06-10, issue 2): catalog-driven tunables, kept as a
   // sparse record (unset = use the worker/model default — nothing is sent).
@@ -630,6 +637,7 @@ export default function App() {
       setAnchorInfo(null);
       setRejected([]);
       setVersionList([]);
+      setPostprocStacks([]);
       return;
     }
     try {
@@ -641,14 +649,57 @@ export default function App() {
       setAnchorInfo(v?.anchor ?? null);
       setRejected(v?.rejected ?? []);
       setVersionList(detail.versions ?? []);
+      setPostprocStacks(v?.postproc_stacks ?? []);
     } catch {
       setCasting([]);
       setRefSet([]);
       setAnchorInfo(null);
       setRejected([]);
       setVersionList([]);
+      setPostprocStacks([]);
     }
   };
+
+  // M0c — postprocess stack handlers (the inline Inspector panel on a selected image).
+  const onAddPostprocStep = async (base: string, preset: PostprocStep["preset"],
+                                   params: Record<string, unknown>) => {
+    if (!activeAsset) return;
+    setBusy(true); setError(null);
+    try {
+      const v = await addPostprocStep(activeAsset.id,
+        { base, preset, params, version_id: activeAsset.active_version });
+      setPostprocStacks(v.postproc_stacks ?? []);
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  };
+  const onQueuePostprocStep = async (stepId: string) => {
+    if (!activeAsset) return;
+    setBusy(true); setError(null);
+    try {
+      const v = await queuePostprocStep(activeAsset.id, stepId, activeAsset.active_version);
+      setPostprocStacks(v.postproc_stacks ?? []);
+      void refreshJobs();
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  };
+  const onRemovePostprocStep = async (stepId: string) => {
+    if (!activeAsset) return;
+    setBusy(true); setError(null);
+    try {
+      const v = await removePostprocStep(activeAsset.id, stepId, activeAsset.active_version);
+      setPostprocStacks(v.postproc_stacks ?? []);
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  };
+  // The step output is recorded by the runner's completion observer (server-side). When a
+  // queued step's job finishes, re-fetch the version so the persisted output lands (which
+  // also re-opens the "add next step" gate). Self-terminating: once persisted, status flips
+  // off "queued" so this stops firing.
+  useEffect(() => {
+    if (!activeAsset) return;
+    const lagging = postprocStacks.some((s) => s.steps.some((st) =>
+      st.job_id && st.status === "queued"
+      && ["done", "failed"].includes(jobs[st.job_id]?.status ?? "")));
+    if (lagging) void refreshCasting(activeAsset);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobs]);
 
   // M5 — version ops. Switching/creating resets the per-version Stage-B controls (the
   // same leak class the asset switch had) and re-scopes everything via refreshCasting.
@@ -1018,6 +1069,8 @@ export default function App() {
   const selOutput = selected && selected.includes(":")
     ? selected.slice(selected.indexOf(":") + 1)
     : undefined;
+  // M0c — the selected image's out/-relative name (the postprocess-stack base).
+  const selBase = selOutput ?? selJob?.result?.output_name;
   // When an asset is active, the grid is derived from its jobs (lineage requester =
   // active version); the sandbox tracks the last batch's ids.
   // The grid is stage-scoped: Stage A shows casting jobs (stage A); Stage B/C show the
@@ -1954,6 +2007,18 @@ export default function App() {
               </button>
             </>
           )}
+          {/* M0c — inline postprocess stack on the selected image (not videos). */}
+          {selJob && activeAsset && selJob.status === "done" && !activeVersionLocked
+            && selBase && !/\.(mp4|webm|mov)$/i.test(selBase) && (
+            <PostprocPanel
+              stack={postprocStacks.find((s) => s.base === selBase)}
+              jobs={jobs}
+              busy={busy}
+              onAdd={(preset, params) => void onAddPostprocStep(selBase, preset, params)}
+              onQueue={onQueuePostprocStep}
+              onRemove={onRemovePostprocStep}
+            />
+          )}
           {selJob && <Inspector job={selJob} output={selOutput} />}
         </aside>
       </div>
@@ -2546,6 +2611,84 @@ function StyleRow({ st, busy, isActive, canDelete, onSave, onDelete, onSetActive
       <textarea rows={2} className="style-neg-edit" value={neg}
                 onChange={(e) => setNeg(e.target.value)}
                 placeholder="global negative — appended to every negative prompt…" />
+    </div>
+  );
+}
+
+// M0c — inline postprocess stack on a selected base image: build an ordered chain of
+// Clean/Refine/custom (i2i) + Restore (GFPGAN) steps; each is configured, then queued
+// independently, and records its source → output (the chain). Live status reads the job
+// (the persisted record lags one poll); the "add" gate opens once the tail step is done.
+function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove }: {
+  stack: PostprocStack | undefined;
+  jobs: Record<string, Job>;
+  busy: boolean;
+  onAdd: (preset: PostprocStep["preset"], params: Record<string, unknown>) => void;
+  onQueue: (stepId: string) => void;
+  onRemove: (stepId: string) => void;
+}) {
+  const [preset, setPreset] = useState<PostprocStep["preset"]>("clean");
+  const [strength, setStrength] = useState("");
+  const steps = stack?.steps ?? [];
+  const liveStatus = (st: PostprocStep): string =>
+    (st.job_id ? jobs[st.job_id]?.status : undefined) ?? st.status;
+  const last = steps[steps.length - 1];
+  const canAdd = !last || last.output != null || liveStatus(last) === "done";
+  const isI2i = preset !== "restore";
+  return (
+    <div className="postproc">
+      <div className="rail-head">POSTPROCESS <span className="muted">stack</span></div>
+      {steps.length === 0 && (
+        <div className="muted">No steps — stack a Clean / Refine / Restore over this image.</div>
+      )}
+      <ol className="pp-steps">
+        {steps.map((st, i) => {
+          const status = liveStatus(st);
+          const strNum = typeof st.params?.strength === "number" ? st.params.strength : null;
+          return (
+            <li key={st.id} className="pp-step">
+              <span className="pp-num">{i + 1}</span>
+              <span className="pp-preset">
+                {st.preset}{st.backend === "sd35" ? " · sd35" : ""}{strNum != null ? ` · ${strNum}` : ""}
+              </span>
+              <span className={`pp-status pp-${status}`}>{status}</span>
+              {status === "configured" && (
+                <button className="ghost" disabled={busy} onClick={() => onQueue(st.id)}
+                        title="queue this step (uses GPU)">▶</button>
+              )}
+              {i === steps.length - 1 && status !== "queued" && status !== "running" && (
+                <button className="ghost" disabled={busy} onClick={() => onRemove(st.id)}
+                        title="remove this (tail) step">✕</button>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      {canAdd ? (
+        <div className="pp-add">
+          <select value={preset}
+                  onChange={(e) => setPreset(e.target.value as PostprocStep["preset"])}>
+            <option value="clean">Clean (i2i 0.5)</option>
+            <option value="refine">Refine (i2i 0.25)</option>
+            <option value="custom">Custom i2i</option>
+            <option value="restore">Restore (GFPGAN)</option>
+          </select>
+          {isI2i && (
+            <input className="prompt" type="number" step="0.05" min="0" max="1"
+                   placeholder="strength (optional)" value={strength}
+                   onChange={(e) => setStrength(e.target.value)} />
+          )}
+          <button className="proj-btn" disabled={busy}
+                  onClick={() => {
+                    const params: Record<string, unknown> = {};
+                    if (isI2i && strength.trim()) params.strength = Number(strength);
+                    onAdd(preset, params);
+                    setStrength("");
+                  }}>+ add step</button>
+        </div>
+      ) : (
+        <div className="muted pp-gate">Queue + finish the last step to stack another.</div>
+      )}
     </div>
   );
 }

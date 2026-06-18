@@ -503,6 +503,126 @@ def anchor_file_path(ws: Workspace, asset_id: str,
     return path if path.is_file() else None
 
 
+# --- M0c (P2): per-base-image postprocess stacks --------------------------------
+# A stack postprocesses a base output (out/-relative); each step is an independently
+# configured + queued image-postprocess whose `source` is the previous step's output
+# (or the base). assets.py only persists the record; main.py resolves presets, validates
+# backends/weights, builds + submits the job, and (via the completion observer) records
+# the produced output. The stack is a linear chain, so steps append/remove at the tail.
+
+def _find_stack(version: dict, base: str) -> dict | None:
+    return next((s for s in version.get("postproc_stacks", []) if s["base"] == base), None)
+
+
+def _find_step(version: dict, step_id: str):
+    """`(stack, step)` for a step id, or `(None, None)`."""
+    for stack in version.get("postproc_stacks", []):
+        for step in stack["steps"]:
+            if step["id"] == step_id:
+                return stack, step
+    return None, None
+
+
+def add_postproc_step(ws: Workspace, asset_id: str, *, base: str, preset: str,
+                      backend: str, mode: str, params: dict, mask: str | None = None,
+                      requires_mask: bool = False, version_id: str | None = None) -> dict:
+    """Append a CONFIGURED step to `base`'s stack. Its `source` is the latest image in the
+    stack — the previous step's output, or `base` when empty. Persisted, NOT queued (a
+    separate queue call fires the job; the observer records the output). Refuses to stack
+    onto a step that hasn't produced an output yet, so a step's source is always a real
+    image (queue + finish the previous step first). Refuses on a finalized version (R60)."""
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    _require_unlocked(version)
+    stacks = version.setdefault("postproc_stacks", [])
+    stack = _find_stack(version, base)
+    if stack is None:
+        stack = {"base": base, "steps": []}
+        stacks.append(stack)
+    steps = stack["steps"]
+    if steps:
+        if not steps[-1].get("output"):
+            raise ws_mod.WorkspaceError(
+                "queue and finish the previous step before adding another")
+        source = steps[-1]["output"]
+    else:
+        source = base
+    steps.append({
+        "id": new_id("pps"), "preset": preset, "backend": backend, "mode": mode,
+        "params": params, "mask": mask, "requires_mask": requires_mask,
+        "source": source, "output": None, "job_id": None,
+        "status": "configured", "added_at": _now(),
+    })
+    return _write_version(vdir, version)
+
+
+def remove_postproc_step(ws: Workspace, asset_id: str, *, step_id: str,
+                         version_id: str | None = None) -> dict:
+    """Remove the LAST step of its stack (a chain — removing a middle step would orphan
+    the sources below it) and prune an emptied stack. Refuses on a finalized version."""
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    _require_unlocked(version)
+    stack, step = _find_step(version, step_id)
+    if step is None:
+        raise ws_mod.WorkspaceError(f"unknown postproc step {step_id!r}")
+    if stack["steps"][-1]["id"] != step_id:
+        raise ws_mod.WorkspaceError("only the last step of a stack can be removed")
+    stack["steps"].pop()
+    if not stack["steps"]:
+        version["postproc_stacks"].remove(stack)
+    return _write_version(vdir, version)
+
+
+def resolve_postproc_step(ws: Workspace, asset_id: str, step_id: str,
+                          version_id: str | None = None):
+    """`(version, step)` for a step id in the target version; raises on unknown."""
+    _vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    _stack, step = _find_step(version, step_id)
+    if step is None:
+        raise ws_mod.WorkspaceError(f"unknown postproc step {step_id!r}")
+    return version, step
+
+
+def mark_postproc_step_queued(ws: Workspace, asset_id: str, *, step_id: str, job_id: str,
+                              version_id: str | None = None) -> dict:
+    """Stamp a step queued + link the firing job (the observer matches on this job_id)."""
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    _require_unlocked(version)
+    _stack, step = _find_step(version, step_id)
+    if step is None:
+        raise ws_mod.WorkspaceError(f"unknown postproc step {step_id!r}")
+    step["status"] = "queued"
+    step["job_id"] = job_id
+    step["output"] = None
+    return _write_version(vdir, version)
+
+
+def record_postproc_result(ws: Workspace, version_id: str, job_id: str, *,
+                           output: str | None, ok: bool) -> bool:
+    """Completion-observer side (mirrors `mark_anchor_verified`): find the postproc step
+    whose `job_id` matches the finished job and record its produced `output` + final
+    status. Looks the version up by id (the observer only knows the job's
+    `profile_version_id`). Best-effort; returns True when a step was updated."""
+    for adir, profile in _iter_profiles(ws):
+        if version_id not in profile.get("versions", []):
+            continue
+        found = _find_version(adir, version_id)
+        if found is None:
+            return False
+        vdir, version = found
+        if version.get("finalized"):
+            return False
+        for stack in version.get("postproc_stacks", []):
+            for st in stack["steps"]:
+                if st.get("job_id") == job_id and st.get("status") in ("queued", "running"):
+                    st["status"] = "done" if ok else "failed"
+                    if ok and output:
+                        st["output"] = output
+                    _write_version(vdir, version)
+                    return True
+        return False
+    return False
+
+
 # --- Stage-C curation: keep/cull Stage-B outputs → curated ref_set (M3) ----------
 
 def keep_ref(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,

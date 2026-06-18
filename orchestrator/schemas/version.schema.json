@@ -76,6 +76,38 @@
           "added_at": { "type": "string" }
         }
       }
+    },
+    "postproc_stacks": {
+      "type": "array",
+      "description": "M0c (P2): per-base-image ordered postprocess stacks. A stack postprocesses a base output (out/-relative); each step is an independently-configurable, independently-queued image-postprocess (Clean/Refine i2i presets, custom i2i, restore, or identity) recording its source image + params + produced output (source/output lineage). `mask` is the mask-ready contract (manual mask in M0; generated/SAM masks plug into the same shape later).",
+      "items": {
+        "type": "object",
+        "required": ["base", "steps"],
+        "properties": {
+          "base": { "type": "string" },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "preset", "backend", "mode", "source", "status"],
+              "properties": {
+                "id": { "type": "string", "pattern": "^pps_[0-9a-f]{6}$" },
+                "preset": { "type": "string", "enum": ["clean", "refine", "custom", "restore", "identity"] },
+                "backend": { "type": "string" },
+                "mode": { "type": "string" },
+                "params": { "type": "object" },
+                "mask": { "type": ["string", "null"] },
+                "requires_mask": { "type": "boolean" },
+                "source": { "type": "string" },
+                "output": { "type": ["string", "null"] },
+                "job_id": { "type": ["string", "null"] },
+                "status": { "type": "string", "enum": ["configured", "queued", "running", "done", "failed"] },
+                "added_at": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

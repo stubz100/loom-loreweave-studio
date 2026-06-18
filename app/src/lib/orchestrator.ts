@@ -461,6 +461,25 @@ export interface AnchorInfo {
   verified_by_job?: string;
 }
 
+/** M0c: one persisted postprocess step in a base image's stack (source/output lineage). */
+export interface PostprocStep {
+  id: string;
+  preset: "clean" | "refine" | "custom" | "restore";
+  backend: string;
+  mode: string;
+  params: Record<string, unknown>;
+  mask?: string | null;
+  requires_mask?: boolean;
+  source: string;                 // out/-relative input image (base, or prior step's output)
+  output?: string | null;         // produced image once the step's job completes
+  job_id?: string | null;
+  status: "configured" | "queued" | "running" | "done" | "failed";
+  added_at?: string;
+}
+
+/** M0c: an ordered postprocess stack anchored to a base image (out/-relative). */
+export interface PostprocStack { base: string; steps: PostprocStep[]; }
+
 export interface ProfileVersion {
   id: string;
   name: string;
@@ -472,6 +491,8 @@ export interface ProfileVersion {
   casting: CastingCandidate[];
   /** P1-12: out/-relative output names rejected during Stage-C culling (persistent). */
   rejected?: string[];
+  /** M0c: per-base-image postprocess stacks. */
+  postproc_stacks?: PostprocStack[];
 }
 
 /** P1-12: mark/unmark a Stage-B candidate output rejected (persistent cull-from-view). */
@@ -648,6 +669,33 @@ export async function matteHero(assetId: string, versionId?: string, params?: Re
   });
   if (!res.ok) throw new Error(`matte ${res.status}: ${await res.text()}`);
   return await res.json();
+}
+
+/** M0c: configure (persist, NOT queue) a postprocess step onto a base image's stack. */
+export function addPostprocStep(assetId: string, body: {
+  base: string; preset?: PostprocStep["preset"]; backend?: string;
+  params?: Record<string, unknown>; mask?: string | null; requires_mask?: boolean;
+  version_id?: string | null;
+}): Promise<ProfileVersion> {
+  return postAsset(assetId, "postproc/step", body);
+}
+
+/** M0c: fire a configured step's job over its source image (the runner records its output). */
+export function queuePostprocStep(assetId: string, stepId: string, versionId?: string):
+    Promise<ProfileVersion> {
+  return postAsset(assetId, `postproc/step/${stepId}/queue`, { version_id: versionId ?? null });
+}
+
+/** M0c: remove the LAST step of its stack (the chain tail). */
+export async function removePostprocStep(assetId: string, stepId: string, versionId?: string):
+    Promise<ProfileVersion> {
+  const q = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/postproc/step/${stepId}${q}`, {
+    method: "DELETE",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`postproc remove ${res.status}: ${await res.text()}`);
+  return (await res.json()) as ProfileVersion;
 }
 
 async function postAsset(assetId: string, path: string, body: unknown): Promise<ProfileVersion> {

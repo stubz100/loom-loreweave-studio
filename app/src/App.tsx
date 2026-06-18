@@ -2019,6 +2019,7 @@ export default function App() {
               stack={postprocStacks.find((s) => s.base === selBase)}
               jobs={jobs}
               busy={busy}
+              modelsFor={(b) => (catalog?.[b]?.variants ?? []).map((v) => v.id)}
               onAdd={(preset, backend, params) =>
                 void onAddPostprocStep(selBase, preset, backend, params)}
               onQueue={onQueuePostprocStep}
@@ -2625,10 +2626,11 @@ function StyleRow({ st, busy, isActive, canDelete, onSave, onDelete, onSetActive
 // Clean/Refine/custom (i2i) + Restore (GFPGAN) steps; each is configured, then queued
 // independently, and records its source → output (the chain). Live status reads the job
 // (the persisted record lags one poll); the "add" gate opens once the tail step is done.
-function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove, onView }: {
+function PostprocPanel({ stack, jobs, busy, modelsFor, onAdd, onQueue, onRemove, onView }: {
   stack: PostprocStack | undefined;
   jobs: Record<string, Job>;
   busy: boolean;
+  modelsFor: (backend: string) => string[];   // variant ids for an i2i backend (catalog)
   onAdd: (preset: PostprocStep["preset"], backend: string | undefined,
           params: Record<string, unknown>) => void;
   onQueue: (stepId: string) => void;
@@ -2637,6 +2639,7 @@ function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove, onView }: 
 }) {
   const [preset, setPreset] = useState<PostprocStep["preset"]>("clean");
   const [backend, setBackend] = useState("zimage");
+  const [model, setModel] = useState("");        // "" = the backend's default model
   const [strength, setStrength] = useState("");
   const [prompt, setPrompt] = useState("");
   const [neg, setNeg] = useState("");
@@ -2651,6 +2654,7 @@ function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove, onView }: 
   const submit = () => {
     const params: Record<string, unknown> = {};
     if (isI2i) {
+      if (model.trim()) params.model_name = model;
       if (strength.trim()) params.strength = Number(strength);
       if (prompt.trim()) params.prompt = prompt.trim();
       if (neg.trim()) params.negative_prompt = neg.trim();
@@ -2658,7 +2662,7 @@ function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove, onView }: 
       params.blend = Number(blend);
     }
     onAdd(preset, isI2i ? backend : undefined, params);
-    setStrength(""); setPrompt(""); setNeg(""); setBlend("");
+    setModel(""); setStrength(""); setPrompt(""); setNeg(""); setBlend("");
   };
 
   return (
@@ -2714,7 +2718,8 @@ function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove, onView }: 
               <option value="restore">Restore (GFPGAN)</option>
             </select>
             {isI2i && (
-              <select value={backend} onChange={(e) => setBackend(e.target.value)}
+              <select value={backend}
+                      onChange={(e) => { setBackend(e.target.value); setModel(""); }}
                       title="img2img backend family">
                 <option value="zimage">zimage</option>
                 <option value="sd35">sd35</option>
@@ -2723,6 +2728,13 @@ function PostprocPanel({ stack, jobs, busy, onAdd, onQueue, onRemove, onView }: 
           </div>
           {isI2i ? (
             <>
+              <select className="prompt" value={model} onChange={(e) => setModel(e.target.value)}
+                      title="model variant (default = the backend's preset model)">
+                <option value="">{backend} default model</option>
+                {modelsFor(backend).map((id) => (
+                  <option key={id} value={id}>{id}</option>
+                ))}
+              </select>
               <input className="prompt" type="number" step="0.05" min="0" max="1"
                      placeholder={`strength (default ${preset === "clean" ? "0.5" : "0.25"})`}
                      value={strength} onChange={(e) => setStrength(e.target.value)} />

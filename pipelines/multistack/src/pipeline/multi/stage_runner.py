@@ -75,6 +75,10 @@ def _run_subprocess(cmd: list[str], cwd: Path, env: dict[str, str]) -> tuple[int
         stdout=sys.stdout,           # let per-pipeline progress print live
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",            # sub-runs emit UTF-8 (PYTHONIOENCODING); decode to match
+        errors="replace",            # a stray byte must never fail the capture (cp1252 decode of
+                                     # a UTF-8 stderr byte 0x8f raised → every candidate wrongly
+                                     # marked failed even though its image saved fine)
     )
     return proc.returncode, proc.stderr or ""
 

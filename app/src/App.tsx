@@ -341,13 +341,15 @@ export default function App() {
     return { top, channel };
   };
 
-  // M0d Part B — is a flux2 variant step-distilled? Distilled klein/dev pin CFG ≈1 and
-  // ignore guidance, so a set guidance on one is wasted (drives the Sampling guard hint).
-  // Unknown / unset (the klein-4b default) → distilled.
-  const flux2IsDistilled = (modelId: string): boolean => {
+  // M0d Part B — does a flux2 variant have FIXED (inert) guidance? Only the step-distilled klein
+  // variants pin guidance ≈1 (worker fixed_params); flux.2-dev IS guidance-distilled but its
+  // guidance (default 4.0) is a real adjustable knob, and -base honours guidance — so neither is
+  // "fixed". This drives the Sampling guard, which must NOT warn on dev/base. Unknown / unset
+  // (the klein-4b default) → fixed.
+  const flux2GuidanceFixed = (modelId: string): boolean => {
     const def = (catalog?.flux2?.params?.find((p) => p.name === "model_name")?.default as string) || "";
     const v = catalog?.flux2?.variants?.find((x) => x.id === (modelId || def));
-    return v ? (v as { distilled?: boolean }).distilled === true : true;
+    return v ? (v as { guidance_fixed?: boolean }).guidance_fixed === true : true;
   };
 
   // M0d Part C — the dev JSON prompt tree is offered only when flux.2-dev is the cast model.
@@ -1563,7 +1565,7 @@ export default function App() {
                     presets={catalog?.flux2?.sampling_presets ?? []}
                     value={castSampling}
                     warn={advParamsA.guidance != null && Number(advParamsA.guidance) > 1.5
-                          && flux2IsDistilled(advParamsA.model_name as string)}
+                          && flux2GuidanceFixed(advParamsA.model_name as string)}
                     onPick={(p) => {
                       setCastSampling(p?.id ?? "");
                       if (p) {
@@ -1716,20 +1718,27 @@ export default function App() {
                     presets={catalog?.flux2?.sampling_presets ?? []}
                     value={stageBSampling}
                     warn={advParamsB.guidance != null && Number(advParamsB.guidance) > 1.5
-                          && flux2IsDistilled(stageBModel)}
+                          && flux2GuidanceFixed(stageBModel)}
                     onPick={(p) => {
                       setStageBSampling(p?.id ?? "");
                       if (p) {
                         setStageBModel(p.model_name);
                         setAdvParamsB((prev) => ({ ...prev, num_steps: p.num_steps, guidance: p.guidance }));
+                        // "Dev / JSON" → turn on advanced prompting so dev actually emits JSON cells.
+                        if (p.model_name === "flux.2-dev") setAdvancedPromptB(true);
                       }
                     }}
                   />
-                  <label className="p-flag" title="M0d: build each cell prompt from an explicit camera+pose DIRECTIVE (e.g. 'body AND head both turned three-quarters left') instead of the loose 'three-quarter left view' phrase — pins head/body alignment for ref-mode. Preview to see the resolved prompt.">
+                  <label className="p-flag" title="M0d: build each cell prompt from an explicit camera+pose DIRECTIVE (e.g. 'body AND head both turned three-quarters left') instead of the loose 'three-quarter left view' phrase — pins head/body alignment for ref-mode. On flux.2-dev the directives are emitted as structured JSON (the Mistral VLM parses JSON precisely). Preview to see the resolved prompt.">
                     <input type="checkbox" checked={advancedPromptB}
                            onChange={(e) => setAdvancedPromptB(e.target.checked)} />
                     advanced prompting
                   </label>
+                  {advancedPromptB && (
+                    <span className="muted" title="flux.2-dev parses structured JSON precisely, so each cell's directive prompt is emitted as a JSON object; klein/base get the labeled directive string">
+                      {stageBModel === "flux.2-dev" ? "→ structured JSON (dev)" : "→ directive cells"}
+                    </span>
+                  )}
                   <span className="muted" title="flux2 (§11) conditions on the hero ★ as an in-context reference — identity is carried into each cell's pose/scene, so there is no img2img strength or mixed/inpaint axis">
                     ✨ reference-conditioned (identity-preserving)
                   </span>

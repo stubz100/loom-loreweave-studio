@@ -134,6 +134,19 @@ def test_flux2_sampling_presets_reference_real_variants():
     assert mc.catalog_for_api()["flux2"]["sampling_presets"] == presets
 
 
+def test_flux2_guidance_fixed_flag_is_accurate():
+    """The Sampling guard keys on `guidance_fixed`, not `distilled`: only the step-distilled klein
+    variants pin guidance (worker fixed_params). flux.2-dev IS distilled yet honours guidance
+    (default 4.0) → must be guidance_fixed=False so the UI doesn't falsely warn; -base too."""
+    fixed = {v["id"]: v.get("guidance_fixed") for v in mc.variants("flux2")}
+    assert fixed["flux.2-klein-4b"] is True and fixed["flux.2-klein-9b"] is True
+    assert fixed["flux.2-klein-9b-kv"] is True
+    assert fixed["flux.2-klein-base-4b"] is False and fixed["flux.2-klein-base-9b"] is False
+    assert fixed["flux.2-dev"] is False        # the bug: dev honours guidance, must not warn
+    # every flux2 variant declares the flag
+    assert all(isinstance(v.get("guidance_fixed"), bool) for v in mc.variants("flux2"))
+
+
 def test_flux2_angle_directives_served_for_json_tree():
     """M0d Part C: the angle→pose directive vocab is served on the flux2 entry (single source
     with Part A's flux2_prompt.ANGLE_DIRECTIVES) so the dev JSON tree's pose presets don't drift."""

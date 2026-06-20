@@ -78,6 +78,47 @@ def test_recipe_advanced_prompt_uses_directives_only_when_on():
     assert "head" in tq_adv["prompt"].lower() and "body" in tq_adv["prompt"].lower()
 
 
+def test_build_cell_prompt_json_for_dev():
+    """as_json=True (flux.2-dev) emits a valid compact JSON object with the same fields as the
+    labeled form — pose/shot/expression + subject/style, the loose phrase gone."""
+    import json
+    cell = {"shot_size": "waist_up", "angle": "three_quarter_left",
+            "expression": "neutral", "background": "market"}
+    out = flux2_prompt.build_cell_prompt(cell, "mara, red coat", "watercolor", as_json=True)
+    obj = json.loads(out)                                   # must be valid JSON
+    assert obj["subject"] == "mara, red coat"
+    assert obj["pose"] == flux2_prompt.angle_directive("three_quarter_left")
+    assert "head" in obj["pose"].lower() and "body" in obj["pose"].lower()
+    assert obj["shot"] == flux2_prompt.shot_directive("waist_up")
+    assert obj["expression"] == "neutral expression"
+    assert obj["background"] == "market" and obj["style"] == "watercolor"
+    assert "three-quarter left view" not in out
+
+
+def test_build_cell_json_drops_empty_fields():
+    import json
+    cell = {"shot_size": "full_body", "angle": "front", "expression": "smile", "background": ""}
+    obj = json.loads(flux2_prompt.build_cell_prompt(cell, "", "", as_json=True))
+    assert "subject" not in obj and "background" not in obj and "style" not in obj
+    assert obj["pose"] and obj["shot"] and obj["expression"]
+
+
+def test_recipe_json_prompt_emits_json_cells():
+    """build_recipe(json_prompt=True) → every cell prompt is JSON; advanced_prompt reported True
+    (JSON is the dev directive form); same matrix/seeds as the labeled advanced build."""
+    import json
+    r = recipe.build_recipe("npc_lite", character_clause="mara", style_fragment="ink",
+                            json_prompt=True)
+    assert r["json_prompt"] is True and r["advanced_prompt"] is True
+    for c in r["cells"]:
+        obj = json.loads(c["prompt"])                       # every cell parses as JSON
+        assert obj["subject"] == "mara" and obj["pose"]
+    # same cells/seeds as the labeled advanced build (only the phrasing differs)
+    labeled = recipe.build_recipe("npc_lite", character_clause="mara", style_fragment="ink",
+                                  advanced_prompt=True)
+    assert [c["seed"] for c in r["cells"]] == [c["seed"] for c in labeled["cells"]]
+
+
 def test_recipe_advanced_prompt_is_deterministic():
     a = recipe.build_recipe("full_coverage", character_clause="x", style_fragment="y",
                             advanced_prompt=True)

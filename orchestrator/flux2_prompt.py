@@ -17,6 +17,8 @@ first (so the pose dominates the loosely-adhering model), concrete phrasing, **p
 
 from __future__ import annotations
 
+import json
+
 try:
     from . import coverage
 except ImportError:  # pragma: no cover - direct-run convenience
@@ -57,22 +59,43 @@ def shot_directive(shot_size: str) -> str:
     return SHOT_DIRECTIVES.get(shot_size, coverage.SHOT_SIZES.get(shot_size, shot_size))
 
 
-def build_cell_prompt(cell: dict, character_clause: str, style_fragment: str = "") -> str:
-    """The advanced flux2 cell prompt: **`<camera+pose directive>, <framing>, <expression>[,
-    <bg> background], <identity clause>, <style>`**. Pose/composition LEAD so they dominate the
-    loosely-adhering model; identity rides the reference image + the clause; style trails (same
-    slot order as the flat builder, just with explicit directives). Deterministic; the coverage
-    vocabulary is validated + frozen."""
+def build_cell_prompt(cell: dict, character_clause: str, style_fragment: str = "",
+                      *, as_json: bool = False) -> str:
+    """The advanced flux2 cell prompt. Default (klein/base, labeled): **`<camera+pose directive>,
+    <framing>, <expression>[, <bg> background], <identity clause>, <style>`** — pose/composition
+    LEAD so they dominate the loosely-adhering model; identity rides the reference image + the
+    clause; style trails. With **`as_json=True`** (flux.2-dev, whose Mistral VLM parses JSON
+    precisely — M0d Part A/C): the same fields as a compact structured-JSON object instead.
+    Deterministic; the coverage vocabulary is validated + frozen either way."""
     coverage.validate_cell(cell)
-    directive_parts = [
-        angle_directive(cell["angle"]),
-        shot_directive(cell["shot_size"]),
-        coverage.EXPRESSIONS[cell["expression"]],
-    ]
+    angle = angle_directive(cell["angle"])
+    shot = shot_directive(cell["shot_size"])
+    expr = coverage.EXPRESSIONS[cell["expression"]]
     bg = (cell.get("background") or "").strip()
+    clause = (character_clause or "").strip()
+    style = (style_fragment or "").strip()
+    if as_json:
+        return build_cell_json(clause, angle, shot, expr, bg, style)
+    directive_parts = [angle, shot, expr]
     if bg:
         directive_parts.append(f"{bg} background")
     directive = ", ".join(directive_parts)
-    clause = (character_clause or "").strip()
-    style = (style_fragment or "").strip()
     return ", ".join(p for p in (directive, clause, style) if p)
+
+
+def build_cell_json(clause: str, angle: str, shot: str, expr: str,
+                    bg: str = "", style: str = "") -> str:
+    """A compact structured-JSON cell prompt for flux.2-dev (its Mistral VLM parses JSON precisely).
+    Mirrors the labeled form's fields as a JSON object; empty fields are dropped; non-ASCII is kept
+    (the VLM reads ¾/° directly). Deterministic, key order fixed."""
+    obj: dict[str, str] = {}
+    if clause:
+        obj["subject"] = clause
+    obj["pose"] = angle
+    obj["shot"] = shot
+    obj["expression"] = expr
+    if bg:
+        obj["background"] = bg
+    if style:
+        obj["style"] = style
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))

@@ -139,6 +139,30 @@ def test_stage_b_flux2_dry_run_routes_to_ref(client):
     assert body["identity"] is False
 
 
+def test_stage_b_flux2_dev_advanced_prompt_emits_json_cells(client):
+    """M0d — flux.2-dev + advanced_prompt in Stage-B expansion emits per-cell STRUCTURED JSON
+    prompts (the Mistral VLM parses JSON); klein/base get the labeled directive string. The
+    dry-run reports json_prompt + the first cell's prompt is valid JSON."""
+    import json
+    from orchestrator.runner import RUNNER
+    a = _asset_with_hero(client, RUNNER.workspace, name="DevJson")
+    r = client.post(f"/assets/{a['id']}/stage-b",
+                    json={"pipeline": "flux2", "preset": "npc_lite", "advanced_prompt": True,
+                          "params": {"model_name": "flux.2-dev"}, "dry_run": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["advanced_prompt"] is True and body["json_prompt"] is True
+    obj = json.loads(body["first_cell"]["prompt"])          # the per-cell prompt is JSON
+    assert obj["pose"] and obj["shot"] and obj["expression"]
+    # a klein model with the same toggle stays the labeled (non-JSON) directive string
+    r2 = client.post(f"/assets/{a['id']}/stage-b",
+                     json={"pipeline": "flux2", "preset": "npc_lite", "advanced_prompt": True,
+                           "dry_run": True})
+    body2 = r2.json()
+    assert body2["json_prompt"] is False
+    assert not body2["first_cell"]["prompt"].lstrip().startswith("{")
+
+
 def test_stage_b_flux2_rejects_mixed(client):
     from orchestrator.runner import RUNNER
     a = _asset_with_hero(client, RUNNER.workspace, name="Ref2")

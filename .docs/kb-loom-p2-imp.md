@@ -317,6 +317,25 @@ accepted); updated 2 flux2-adapter caps tests for the new mode. **271 backend te
 `16874e4`. ⚠ Visual sign-off owed on the running app (all four levers — sampling pull-down,
 advanced-prompting toggle, dev t2i JSON tree, dev i2i JSON tree on the postproc step).
 
+**M0d fix — dev false-warning + JSON in Stage-B expansion (2026-06-20 17:45, user-found).** Two
+bugs when selecting flux2-identity Stage-B with the **Dev / JSON** sampling preset: (1) the
+distilled-guidance ⚠ guard fired on **flux.2-dev** (wrong — dev IS guidance-distilled, but its
+guidance default 4.0 is a *real adjustable knob*; only the **klein** variants pin it, worker
+`fixed_params={guidance,num_steps}`). The guard keyed on the catalog `distilled` flag (True for dev
+AND klein). Fix: added an accurate **`guidance_fixed`** flag per flux2 variant (True only for
+klein-4b/9b/9b-kv; False for -base + dev), served on the catalog; the FE guard now keys on it
+(`flux2GuidanceFixed`, was `flux2IsDistilled`) → no false warn on dev/base. (2) **JSON prompting
+didn't reach Stage-B** (Part C's tree was t2i/i2i only) — the author expected "Dev / JSON" to JSON-
+prompt expansion. Fix: `flux2_prompt.build_cell_prompt(as_json=True)` + `build_cell_json` emit each
+cell's directive set as a compact JSON object (subject/pose/shot/expression/background/style, empty
+dropped, non-ASCII kept); `recipe.build_recipe(json_prompt=…)` threads it; the Stage-B endpoint sets
+`json_prompt = advanced_prompt and is_flux2 and eff_model=="flux.2-dev"` (eff model = params-channel
+override > top-level, matching the existing precedence) and echoes it in the dry-run. FE: picking the
+**Dev / JSON** Stage-B preset now auto-ticks **advanced prompting** (so dev actually emits JSON in one
+pick) + a "→ structured JSON (dev)" hint. klein/base keep the labeled directive string. **+5 tests**
+(flux2_prompt JSON ×3, catalog guidance_fixed, endpoint dev-JSON dry-run); **276 backend**, green;
+`tsc` + `vite build` clean. No `src/pipeline/` → no re-vendor. **✅ PUSHED `<pending>`.**
+
 ---
 
 ## P2-era fixes (non-milestone)

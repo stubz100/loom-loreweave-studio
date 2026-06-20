@@ -259,8 +259,9 @@ body {
 
 /* M0d Part C — flux.2-dev structured-JSON prompt tree editor. */
 .json-tree { flex-direction: column; align-items: stretch; gap: 8px; }
-.json-tree .jt-head { display: flex; align-items: center; gap: 10px; }
-.json-tree .jt-head .muted { font-size: 11px; flex: 1; }
+.json-tree .jt-head { display: flex; flex-direction: column; gap: 2px; }
+.json-tree .jt-head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.json-tree .jt-head .muted { font-size: 11px; }
 .json-tree .jt-field { display: flex; align-items: center; gap: 6px; font-size: 11px; }
 .json-tree .jt-field > span { min-width: 64px; color: var(--muted); }
 .json-tree .jt-field input { flex: 1; }

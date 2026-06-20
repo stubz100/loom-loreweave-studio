@@ -3084,9 +3084,11 @@ function Flux2JsonTreeEditor({
   return (
     <div className="generate-bar params-bar json-tree">
       <div className="jt-head">
-        <span className="p-group-label">flux.2-dev JSON prompt</span>
+        <div className="jt-head-row">
+          <span className="p-group-label">flux.2-dev JSON prompt</span>
+          <button className="ghost" onClick={() => onChange(emptyFlux2PromptTree())} title="clear the whole tree">clear</button>
+        </div>
         <span className="muted">authored from the schema → becomes the prompt (empty fields are dropped)</span>
-        <button className="ghost" onClick={() => onChange(emptyFlux2PromptTree())} title="clear the whole tree">clear</button>
       </div>
 
       <label className="jt-field"><span>scene</span>

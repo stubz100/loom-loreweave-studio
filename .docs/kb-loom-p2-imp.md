@@ -67,8 +67,9 @@ first**, before the trainer gate; see below.)*
 ## M0 — shell/workspace UI + postprocess workflow reset (spec §12 M0; WBS P2-M0a/b/c/d)
 
 started: 2026-06-18
-finished: 2026-06-18 18:35 for a+b+c (✅ built — visual sign-off owed); **M0d added 2026-06-20,
-in progress** (flux.2 advanced prompting + sampling presets + dev JSON tree — see "### M0d" below)
+finished: 2026-06-18 18:35 for a+b+c (✅ built — visual sign-off owed); **M0d added 2026-06-20:
+Parts A (structured prompting) + B (sampling presets) + C-t2i (dev JSON tree) built same day;
+C-i2i deferred pending a flux2-i2i-surface decision** (see "### M0d" below)
 
 **Author (2026-06-18):** before trainer work, a **UI/workflow reset** over the P0/P1 MVP so later
 P2/P3 controls inhabit a better surface (spec §12 M0 — a product-shape correction, not a trainer
@@ -290,7 +291,7 @@ a non-empty tree serializes to the `prompt` (empty ⇒ the plain text prompt; th
 guard relaxes when the tree is filled). Flows through the existing flux2 t2i path + the dry-run
 Preview — **no adapter/contract change** (JSON rides the prompt string). **Tests:** +1 catalog
 (directives served == flux2_prompt, frozen-vocab coverage). **269 backend tests**, green; `tsc` +
-`vite build` clean. No `src/pipeline/` → no re-vendor.
+`vite build` clean. No `src/pipeline/` → no re-vendor. **✅ PUSHED `3aac9ac`.**
 
 ⚠ **Part C i2i deferred pending a scope decision.** The design's i2i path ("source rides as
 `img_cond`, the JSON describes the target; lives on the M0c i2i step when its model is flux.2-dev")

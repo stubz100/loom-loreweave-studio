@@ -19,7 +19,9 @@ and a **proxy-based readiness meter** (no VLM). The VLM (Qwen3-VL) and a project
 > **M0 preflight added 2026-06-18:** before training work continues, pause for a **UI/workflow reset**
 > over the current P0/P1 MVP. The app is usable, but the author called out layout and workflow debt
 > that will become much harder to fix once P2/P3 controls pile onto the same surfaces. This M0 is a
-> product-shape correction, not a trainer feature.
+> product-shape correction, not a trainer feature. **M0d added 2026-06-20:** pull in flux.2 **advanced
+> prompting + sampling presets** (structured prompts + configurable guidance/steps) to fix loose pose
+> adherence in flux2 `ref`-mode expansion — design in §12 "M0d solution design".
 
 ---
 
@@ -49,8 +51,10 @@ If a P1-curated character can be trained and then re-generated recognizably via 
 
 - **M0 UI/workflow reset before trainer work:** move project actions into a proper File menu; convert
   L1/L2 navigation (and future L3/L4) into workspace tabs with per-workspace controls; split L1 into
-  Visual Styles / World / Story Spine tabs; make long text fields readable; and decouple L2
-  postprocessing into a stackable, independent image-postprocess workflow (§12 M0).
+  Visual Styles / World / Story Spine tabs; make long text fields readable; decouple L2
+  postprocessing into a stackable, independent image-postprocess workflow; and **(M0d) flux.2
+  advanced prompting — structured prompts + configurable guidance/steps with a sampling-preset
+  pull-down** to fix loose pose adherence in flux2 `ref`-mode expansion (§12 M0 + "M0d solution design").
 - **Template captioning** of the curated `ref_set` (v1: deterministic from P1 coverage-cell metadata
   + trigger token; **no VLM**) — *not* auto-tagging (research). VLM enrichment → P4 (R116).
 - **Readiness meter via cheap proxies** (v1: coverage from metadata, perceptual-hash dupes,
@@ -366,10 +370,91 @@ enriches captions + scoring with project context. **None of that is built in P2.
      (manual mask, generated mask, or future SAM/Grounded-SAM style tools). M0 only needs the UI/data
      shape and source/output lineage; later adapters can plug into the same stack without crowding
      the Asset Studio.
+   - **M0d — flux.2 advanced prompting + sampling presets** (added 2026-06-20; full design below).
+     flux2 `ref`-mode Stage-B identity expansion holds identity well but **follows pose loosely**
+     (e.g. "three-quarter left" → body one way, head the other). Two levers FLUX.2 offers but loom
+     doesn't yet use: **structured/labeled (optionally JSON) prompting** with explicit camera+pose
+     directives, and **configurable guidance/steps** (the default klein variants are step-distilled,
+     so adherence is capped). Add both: a flux2 structured-prompt builder + an individually-editable
+     `guidance`/`num_steps` pair fronted by a **Sampling preset pull-down** (≥3 researched presets).
 
    **M0 done-line:** the app still performs the P1 MVP flow, but the shell uses File-menu project
-   actions, L1/L2 are tabbed workspaces, L1 content is readable in sub-tabs, and L2 can generate a
-   base image then run at least one independent i2i/postprocess preset from a stack-like surface.
+   actions, L1/L2 are tabbed workspaces, L1 content is readable in sub-tabs, L2 can generate a
+   base image then run at least one independent i2i/postprocess preset from a stack-like surface,
+   **and a flux2 Stage-B expansion can be fired with structured prompting + a chosen sampling preset
+   (or hand-set guidance/steps), producing visibly tighter pose adherence than the distilled default.**
+
+#### M0d solution design — flux.2 advanced prompting & sampling presets
+
+*Status: design (2026-06-20), not yet implemented. Web research sourced below.* Pull the flux.2
+"complex prompting" capability into M0 (author request). Goal: make flux2 `ref`-mode expansion (and
+flux2 t2i casting) **obey pose/composition reliably**, by (A) richer structured prompting and (B)
+exposing + presetting the sampling knobs. Both are **additive** — no change to the frozen
+coverage-cell contract ([[coverage]]) or the §11 `ref`-mode wiring; the structured prompt + sampling
+choice ride the existing catalog `params` channel + the flux2 adapter's `_SHARED_KEYS`.
+
+**Why pose is hit-and-miss (root cause).** The default `flux.2-klein-4b/9b` are **step-distilled**
+(4 steps, CFG pinned ≈1.0) → they follow the text prompt *loosely* and ignore guidance, and loom asks
+with a **flat** per-cell string (`<cell fragment>, <clause>, <style>`) whose "three-quarter left view"
+is a weak steer the identity reference easily overrides on composition. FLUX.2 supports far more:
+prompt **structure with leading-token priority**, **JSON/labeled structured prompts**, and (on
+*non-distilled* variants) **configurable guidance/steps**.
+
+**A. Advanced / structured prompting.**
+- Adopt FLUX.2's structure — **Subject → Action → Style → Context, most-important-first** (FLUX
+  attends most to leading tokens), medium length (~30–80 words). **No negative prompts** — describe
+  positively (loom already drops the L1 global-negative for flux2; keep that).
+- Build flux2 cell prompts from a **labeled, semi-structured** template — robust across the Qwen3-text
+  klein variants — with an optional **true-JSON** form for the Mistral-VLM `flux.2-dev` (which
+  interprets JSON precisely). Schema (BFL / RunDiffusion): `scene · subject{description, pose,
+  position} · camera{angle, lens, depth_of_field} · lighting · style · mood · color_palette`.
+- ⭐ **Pose is the fix:** map each coverage **angle** to an EXPLICIT camera+pose directive instead of
+  the loose "…view" phrase — e.g. `front` → "facing the camera directly"; `three_quarter_left` →
+  "body AND head both turned three-quarters to the viewer's left (¾ view)"; `profile_left` → "full
+  left profile, looking left". This lands the head/body alignment the flat phrasing misses. A small
+  angle→directive table beside [[coverage]] (the coverage *vocab* stays frozen; this is just how we
+  phrase it to flux2).
+- loom assembles the structured prompt **deterministically** from the frozen cell + character clause
+  + L1 style (a flux2 prompt-builder alongside `recipe.py`). UX: an **"advanced prompting" toggle**
+  (off ⇒ today's flat string), a **per-cell prompt preview/edit** (reuse the dry-run pre-flight
+  modal), and an optional power-user **structured/JSON override** field.
+
+**B. Guidance/steps — individually configurable + a Sampling preset pull-down.**
+- Surface **`guidance`** and **`num_steps`** as first-class, individually-editable fields on the
+  flux2 Stage-B + t2i-cast bars (they already validate via the catalog/params channel; M0d promotes
+  them to the front and makes the model↔guidance pairing sane).
+- A **"Sampling" pull-down** with ≥3 researched presets — each sets model_name + steps + guidance:
+
+  | Preset | Model | Steps | Guidance | Use |
+  | --- | --- | --- | --- | --- |
+  | **Fast (draft)** | klein-4b/9b *distilled* | 4 | 1.0 | quick exploration; loose adherence — **today's default** |
+  | **Balanced** ⭐ | klein-**base**-4b/9b | 24 | 4.0 | good pose/prompt adherence, moderate cost — the pose fix |
+  | **Quality** | klein-**base**-9b | 40 | 4.5 | strongest adherence; slow + needs cpu-offload |
+  | **Dev / JSON** *(opt)* | flux.2-dev | 50 | 4.5 | Mistral-VLM; best true-JSON prompting (gated weights) |
+  | **Custom** | — | *(field)* | *(field)* | the individual guidance/steps fields drive it |
+
+  *(Researched values: distilled klein = 4 steps / CFG ≈1; **base** klein = 20–24 steps / CFG 3.5–5.0;
+  dev & general FLUX.2 = 30–50 steps / guidance ≈4.5.)*
+- **Guard:** distilled variants ignore CFG (guidance pinned ≈1), so a high guidance only bites on
+  `-base`/dev. The pull-down enforces sane model↔guidance pairings; the Custom fields warn when
+  guidance > ~1.5 on a distilled model (no effect). **Fast stays the default** (speed); **Balanced**
+  is the recommended one-click pose fix.
+
+**Constraints / risks.** klein uses the Qwen3 *text* encoder (JSON less precise than dev's Mistral
+VLM) → default to the labeled semi-structured form, reserve true-JSON for dev. base/dev are heavier
+(24–50 steps, cpu-offload) on the 16 GB ROCm target → keep Fast default; presets, not forced. M0d
+improves adherence but is **not** ControlNet-precise pose control.
+
+**Out of scope (later).** ControlNet/OpenPose/depth pose conditioning → P3 keyframes (R128) / P6 3D;
+**Muse SLM auto-authoring** of these structured prompts → P3/P4 (M0d's deterministic builder is the
+precursor the SLM later enriches). Per-output **identity strength** (PuLID-class) → P5 Track B.
+
+**Sources (web research 2026-06-20):**
+[BFL FLUX.2 prompting guide](https://docs.bfl.ml/guides/prompting_guide_flux2) ·
+[RunDiffusion — Flux 2 JSON / structured prompting](https://www.rundiffusion.com/flux-2-prompting) ·
+[RunDiffusion — Klein base vs distilled (steps/CFG)](https://learn.rundiffusion.com/flux-2-klein-three-new-models/) ·
+[ltx.io — Flux prompting guide](https://ltx.io/blog/flux-prompting-guide) ·
+[fal — Flux 2 [klein] user guide](https://fal.ai/learn/devs/flux-2-klein-user-guide).
 
 ### Phase A — Training skeleton (prove a LoRA can be made + used on this rig)
 
@@ -443,6 +528,7 @@ flagged — noted for `kb-loom-p4.md`.)
 | P2-M0a | **Shell + workspace navigation reset** — File menu for project actions; tabbed L1/L2 workspace navigation with room for future L3/L4 controls | M0 | M | 🟢 |
 | P2-M0b | **L1 tabbed authoring** — Visual Styles / World / Story Spine sub-tabs; readable multi-line editors for long style/world/spine fields | M0 | M | 🟢 |
 | P2-M0c | **L2 postprocess stack surface** — base-image generation separated from postprocess; clean/refine as i2i presets; source/output lineage and mask-ready step contract | M0 | M | 🟡 |
+| P2-M0d | **flux.2 advanced prompting + sampling presets** — structured/labeled (opt-JSON) flux2 prompts with explicit angle→camera/pose directives (the pose-adherence fix) + individually-editable guidance/steps fronted by a ≥3-preset Sampling pull-down (Fast/Balanced/Quality, model↔guidance pairing guard). Additive (no coverage-contract change). Design: §12 "M0d solution design" | M0 | M | 🟡 |
 | P2-0 | **ai-toolkit ROCm *can-it-run-at-all* gate** — prove ai-toolkit trains on **RX 9070 XT / ROCm** before the rest of P2 is built; **hard go/no-go** (if no-go, the whole training approach changes) | M1 | M | 🔴 **make-or-break front-gate** |
 | P2-1 | **Training spike (no UI)** — vendor **ai-toolkit**, train one `zimage` LoRA from a fixed dataset, load-test it | M1 | M | 🔴 **no trainer exists** |
 | P2-2 | Trainer as a **staged queued job** (wrap in P0 queue + manifest; `jobs/staged.json`; auto-generate, don't auto-start) | M2 | M | 🟡 |
@@ -458,7 +544,7 @@ flagged — noted for `kb-loom-p4.md`.)
 | P2-13 | **Graph-ready training facts** — write `training_context.json`, `caption_policy_hash`, and `context_digest` into the promoted LoRA manifest; no retrieval index | M3/M6 | S | 🟢 |
 | — | Style-LoRA: **declared only, not built** (R122) — 0 effort in P2; lands with multi-LoRA stacking (**P5**, R147) | §2 | — | — |
 
-**Rollup:** ~16 WP including the M0 UI reset; **P2-0/P2-1 remain the phase's make-or-break training
+**Rollup:** ~17 WP including the M0 UI reset (now M0a–M0d); **P2-0/P2-1 remain the phase's make-or-break training
 risk** — whether **ai-toolkit even trains on RX 9070 XT / ROCm**. **P2-0 is still the hard trainer
 front-gate**: if it's no-go, P2-9–P2-12 and the rest of the trainer path don't get built as-is.
 M0 is deliberately separate: it should land before that gate so later trainer controls have a

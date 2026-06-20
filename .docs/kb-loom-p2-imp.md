@@ -272,7 +272,33 @@ flat phrase (everything else — matrix, cells, seeds — identical); returns th
 in `buildStageBBody`, flux2-only); the existing dry-run **Preview** shows the resolved directive
 prompt (first_cell). **Tests:** `test_flux2_prompt.py` (**+9** — directive coverage, head+body pin,
 fallbacks, prompt order, bg inclusion, vocab validation, recipe on/off determinism). **268 backend
-tests**, green; `tsc` clean. No `src/pipeline/` → no re-vendor. **✅ PUSHED `<pending>`.** **Part C pending.**
+tests**, green; `tsc` clean. No `src/pipeline/` → no re-vendor. **✅ PUSHED `d88eb01`.**
+
+**Part C — `flux.2-dev` structured-JSON prompt tree, t2i (finished 2026-06-20 17:06).** When
+**flux.2-dev** is the selected cast model, a **🌲 JSON prompt** tree authors the FLUX.2 schema
+directly. ⚙ Backend: `model_catalog` now serves `CATALOG["flux2"]["angle_directives"]` (= Part A's
+`flux2_prompt.ANGLE_DIRECTIVES`, single source so the tree's pose presets don't drift; +1 test).
+Frontend lib (`orchestrator.ts`): `Flux2PromptTree`/`Subject`/`Camera` types + `emptyFlux2PromptTree`,
+`serializeFlux2PromptTree` (drops every empty field/array → compact JSON string, "" when nothing
+authored), `parseFlux2PromptTree` (lenient, throws on invalid JSON), `angle_directives?` on
+`PipelineModels`. App.tsx: a **`Flux2JsonTreeEditor`** (scene · subjects[] add/remove · camera
+{angle + a pose-preset dropdown reusing Part A directives, lens, dof} · lighting · style · mood ·
+color_palette[] add/remove · **view/apply raw JSON** with an invalid-JSON flag, never silently sent).
+Gated render: a **🌲 JSON prompt** toggle + panel show **only when `castPipeline==="flux2"` and
+`advParamsA.model_name==="flux.2-dev"`** (`castDevSelected`); klein/base never see it. `buildGenerateReq`:
+a non-empty tree serializes to the `prompt` (empty ⇒ the plain text prompt; the "enter a prompt"
+guard relaxes when the tree is filled). Flows through the existing flux2 t2i path + the dry-run
+Preview — **no adapter/contract change** (JSON rides the prompt string). **Tests:** +1 catalog
+(directives served == flux2_prompt, frozen-vocab coverage). **269 backend tests**, green; `tsc` +
+`vite build` clean. No `src/pipeline/` → no re-vendor.
+
+⚠ **Part C i2i deferred pending a scope decision.** The design's i2i path ("source rides as
+`img_cond`, the JSON describes the target; lives on the M0c i2i step when its model is flux.2-dev")
+needs a **flux2-as-i2i surface that loom doesn't have yet**: the flux2 adapter wires only `ref`+`t2i`
+(img2img is a worker mode but unwired into loom, §11 standalone-flux2 spike), and M0c postproc i2i
+backends are zimage/sd35 only (the catalog flags a flux2-img2img backend as needing that spike). The
+JSON tree component is **reusable as-is** for i2i once that surface exists. Raised to the author:
+build the flux2-img2img surface now (bigger) vs ship t2i + defer i2i.
 
 ---
 

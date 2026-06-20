@@ -836,6 +836,8 @@ export interface PipelineModels {
   loom_access?: string;
   /** flux2 only (M0d Part B): the Sampling pull-down rows. */
   sampling_presets?: Flux2SamplingPreset[];
+  /** flux2 only (M0d Part C): coverage-angle → camera/pose directive (pose presets for the dev JSON tree). */
+  angle_directives?: Record<string, string>;
 }
 export type ModelCatalog = Record<string, PipelineModels>;
 
@@ -843,6 +845,90 @@ export async function getModels(signal?: AbortSignal): Promise<ModelCatalog> {
   const res = await fetch(`${orchestratorUrl()}/models`, { signal });
   if (!res.ok) throw new Error(`models ${res.status}`);
   return ((await res.json()).models ?? {}) as ModelCatalog;
+}
+
+// --- M0d Part C: flux.2-dev structured-JSON prompt tree ---------------------------
+// The FLUX.2 schema (BFL/RunDiffusion, kb-loom-p2 §12 "M0d"). The dev (Mistral-VLM) variant
+// parses true JSON precisely; the tree authors t2i/i2i prompts directly from the schema and
+// serializes to a compact JSON string that becomes the flux2 `prompt`. All leaf fields are
+// strings so the raw-JSON round-trip is lossless.
+export interface Flux2PromptSubject { description?: string; pose?: string; position?: string; }
+export interface Flux2PromptCamera { angle?: string; lens?: string; depth_of_field?: string; }
+export interface Flux2PromptTree {
+  scene?: string;
+  subjects: Flux2PromptSubject[];
+  camera: Flux2PromptCamera;
+  lighting?: string;
+  style?: string;
+  mood?: string;
+  color_palette: string[];
+}
+
+export function emptyFlux2PromptTree(): Flux2PromptTree {
+  return { scene: "", subjects: [{}], camera: {}, lighting: "", style: "", mood: "", color_palette: [] };
+}
+
+/** True when the tree has no authored content (caller falls back to the plain text prompt). */
+export function isFlux2PromptTreeEmpty(t: Flux2PromptTree): boolean {
+  return serializeFlux2PromptTree(t) === "";
+}
+
+/** Serialize the tree to a compact JSON string, dropping every empty field/array. Returns ""
+ * when nothing is authored — the caller then uses the plain text prompt instead. */
+export function serializeFlux2PromptTree(t: Flux2PromptTree): string {
+  const trim = (v?: string) => (v && v.trim() ? v.trim() : undefined);
+  const obj: Record<string, unknown> = {};
+  if (trim(t.scene)) obj.scene = trim(t.scene);
+  const subjects = t.subjects
+    .map((su) => {
+      const o: Record<string, string> = {};
+      if (trim(su.description)) o.description = trim(su.description)!;
+      if (trim(su.pose)) o.pose = trim(su.pose)!;
+      if (trim(su.position)) o.position = trim(su.position)!;
+      return o;
+    })
+    .filter((o) => Object.keys(o).length > 0);
+  if (subjects.length) obj.subjects = subjects;
+  const cam: Record<string, string> = {};
+  if (trim(t.camera.angle)) cam.angle = trim(t.camera.angle)!;
+  if (trim(t.camera.lens)) cam.lens = trim(t.camera.lens)!;
+  if (trim(t.camera.depth_of_field)) cam.depth_of_field = trim(t.camera.depth_of_field)!;
+  if (Object.keys(cam).length) obj.camera = cam;
+  if (trim(t.lighting)) obj.lighting = trim(t.lighting);
+  if (trim(t.style)) obj.style = trim(t.style);
+  if (trim(t.mood)) obj.mood = trim(t.mood);
+  const palette = t.color_palette.map((c) => c.trim()).filter(Boolean);
+  if (palette.length) obj.color_palette = palette;
+  return Object.keys(obj).length ? JSON.stringify(obj) : "";
+}
+
+/** Parse pasted/edited JSON back into a tree (lenient on shape). Throws on invalid JSON so the
+ * caller can flag it and keep the current tree (never silently send a broken prompt). */
+export function parseFlux2PromptTree(raw: string): Flux2PromptTree {
+  const parsed: unknown = JSON.parse(raw); // throws → caller catches + flags "invalid JSON"
+  const t = emptyFlux2PromptTree();
+  if (!parsed || typeof parsed !== "object") return t;
+  const o = parsed as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  if (typeof o.scene === "string") t.scene = o.scene;
+  if (Array.isArray(o.subjects)) {
+    t.subjects = (o.subjects as unknown[]).map((su) => {
+      const s = (su && typeof su === "object" ? su : {}) as Record<string, unknown>;
+      return { description: str(s.description), pose: str(s.pose), position: str(s.position) };
+    });
+  }
+  if (!t.subjects.length) t.subjects = [{}];
+  if (o.camera && typeof o.camera === "object") {
+    const c = o.camera as Record<string, unknown>;
+    t.camera = { angle: str(c.angle), lens: str(c.lens), depth_of_field: str(c.depth_of_field) };
+  }
+  if (typeof o.lighting === "string") t.lighting = o.lighting;
+  if (typeof o.style === "string") t.style = o.style;
+  if (typeof o.mood === "string") t.mood = o.mood;
+  if (Array.isArray(o.color_palette)) {
+    t.color_palette = (o.color_palette as unknown[]).filter((c): c is string => typeof c === "string");
+  }
+  return t;
 }
 
 export interface ComponentInfo {

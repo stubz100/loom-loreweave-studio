@@ -134,6 +134,15 @@ def test_flux2_sampling_presets_reference_real_variants():
     assert mc.catalog_for_api()["flux2"]["sampling_presets"] == presets
 
 
+def test_flux2_angle_directives_served_for_json_tree():
+    """M0d Part C: the angle→pose directive vocab is served on the flux2 entry (single source
+    with Part A's flux2_prompt.ANGLE_DIRECTIVES) so the dev JSON tree's pose presets don't drift."""
+    from orchestrator import coverage, flux2_prompt
+    served = mc.catalog_for_api()["flux2"]["angle_directives"]
+    assert served == flux2_prompt.ANGLE_DIRECTIVES
+    assert set(served) == set(coverage.ANGLES)   # frozen vocab coverage
+
+
 @pytest.mark.parametrize("pipeline", ["flux2", "sd35", "zimage", "birefnet", "ltxv"])
 def test_catalog_variants_match_vendored_source(pipeline):
     """Drift guard: the catalog's variant ids == the *_MODEL_INFO keys in the vendored worker

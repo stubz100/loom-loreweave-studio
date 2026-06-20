@@ -257,6 +257,23 @@ body {
 .flux2-sampling { gap: 4px; }
 .flux2-sampling .flux2-warn { color: var(--amber); font-size: 11px; margin-left: 4px; cursor: help; }
 
+/* M0d Part C — flux.2-dev structured-JSON prompt tree editor. */
+.json-tree { flex-direction: column; align-items: stretch; gap: 8px; }
+.json-tree .jt-head { display: flex; align-items: center; gap: 10px; }
+.json-tree .jt-head .muted { font-size: 11px; flex: 1; }
+.json-tree .jt-field { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.json-tree .jt-field > span { min-width: 64px; color: var(--muted); }
+.json-tree .jt-field input { flex: 1; }
+.json-tree .jt-section { display: flex; flex-direction: column; gap: 4px; border-left: 2px solid var(--line); padding-left: 8px; }
+.json-tree .jt-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.json-tree .jt-row input { flex: 1; min-width: 120px; }
+.json-tree .jt-palette .jt-chip { display: inline-flex; align-items: center; gap: 2px; }
+.json-tree .jt-palette .jt-chip input { width: 96px; min-width: 96px; }
+.json-tree .jt-raw { display: flex; flex-direction: column; gap: 4px; }
+.json-tree .jt-raw-text { font-family: var(--mono, monospace); font-size: 11px; width: 100%; resize: vertical;
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 6px; }
+.json-tree .jt-raw-actions { display: flex; align-items: center; gap: 8px; }
+
 .params-bar { background: var(--panel-2); }
 .params-bar label { font-size: 11px; }
 .params-bar .p-num input { width: 64px; }

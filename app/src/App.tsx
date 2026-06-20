@@ -66,6 +66,11 @@ import {
   type PostprocStep,
   getModels,
   recipePresets,
+  emptyFlux2PromptTree,
+  serializeFlux2PromptTree,
+  parseFlux2PromptTree,
+  type Flux2PromptTree,
+  type Flux2PromptSubject,
   type GeneratePreview,
   type GenerateRequest,
   type JobsResponse,
@@ -155,6 +160,9 @@ export default function App() {
   const [castSampling, setCastSampling] = useState("");
   // M0d Part A — flux2 advanced (directive-led) prompting toggle for Stage-B expansion.
   const [advancedPromptB, setAdvancedPromptB] = useState(false);
+  // M0d Part C — flux.2-dev structured-JSON prompt tree (t2i cast bar) + its panel toggle.
+  const [castJsonTree, setCastJsonTree] = useState<Flux2PromptTree>(emptyFlux2PromptTree);
+  const [showJsonTreeA, setShowJsonTreeA] = useState(false);
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [stageBStrength, setStageBStrength] = useState(0.55);
   // M3.5 — cell realization: img2img-only, or mixed (inpaint cells repaint the background
@@ -342,6 +350,9 @@ export default function App() {
     return v ? (v as { distilled?: boolean }).distilled === true : true;
   };
 
+  // M0d Part C — the dev JSON prompt tree is offered only when flux.2-dev is the cast model.
+  const castDevSelected = castPipeline === "flux2" && advParamsA.model_name === "flux.2-dev";
+
   // Build the Stage-A / sandbox generate request (shared by Run and Preview).
   const buildGenerateReq = (): GenerateRequest | null => {
     setError(null);
@@ -349,8 +360,11 @@ export default function App() {
       setError("no project open — create or open one first");
       return null;
     }
-    if (!prompt.trim()) {
-      setError("enter a prompt");
+    // M0d Part C: a non-empty flux.2-dev JSON tree serializes to the prompt (the dev VLM parses
+    // it); otherwise the plain text prompt is required.
+    const jsonPrompt = castDevSelected ? serializeFlux2PromptTree(castJsonTree) : "";
+    if (!prompt.trim() && !jsonPrompt) {
+      setError(castDevSelected ? "enter a prompt or fill the JSON tree" : "enter a prompt");
       return null;
     }
     const { top, channel } = splitAdvParams(advParamsA);
@@ -378,7 +392,7 @@ export default function App() {
     } else {
       req = {
         pipeline: castPipeline,
-        prompt: prompt.trim(),
+        prompt: jsonPrompt || prompt.trim(),
         count,
         ...scope,
         apply_style: applyStyle,
@@ -1569,6 +1583,15 @@ export default function App() {
             >
               ⚙ params{Object.keys(advParamsA).length ? ` (${Object.keys(advParamsA).length})` : ""}
             </button>
+            {castDevSelected && (
+              <button
+                className="ghost"
+                onClick={() => setShowJsonTreeA((v) => !v)}
+                title="flux.2-dev structured-JSON prompt tree (M0d): author scene / subjects / camera / lighting / style from the schema. When filled it becomes the prompt (the dev VLM parses JSON precisely); empty = the text prompt is used."
+              >
+                🌲 JSON prompt{serializeFlux2PromptTree(castJsonTree) ? " ●" : ""}
+              </button>
+            )}
             <button
               className="ghost"
               onClick={onPreviewGenerate}
@@ -1611,6 +1634,13 @@ export default function App() {
               <button className="ghost" onClick={() => { setAdvParamsA({}); setCastSampling(""); }}
                       title="clear all overrides (back to model defaults)">reset</button>
             </div>
+          )}
+          {(!activeAsset || stage === "A") && castDevSelected && showJsonTreeA && (
+            <Flux2JsonTreeEditor
+              value={castJsonTree}
+              onChange={setCastJsonTree}
+              angleDirectives={catalog?.flux2?.angle_directives ?? {}}
+            />
           )}
 
           {/* Stage B — coverage-matrix dataset recipe (img2img from the hero) */}
@@ -2983,6 +3013,127 @@ function Flux2SamplingSelect({
         </span>
       )}
     </label>
+  );
+}
+
+/** M0d Part C — the flux.2-dev structured-JSON prompt tree editor. Authors the FLUX.2 schema
+ * (scene · subjects · camera · lighting · style · mood · color_palette) as a form; it serializes
+ * to a compact JSON string that becomes the prompt (the dev Mistral VLM parses JSON precisely).
+ * All leaf fields are strings → the "view raw JSON" round-trip is lossless; invalid pasted JSON
+ * is flagged, never silently sent. `angleDirectives` reuses Part A's pose table (single source). */
+function Flux2JsonTreeEditor({
+  value,
+  onChange,
+  angleDirectives,
+}: {
+  value: Flux2PromptTree;
+  onChange: (t: Flux2PromptTree) => void;
+  angleDirectives: Record<string, string>;
+}) {
+  const [rawOpen, setRawOpen] = useState(false);
+  const [rawText, setRawText] = useState("");
+  const [rawErr, setRawErr] = useState<string | null>(null);
+
+  const set = (patch: Partial<Flux2PromptTree>) => onChange({ ...value, ...patch });
+  const setSubject = (i: number, patch: Partial<Flux2PromptSubject>) =>
+    set({ subjects: value.subjects.map((s, j) => (j === i ? { ...s, ...patch } : s)) });
+  const json = serializeFlux2PromptTree(value);
+
+  const openRaw = () => { setRawText(json || "{\n  \n}"); setRawErr(null); setRawOpen(true); };
+  const applyRaw = () => {
+    try { onChange(parseFlux2PromptTree(rawText)); setRawErr(null); }
+    catch { setRawErr("invalid JSON — not applied"); }
+  };
+
+  return (
+    <div className="generate-bar params-bar json-tree">
+      <div className="jt-head">
+        <span className="p-group-label">flux.2-dev JSON prompt</span>
+        <span className="muted">authored from the schema → becomes the prompt (empty fields are dropped)</span>
+        <button className="ghost" onClick={() => onChange(emptyFlux2PromptTree())} title="clear the whole tree">clear</button>
+      </div>
+
+      <label className="jt-field"><span>scene</span>
+        <input value={value.scene ?? ""} placeholder="overall scene / setting"
+               onChange={(e) => set({ scene: e.target.value })} />
+      </label>
+
+      <div className="jt-section">
+        <span className="p-group-label">subjects</span>
+        {value.subjects.map((s, i) => (
+          <div key={i} className="jt-row">
+            <input value={s.description ?? ""} placeholder="description (who / what)"
+                   onChange={(e) => setSubject(i, { description: e.target.value })} />
+            <input value={s.pose ?? ""} placeholder="pose"
+                   onChange={(e) => setSubject(i, { pose: e.target.value })} />
+            <input value={s.position ?? ""} placeholder="position in frame"
+                   onChange={(e) => setSubject(i, { position: e.target.value })} />
+            {value.subjects.length > 1 && (
+              <button className="ghost" title="remove subject"
+                      onClick={() => set({ subjects: value.subjects.filter((_, j) => j !== i) })}>✕</button>
+            )}
+          </div>
+        ))}
+        <button className="ghost" onClick={() => set({ subjects: [...value.subjects, {}] })}>+ subject</button>
+      </div>
+
+      <div className="jt-section">
+        <span className="p-group-label">camera</span>
+        <div className="jt-row">
+          <input value={value.camera.angle ?? ""} placeholder="angle / pose directive"
+                 onChange={(e) => set({ camera: { ...value.camera, angle: e.target.value } })} />
+          <select value="" title="insert a coverage pose directive (Part A — pins head + body)"
+                  onChange={(e) => { const d = e.target.value; if (d) set({ camera: { ...value.camera, angle: d } }); }}>
+            <option value="">↳ pose preset…</option>
+            {Object.entries(angleDirectives).map(([k, d]) => (
+              <option key={k} value={d}>{k.replace(/_/g, " ")}</option>
+            ))}
+          </select>
+          <input value={value.camera.lens ?? ""} placeholder="lens (e.g. 85mm portrait)"
+                 onChange={(e) => set({ camera: { ...value.camera, lens: e.target.value } })} />
+          <input value={value.camera.depth_of_field ?? ""} placeholder="depth of field"
+                 onChange={(e) => set({ camera: { ...value.camera, depth_of_field: e.target.value } })} />
+        </div>
+      </div>
+
+      <label className="jt-field"><span>lighting</span>
+        <input value={value.lighting ?? ""} onChange={(e) => set({ lighting: e.target.value })} /></label>
+      <label className="jt-field"><span>style</span>
+        <input value={value.style ?? ""} onChange={(e) => set({ style: e.target.value })} /></label>
+      <label className="jt-field"><span>mood</span>
+        <input value={value.mood ?? ""} onChange={(e) => set({ mood: e.target.value })} /></label>
+
+      <div className="jt-section">
+        <span className="p-group-label">color palette</span>
+        <div className="jt-row jt-palette">
+          {value.color_palette.map((c, i) => (
+            <span key={i} className="jt-chip">
+              <input value={c} placeholder="#hex / name"
+                     onChange={(e) => set({ color_palette: value.color_palette.map((x, j) => (j === i ? e.target.value : x)) })} />
+              <button className="ghost" title="remove color"
+                      onClick={() => set({ color_palette: value.color_palette.filter((_, j) => j !== i) })}>✕</button>
+            </span>
+          ))}
+          <button className="ghost" onClick={() => set({ color_palette: [...value.color_palette, ""] })}>+ color</button>
+        </div>
+      </div>
+
+      <div className="jt-raw">
+        <button className="ghost" onClick={() => (rawOpen ? setRawOpen(false) : openRaw())}>
+          {rawOpen ? "hide raw JSON" : "view raw JSON"}
+        </button>
+        {rawOpen && (
+          <>
+            <textarea className="jt-raw-text" value={rawText} spellCheck={false} rows={6}
+                      onChange={(e) => { setRawText(e.target.value); setRawErr(null); }} />
+            <div className="jt-raw-actions">
+              <button className="ghost" onClick={applyRaw} title="parse the JSON back into the tree">apply JSON</button>
+              {rawErr && <span className="flux2-warn">⚠ {rawErr}</span>}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 

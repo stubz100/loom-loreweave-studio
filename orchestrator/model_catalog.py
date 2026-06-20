@@ -20,6 +20,11 @@ uses the (gated) Mistral encoder.
 
 from __future__ import annotations
 
+try:
+    from . import flux2_prompt
+except ImportError:  # pragma: no cover - direct-run convenience
+    import flux2_prompt  # type: ignore
+
 CATALOG_VERSION = 1
 
 # --- parameter specs ------------------------------------------------------------
@@ -355,6 +360,10 @@ FLUX2_SAMPLING_PRESETS: list[dict] = [
 ]
 # Attach to the flux2 catalog entry so GET /models serves it alongside variants/params.
 CATALOG["flux2"]["sampling_presets"] = FLUX2_SAMPLING_PRESETS
+
+# M0d Part C — the angle→camera/pose directive vocabulary, served so the `flux.2-dev` JSON
+# prompt tree's pose-preset dropdown reuses Part A's table (single source, no FE drift).
+CATALOG["flux2"]["angle_directives"] = dict(flux2_prompt.ANGLE_DIRECTIVES)
 
 
 def flux2_sampling_presets() -> list[dict]:

@@ -811,10 +811,11 @@ export default function App() {
   // Stage-B expansion: build the coverage-matrix dataset (one img2img job per cell from the hero).
   const hasHero = casting.some((c) => c.starred);
 
-  // M4 review (Medium): the anchor is VERIFIED once a done+ok identity job for this
-  // version ran after it was (re-)picked — the worker hard-fails on a faceless anchor,
-  // so a successful run is the proof. Durable stamp first (verified_at survives queue
-  // pruning); live job scan as instant feedback between version refreshes.
+  // M4: the anchor is VERIFIED once a done identity job for this version actually LOCKED a
+  // face after the anchor was (re-)picked. A faceless/heavily-stylized anchor now passes
+  // images through (locks nothing) rather than hard-failing, so 'ok' alone isn't proof —
+  // require a locked output, matching the backend. Durable stamp first (survives pruning);
+  // live job scan as instant feedback between version refreshes.
   const anchorVerified = useMemo(() => {
     if (!activeAsset || !anchorInfo) return false;
     if (anchorInfo.verified_at) return true;
@@ -822,6 +823,7 @@ export default function App() {
       j.pipeline === "identity" && j.status === "done"
       && j.requester_id === activeAsset.active_version
       && j.result?.ok === true
+      && Object.values(j.result?.output_meta ?? {}).some((m) => m?.identity === "locked")
       && (j.created_at ?? "") >= anchorInfo.set_at);
   }, [jobs, activeAsset, anchorInfo]);
 

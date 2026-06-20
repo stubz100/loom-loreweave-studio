@@ -462,12 +462,23 @@ def require_token(x_loom_token: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="missing or invalid X-Loom-Token")
 
 
+def _identity_job_locked(job: dict) -> bool:
+    """True if an identity job actually SWAPPED ≥1 face. A passthrough-only run (the anchor —
+    or every target — had no detectable face, e.g. a heavily-stylized character that evades the
+    photoreal SCRFD detector) completes 'ok' but locked nothing, so it must NOT verify the
+    anchor (else default-on identity would arm a permanent no-op)."""
+    ometa = (job.get("result") or {}).get("output_meta") or {}
+    return any((m or {}).get("identity") == "locked" for m in ometa.values())
+
+
 def _persist_anchor_verification(job: dict) -> None:
     """Runner completion observer (M4 review, Medium): the moment an identity job
-    finishes OK, stamp `verified_at`/`verified_by_job` on the version's anchor — DURABLE,
-    so deleting/pruning the verifying job never silently un-verifies a good anchor
-    (default-on identity reads this fact first, job history only as fallback)."""
-    if job.get("pipeline") != "identity" or not (job.get("result") or {}).get("ok"):
+    finishes OK **and actually locked a face**, stamp `verified_at`/`verified_by_job` on the
+    version's anchor — DURABLE, so deleting/pruning the verifying job never silently
+    un-verifies a good anchor (default-on identity reads this fact first, job history only as
+    fallback)."""
+    if (job.get("pipeline") != "identity" or not (job.get("result") or {}).get("ok")
+            or not _identity_job_locked(job)):
         return
     ws = RUNNER.workspace
     vid = job.get("profile_version_id")
@@ -1371,6 +1382,7 @@ def create_app() -> FastAPI:
                      and j.get("profile_version_id") == vid
                      and (j.get("params") or {}).get("anchor_image") == target
                      and (j.get("result") or {}).get("ok")
+                     and _identity_job_locked(j)        # a passthrough run doesn't verify
                      and (j.get("created_at") or "") >= set_at), None)
                 if proof is not None:
                     anchor_ok = True

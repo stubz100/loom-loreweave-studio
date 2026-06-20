@@ -191,7 +191,10 @@ def _verify_anchor(ws, a):
                         requester_id=a["active_version"],
                         profile_version_id=a["active_version"], stage="B")
     RUNNER.jobs[jid]["status"] = "done"
-    RUNNER.jobs[jid]["result"] = {"ok": True, "output_names": []}
+    # A REAL verification = the run actually locked ≥1 face (output_meta carries identity=locked);
+    # a passthrough-only run (no detectable face) must NOT verify the anchor.
+    RUNNER.jobs[jid]["result"] = {"ok": True, "output_names": ["o.png"],
+                                  "output_meta": {"o.png": {"identity": "locked"}}}
     return jid
 
 
@@ -251,6 +254,34 @@ def test_anchor_verification_is_durable(client):
                     json={"preset": "npc_lite", "character_clause": "x", "dry_run": True})
     assert r.status_code == 200, r.text
     assert r.json()["identity"] is True
+
+
+def test_passthrough_identity_does_not_verify_anchor(client):
+    """A faceless/heavily-stylized anchor → the worker passes images through (locks NOTHING).
+    Such an 'ok' run must NOT verify the anchor (else default-on identity arms a permanent
+    no-op): neither the durable observer nor the stage-b history scan accepts it."""
+    from orchestrator import assets
+    from orchestrator.runner import RUNNER
+    ws = RUNNER.workspace
+    a = _asset_with_hero_and_anchor(client, ws)
+    anchor_path = assets.anchor_file_path(ws, a["id"])
+    jid = RUNNER.submit(pipeline="identity", mode="lock",
+                        params={"anchor_image": str(anchor_path), "batch_items": [{}]},
+                        batch_id="bat_pt", index=0, batch_size=1,
+                        requester_id=a["active_version"],
+                        profile_version_id=a["active_version"], stage="B")
+    RUNNER.jobs[jid]["status"] = "done"
+    RUNNER.jobs[jid]["result"] = {
+        "ok": True, "output_names": ["o.png"],
+        "output_meta": {"o.png": {"identity": "anchor_no_face_passthrough"}}}
+    RUNNER._observer(RUNNER.jobs[jid])
+    detail = assets.get_asset(ws, a["id"])
+    v = next(x for x in detail["versions"] if x["id"] == a["active_version"])
+    assert not (v["anchor"] or {}).get("verified_at")        # observer didn't verify
+    # the stage-b history scan also rejects the passthrough job → identity defaults OFF
+    r = client.post(f"/assets/{a['id']}/stage-b",
+                    json={"preset": "npc_lite", "character_clause": "x", "dry_run": True})
+    assert r.status_code == 200 and r.json()["identity"] is False
 
 
 def test_stage_b_lazily_promotes_legacy_verification(client):

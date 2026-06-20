@@ -75,9 +75,20 @@ def _load_stack(model_name: str):
     swapper_path = hf_hub_download(repo_id=info["repo_id"], filename=info["filename"])
     app = FaceAnalysis(name="buffalo_l", root=_insightface_root(),
                        providers=["CPUExecutionProvider"])
-    app.prepare(ctx_id=-1, det_size=(640, 640))
+    # Run the DETECTOR at the lenient anchor floor so app.get() also returns sub-0.5 faces;
+    # per-use filtering (targets at min_det, the anchor leniently) happens in _best_face. With
+    # insightface's default det_thresh=0.5 the detector would drop a stylized anchor face before
+    # _best_face ever saw it.
+    app.prepare(ctx_id=-1, det_thresh=_ANCHOR_DET_FLOOR, det_size=(640, 640))
     swapper = model_zoo.get_model(swapper_path, providers=["CPUExecutionProvider"])
     return app, swapper
+
+
+# The author's chosen ANCHOR is accepted down to this lenient floor — stylized / 3-quarter /
+# dramatically-lit character faces score low on SCRFD yet are clearly a face, and failing the
+# anchor kills the WHOLE identity pass. Per-TARGET detection keeps the stricter min_det so we
+# never swap onto a non-face. (Also the detector's own threshold, above.)
+_ANCHOR_DET_FLOOR = 0.2
 
 
 def _best_face(app, img, min_det_score: float):
@@ -113,11 +124,28 @@ def run_batch(inputs_file: str, output_dir: str) -> int:
     t0 = time.time()
     app, swapper = _load_stack(model_name)
     anchor_img = cv2.imread(anchor_path)
-    anchor_face = _best_face(app, anchor_img, min_det)
-    if anchor_face is None:
-        print(f"[batch-error] no face (det >= {min_det}) found in the ANCHOR image — "
-              "pick a clearer face anchor")
+    if anchor_img is None:
+        print(f"[batch-error] anchor image unreadable: {anchor_path}")
         return 2
+    anchor_face = _best_face(app, anchor_img, min_det)
+    if anchor_face is None and min_det > _ANCHOR_DET_FLOOR:
+        # The ANCHOR is the author's deliberately-chosen face — try HARDER than the per-target
+        # floor before giving up (a faceless anchor kills the whole identity pass).
+        anchor_face = _best_face(app, anchor_img, _ANCHOR_DET_FLOOR)
+        if anchor_face is not None:
+            print(f"[batch] anchor face accepted at lenient det>={_ANCHOR_DET_FLOOR} "
+                  f"(score {float(anchor_face.det_score):.3f})")
+    anchor_missing = anchor_face is None
+    if anchor_missing:
+        # DON'T fail the whole pass on a faceless anchor (it was killing the entire expansion):
+        # pass every image through unchanged so the dataset stays complete, and warn that the
+        # lock was skipped. Heavily-stylized character faces (chrome/neon/3-quarter) evade the
+        # photoreal SCRFD detector even leniently — there's no "clearer" anchor for such a
+        # character, so blocking would be a dead end. (A passthrough run locks nothing, so the
+        # orchestrator does NOT mark the anchor verified.)
+        print(f"[batch] WARNING: no face detected in the ANCHOR (even at det>={_ANCHOR_DET_FLOOR}) "
+              "— identity lock SKIPPED; passing images through unchanged. Use a clearer/"
+              "less-stylized anchor or derive a face portrait (✨) to enable the swap.")
     load_s = round(time.time() - t0, 2)
     print(f"[stage1] Pipeline loaded in {load_s}s (shared across {len(items)} items)")
 
@@ -147,12 +175,13 @@ def run_batch(inputs_file: str, output_dir: str) -> int:
             img = cv2.imread(in_path)
             if img is None:
                 raise ValueError(f"unreadable image: {in_path}")
-            face = _best_face(app, img, min_det)
+            face = None if anchor_missing else _best_face(app, img, min_det)
             if face is None:
-                # No visible face (back view etc.) — pass through unchanged so the
-                # dataset stays complete; honest marker in the echoed meta.
+                # No face to swap (back view, or the anchor itself had none) — pass through
+                # unchanged so the dataset stays complete; honest marker in the echoed meta.
                 shutil.copy2(in_path, out_path)
-                meta["identity"] = "no_face_passthrough"
+                meta["identity"] = ("anchor_no_face_passthrough" if anchor_missing
+                                    else "no_face_passthrough")
             else:
                 swapped = swapper.get(img, face, anchor_face, paste_back=True)
                 cv2.imwrite(str(out_path), swapped)

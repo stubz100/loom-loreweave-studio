@@ -10,5 +10,8 @@
 - When an RTK summary is insufficient, inspect its tee/raw output before drawing conclusions.
 - Use Graphify to locate architecture, ownership, and cross-document relationships once its graph is
   installed and current. Use `rg` and direct reads for exact text and line-level facts.
+- During the code-only pilot, prefer `graphify explain` with unique symbols. Natural-language queries
+  and duplicate labels can be ambiguous in 0.8.44. Do not install hooks, MCP, or optional backends.
 - Treat Graphify as an index, never as source of truth. Verify cited source files before editing.
-- Refresh the graph after milestone merges or substantial refactors; fall back to source when stale.
+- Refresh after milestone merges or substantial refactors with
+  `tools/token-reduction/Update-GraphifyCodeGraph.ps1`; fall back to source when stale.

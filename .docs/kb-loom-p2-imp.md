@@ -336,6 +336,16 @@ pick) + a "→ structured JSON (dev)" hint. klein/base keep the labeled directiv
 (flux2_prompt JSON ×3, catalog guidance_fixed, endpoint dev-JSON dry-run); **276 backend**, green;
 `tsc` + `vite build` clean. No `src/pipeline/` → no re-vendor. **✅ PUSHED `2f2d07f`.**
 
+**M0d fix — JSON-tree "apply JSON" wiped the form (2026-06-20 18:08, user-found, FE-only).** The
+raw-JSON textarea buffer was **snapshotted once on open** (`openRaw`) and never re-synced, so after
+opening raw the textarea went stale vs later form edits; "apply JSON" then parsed the stale snapshot
+— e.g. set camera → open raw (buffer `{"camera":…}`) → fill scene/subjects → apply → everything but
+camera wiped. Fix: a `useEffect` keeps the textarea synced to the **live** `serializeFlux2PromptTree`
+while the panel is open (deps `[json, rawOpen]`), so apply round-trips the current form; typing/
+pasting doesn't change `json`, so a manual/pasted edit survives until applied (external-JSON import
+still works). Removed `openRaw`; the toggle just flips `rawOpen`. Also fixed the header layout
+(subtitle under the title, `d6e5b07`). `tsc` + `vite build` clean.
+
 ---
 
 ## P2-era fixes (non-milestone)

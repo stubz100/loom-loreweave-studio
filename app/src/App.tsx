@@ -3075,7 +3075,14 @@ function Flux2JsonTreeEditor({
     set({ subjects: value.subjects.map((s, j) => (j === i ? { ...s, ...patch } : s)) });
   const json = serializeFlux2PromptTree(value);
 
-  const openRaw = () => { setRawText(json || "{\n  \n}"); setRawErr(null); setRawOpen(true); };
+  // Keep the raw textarea synced to the LIVE serialization while open, so it reflects form edits
+  // and never goes stale. (The old snapshot-on-open buffer caused "apply JSON" to re-apply the
+  // tree as it was when the panel opened — dropping every field edited afterwards.) Typing/pasting
+  // in the textarea doesn't change `json`, so a manual edit isn't clobbered until it's applied.
+  useEffect(() => {
+    if (rawOpen) { setRawText(json || "{\n  \n}"); setRawErr(null); }
+  }, [json, rawOpen]);
+
   const applyRaw = () => {
     try { onChange(parseFlux2PromptTree(rawText)); setRawErr(null); }
     catch { setRawErr("invalid JSON — not applied"); }
@@ -3157,7 +3164,7 @@ function Flux2JsonTreeEditor({
       </div>
 
       <div className="jt-raw">
-        <button className="ghost" onClick={() => (rawOpen ? setRawOpen(false) : openRaw())}>
+        <button className="ghost" onClick={() => setRawOpen((v) => !v)}>
           {rawOpen ? "hide raw JSON" : "view raw JSON"}
         </button>
         {rawOpen && (

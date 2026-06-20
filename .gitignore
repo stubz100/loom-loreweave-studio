@@ -263,3 +263,7 @@ app/src-tauri/gen/
 # one-off migration artifacts
 _migrate_models.ps1
 _migrate_models.log
+
+# Development-only token tooling outputs
+graphify-out/
+.token-tools/

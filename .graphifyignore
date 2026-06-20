@@ -1,0 +1,26 @@
+# Runtime, generated, and local state
+.dev_out/
+.loom_state/
+.pytest_cache/
+app/dist/
+app/src-tauri/gen/
+app/src-tauri/target/
+**/__pycache__/
+
+# Secrets, machine configuration, and heavy artifacts
+.env*
+*.safetensors
+*.gguf
+*.ckpt
+*.pt
+*.bin
+*.png
+*.ico
+*.icns
+
+# Vendored pipeline copies duplicate upstream code. Add them only when cross-pipeline tracing is
+# intentionally being evaluated.
+pipelines/
+
+# Code-only pilot boundary. Remove this entry at M4 for the controlled planning/document pass.
+.docs/

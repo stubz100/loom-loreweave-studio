@@ -360,7 +360,7 @@ prefix → `unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit` (both 
 `flux2/src/flux2/text_encoder.py` and the vendored `loom/.../pipelines/multistack/flux2/src/flux2/`
 (byte-identical, md5 `fdc29d8…`), commented as a deviation so a future re-vendor won't silently
 revert it. Verified offline: `validate_repo_id` passes + `AutoProcessor.from_pretrained` loads from
-cache (PixtralProcessor) + yes/no token encode works. 276 backend tests green. **✅ PUSHED `<pending>`.**
+cache (PixtralProcessor) + yes/no token encode works. 276 backend tests green. **✅ PUSHED `2188f7a`.**
 
 ---
 

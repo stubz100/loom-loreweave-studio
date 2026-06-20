@@ -267,6 +267,29 @@ multi pipeline → covers all candidates + clean/polish stages. **Monorepo-first
 byte-identical** (drift test green). 257 backend tests. **✅ PUSHED `dec372b`.** ⚠ Rig re-run owed to
 confirm a real ideate now reports ok candidates.
 
+### identity: undetectable (stylized) anchor failed the whole expansion — 2026-06-19
+
+**User:** char02 Stage-B expansion hard-failed: `[batch-error] no face (det >= 0.5) found in the
+ANCHOR`. Inspected the anchor (512² in `loom/stubz001`): a **clear face**, but a stylized cyberpunk
+character (chrome/neon/3-quarter/dramatic light). Probed insightface directly — **SCRFD detects ZERO
+faces even at det 0.2** (it's a photoreal detector). Hard-failing the anchor killed the entire
+17-cell identity pass. ⭐ Limitation: inswapper/SCRFD can't anchor a heavily-stylized character
+(PuLID-class identity is the real answer, deferred to P5 Track B).
+
+**Fix (worker monorepo-first + re-vendored; observer/UI follow):**
+- Detector floor lowered to `_ANCHOR_DET_FLOOR=0.2` + a **lenient anchor retry** (catches borderline
+  0.2–0.5 stylized faces; per-TARGET detection still uses `min_det`, so no false swaps).
+- **Graceful degradation:** when the anchor face is still undetectable, **pass every image through
+  unchanged** (identity SKIPPED, clear warning, `meta.identity="anchor_no_face_passthrough"`) instead
+  of failing — the expansion dataset stays complete. (The 17 img2img cells already existed in the
+  parent job; only the identity overlay is skipped.)
+- **Verification guard:** a passthrough run locks nothing, so it must NOT verify the anchor (else
+  default-on identity arms a permanent no-op). The observer + the stage-b history scan now require
+  ≥1 output with `identity=="locked"` (shared `_identity_job_locked`); the frontend `anchorVerified`
+  matches. +1 test (passthrough doesn't verify). **258 backend tests**, build clean. **✅ PUSHED
+  `21f9b8e`.** ⚠ For a stylized character, identity-lock will passthrough (no-op) — use a more
+  photoreal anchor, or wait for P5 PuLID-class identity.
+
 ---
 
 ## Carried-forward P1 UI fixes (during P2) — the "UI-rewire pass"

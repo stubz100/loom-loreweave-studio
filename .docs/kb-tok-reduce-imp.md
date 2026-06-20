@@ -1,6 +1,6 @@
 # Token-reduction tooling implementation journal
 
-Plan source: `.github/copilot/kb-tok-reduce.md` in the parent workspace.
+Plan source: `.docs/kb-tok-reduce.md` in this repository.
 
 Branch: `feature/token-reduction-tooling`
 

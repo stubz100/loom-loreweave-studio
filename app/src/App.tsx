@@ -2130,6 +2130,7 @@ export default function App() {
               jobs={jobs}
               busy={busy}
               modelsFor={(b) => (catalog?.[b]?.variants ?? []).map((v) => v.id)}
+              angleDirectives={catalog?.flux2?.angle_directives ?? {}}
               onAdd={(preset, backend, params) =>
                 void onAddPostprocStep(selBase, preset, backend, params)}
               onQueue={onQueuePostprocStep}
@@ -2736,11 +2737,12 @@ function StyleRow({ st, busy, isActive, canDelete, onSave, onDelete, onSetActive
 // Clean/Refine/custom (i2i) + Restore (GFPGAN) steps; each is configured, then queued
 // independently, and records its source → output (the chain). Live status reads the job
 // (the persisted record lags one poll); the "add" gate opens once the tail step is done.
-function PostprocPanel({ stack, jobs, busy, modelsFor, onAdd, onQueue, onRemove, onView }: {
+function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, onQueue, onRemove, onView }: {
   stack: PostprocStack | undefined;
   jobs: Record<string, Job>;
   busy: boolean;
   modelsFor: (backend: string) => string[];   // variant ids for an i2i backend (catalog)
+  angleDirectives: Record<string, string>;    // M0d Part C — flux.2-dev JSON tree pose presets
   onAdd: (preset: PostprocStep["preset"], backend: string | undefined,
           params: Record<string, unknown>) => void;
   onQueue: (stepId: string) => void;
@@ -2754,6 +2756,8 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, onAdd, onQueue, onRemove,
   const [prompt, setPrompt] = useState("");
   const [neg, setNeg] = useState("");
   const [blend, setBlend] = useState("");
+  // M0d Part C — the flux.2-dev structured-JSON prompt tree for an i2i step.
+  const [jsonTree, setJsonTree] = useState<Flux2PromptTree>(emptyFlux2PromptTree);
   const steps = stack?.steps ?? [];
   // Live status from the job queue (the persisted status lags / goes stale on cancel/delete):
   // a queued/running step whose job vanished from the queue is dead → treat as canceled.
@@ -2767,19 +2771,29 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, onAdd, onQueue, onRemove,
   const canAdd = !last || last.output != null || liveStatus(last) === "done";
   const dead = (s: string) => s === "failed" || s === "canceled";
   const isI2i = preset !== "restore";
+  // M0d Part C — flux.2-dev gets the structured-JSON tree (the dev VLM parses JSON); klein/base
+  // flux2 + zimage/sd35 use the plain prompt. flux2 takes no negatives.
+  const isFlux2 = isI2i && backend === "flux2";
+  const devJson = isFlux2 && model === "flux.2-dev";
 
   const submit = () => {
     const params: Record<string, unknown> = {};
     if (isI2i) {
       if (model.trim()) params.model_name = model;
       if (strength.trim()) params.strength = Number(strength);
-      if (prompt.trim()) params.prompt = prompt.trim();
-      if (neg.trim()) params.negative_prompt = neg.trim();
+      if (devJson) {
+        const json = serializeFlux2PromptTree(jsonTree);
+        if (json) params.prompt = json;
+      } else if (prompt.trim()) {
+        params.prompt = prompt.trim();
+      }
+      if (!isFlux2 && neg.trim()) params.negative_prompt = neg.trim();   // flux2 = no negatives
     } else if (blend.trim()) {
       params.blend = Number(blend);
     }
     onAdd(preset, isI2i ? backend : undefined, params);
     setModel(""); setStrength(""); setPrompt(""); setNeg(""); setBlend("");
+    setJsonTree(emptyFlux2PromptTree());
   };
 
   return (
@@ -2840,16 +2854,17 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, onAdd, onQueue, onRemove,
             {isI2i && (
               <select value={backend}
                       onChange={(e) => { setBackend(e.target.value); setModel(""); }}
-                      title="img2img backend family">
+                      title="img2img backend family (flux2 = structured-JSON i2i on flux.2-dev)">
                 <option value="zimage">zimage</option>
                 <option value="sd35">sd35</option>
+                <option value="flux2">flux2 ✨</option>
               </select>
             )}
           </div>
           {isI2i ? (
             <>
               <select className="prompt" value={model} onChange={(e) => setModel(e.target.value)}
-                      title="model variant (default = the backend's preset model)">
+                      title="model variant (default = the backend's preset model). flux.2-dev unlocks the JSON prompt tree.">
                 <option value="">{backend} default model</option>
                 {modelsFor(backend).map((id) => (
                   <option key={id} value={id}>{id}</option>
@@ -2858,10 +2873,22 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, onAdd, onQueue, onRemove,
               <input className="prompt" type="number" step="0.05" min="0" max="1"
                      placeholder={`strength (default ${preset === "clean" ? "0.5" : "0.25"})`}
                      value={strength} onChange={(e) => setStrength(e.target.value)} />
-              <input className="prompt" placeholder="prompt (optional — defaults to the image's own)"
-                     value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-              <input className="prompt" placeholder="negative prompt (optional)"
-                     value={neg} onChange={(e) => setNeg(e.target.value)} />
+              {devJson ? (
+                <Flux2JsonTreeEditor value={jsonTree} onChange={setJsonTree}
+                                     angleDirectives={angleDirectives} />
+              ) : (
+                <input className="prompt" placeholder="prompt (optional — defaults to the image's own)"
+                       value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+              )}
+              {!isFlux2 && (
+                <input className="prompt" placeholder="negative prompt (optional)"
+                       value={neg} onChange={(e) => setNeg(e.target.value)} />
+              )}
+              {isFlux2 && !devJson && (
+                <span className="muted" title="select flux.2-dev to author a structured-JSON prompt; klein/base use the plain prompt">
+                  ✨ pick flux.2-dev for the JSON prompt tree
+                </span>
+              )}
             </>
           ) : (
             <input className="prompt" type="number" step="0.05" min="0" max="1"

@@ -67,9 +67,9 @@ first**, before the trainer gate; see below.)*
 ## M0 — shell/workspace UI + postprocess workflow reset (spec §12 M0; WBS P2-M0a/b/c/d)
 
 started: 2026-06-18
-finished: 2026-06-18 18:35 for a+b+c (✅ built — visual sign-off owed); **M0d added 2026-06-20:
-Parts A (structured prompting) + B (sampling presets) + C-t2i (dev JSON tree) built same day;
-C-i2i deferred pending a flux2-i2i-surface decision** (see "### M0d" below)
+finished: 2026-06-18 18:35 for a+b+c (✅ built — visual sign-off owed); **M0d ✅ COMPLETE 2026-06-20:
+Parts A (structured prompting) + B (sampling presets) + C-t2i (dev JSON tree) + C-i2i (flux2-img2img
+on the M0c postproc step) all built same day** (see "### M0d" below). Visual sign-off owed.
 
 **Author (2026-06-18):** before trainer work, a **UI/workflow reset** over the P0/P1 MVP so later
 P2/P3 controls inhabit a better surface (spec §12 M0 — a product-shape correction, not a trainer
@@ -293,13 +293,25 @@ Preview — **no adapter/contract change** (JSON rides the prompt string). **Tes
 (directives served == flux2_prompt, frozen-vocab coverage). **269 backend tests**, green; `tsc` +
 `vite build` clean. No `src/pipeline/` → no re-vendor. **✅ PUSHED `3aac9ac`.**
 
-⚠ **Part C i2i deferred pending a scope decision.** The design's i2i path ("source rides as
-`img_cond`, the JSON describes the target; lives on the M0c i2i step when its model is flux.2-dev")
-needs a **flux2-as-i2i surface that loom doesn't have yet**: the flux2 adapter wires only `ref`+`t2i`
-(img2img is a worker mode but unwired into loom, §11 standalone-flux2 spike), and M0c postproc i2i
-backends are zimage/sd35 only (the catalog flags a flux2-img2img backend as needing that spike). The
-JSON tree component is **reusable as-is** for i2i once that surface exists. Raised to the author:
-build the flux2-img2img surface now (bigger) vs ship t2i + defer i2i.
+**Part C — i2i via flux2-img2img on the M0c postprocess step (finished 2026-06-20 17:22).**
+*(author chose "build flux2-img2img now" over deferring.)* flux2 now joins zimage/sd35 as an **i2i
+backend** on the M0c postprocess stack, so a `flux.2-dev` step edits/re-poses an existing image with
+the **same JSON tree**. Key finding: the flux2 worker's **batch** `run_jobs` does t2i/ref only —
+img2img is its **single-run** `run_img2img` path — so a flux2 i2i step is a **single-run job (no
+`batch_items`)**, **no `src/pipeline/` change → no re-vendor**. Adapter: `WIRED_MODES` += `img2img`,
+`WIRED_PARAMS` += `init_image`/`strength` (capabilities now advertises `[ref, t2i, img2img]`). Backend
+(`main.py`): `add_postproc_step` accepts `backend="flux2"` for the i2i presets (clean/refine); the
+queue endpoint branches on `backend=="flux2"` to build a single-run `{prompt, init_image, strength,
+width, height, model_name}` job (mode img2img) instead of a batch item — the existing prompt-resolution
+(typed > source-prompt) means the dev JSON string rides `prompt` verbatim; weight pre-flight + VRAM
+(`estimate_vram("flux2")`=13 GB) + the completion observer (records the runner's out/-relative output)
+all work generically. Frontend: PostprocPanel add-form gains a **flux2 ✨** i2i backend; when
+`model==="flux.2-dev"` it renders the **`Flux2JsonTreeEditor`** in place of the plain prompt (serialized
+JSON → the step's `prompt`), hides the negative field (flux2 takes none), and hints to pick dev on
+klein/base; `angle_directives` passed through. **Tests:** `test_postproc_stack.py` (**+2** — flux2 i2i
+is single-run with init_image + the JSON prompt + refine strength; unknown i2i backend 422 / flux2
+accepted); updated 2 flux2-adapter caps tests for the new mode. **271 backend tests**, green; `tsc` +
+`vite build` clean. **✅ M0d COMPLETE (A + B + C-t2i + C-i2i).**
 
 ---
 

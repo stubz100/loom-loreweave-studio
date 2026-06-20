@@ -1983,8 +1983,11 @@ def create_app() -> FastAPI:
         spec = _PP_PRESETS[req.preset]
         is_i2i = spec["mode"] == "img2img"
         backend = (req.backend or spec["backend"]) if is_i2i else spec["backend"]
-        if is_i2i and backend not in ("zimage", "sd35"):
-            raise HTTPException(422, f"img2img backend must be zimage|sd35, got {backend!r}")
+        # M0d Part C — flux2 joins zimage/sd35 as an i2i backend (structured-JSON i2i on
+        # flux.2-dev: edit/re-pose an existing image). flux2 i2i is a SINGLE-run job (the
+        # worker's batch path is t2i/ref only) — handled in the queue endpoint.
+        if is_i2i and backend not in ("zimage", "sd35", "flux2"):
+            raise HTTPException(422, f"img2img backend must be zimage|sd35|flux2, got {backend!r}")
         if not is_i2i and req.backend and req.backend != spec["backend"]:
             raise HTTPException(422, f"{req.preset!r} backend is fixed ({spec['backend']})")
         allowed = ({"strength", "prompt", "negative_prompt", "model_name"} if is_i2i
@@ -2070,19 +2073,31 @@ def create_app() -> FastAPI:
                 raise HTTPException(422, "this image has no source prompt to re-diffuse from — "
                                          "type a prompt for the clean/refine step")
         w, h = _image_dims(src_abs)   # preserve the source aspect (img2img dims + tile aspect)
-        items = ([{"input": str(src_abs)}] if is_io
-                 else [{"prompt": item_prompt, "init_image": str(src_abs)}])
-        job_params: dict = {"prompt": f"[{step['preset']} postproc of {src}]",
-                            "batch_items": items, "width": w, "height": h}
-        if is_io:
-            job_params["blend"] = params_in.get("blend", 0.8)
-        else:
+        is_flux2 = backend == "flux2"
+        if is_flux2:
+            # M0d Part C — flux2 i2i is a SINGLE-run job (the worker's batch run_jobs does only
+            # t2i/ref; img2img is its single-run run_img2img path). No batch_items: the adapter's
+            # single-run build_argv emits --init-image/--strength/--prompt for mode=img2img.
+            job_params: dict = {"prompt": item_prompt,
+                                "init_image": str(src_abs), "width": w, "height": h}
             if params_in.get("strength") is not None:
                 job_params["strength"] = params_in["strength"]
-            if params_in.get("negative_prompt"):
-                job_params["negative_prompt"] = params_in["negative_prompt"]
             if params_in.get("model_name"):
                 job_params["model_name"] = params_in["model_name"]
+        else:
+            items = ([{"input": str(src_abs)}] if is_io
+                     else [{"prompt": item_prompt, "init_image": str(src_abs)}])
+            job_params = {"prompt": f"[{step['preset']} postproc of {src}]",
+                          "batch_items": items, "width": w, "height": h}
+            if is_io:
+                job_params["blend"] = params_in.get("blend", 0.8)
+            else:
+                if params_in.get("strength") is not None:
+                    job_params["strength"] = params_in["strength"]
+                if params_in.get("negative_prompt"):
+                    job_params["negative_prompt"] = params_in["negative_prompt"]
+                if params_in.get("model_name"):
+                    job_params["model_name"] = params_in["model_name"]
         if req.dry_run:
             return {"dry_run": True, "pipeline": backend, "mode": mode,
                     "source": src, "params": job_params, "step_id": step_id}

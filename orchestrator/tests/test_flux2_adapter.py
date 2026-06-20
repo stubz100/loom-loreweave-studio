@@ -27,7 +27,8 @@ from orchestrator.config import CONFIG
 def test_flux2_present_and_capabilities():
     caps = flux2.capabilities(CONFIG.pipeline_roots)
     assert caps["present"] is True and caps["pipeline"] == "flux2"
-    assert "ref" in caps["worker_modes"] and caps["modes"] == ["ref", "t2i"]
+    # ref + t2i + img2img wired (img2img = M0d Part C single-run i2i via the postproc step)
+    assert "ref" in caps["worker_modes"] and caps["modes"] == ["ref", "t2i", "img2img"]
     # the multi-ref capability flag (§11) the UI / future callers key on
     assert caps["multi_ref"]["via"] == "encode_image_refs"
     assert caps["multi_ref"]["max_refs"] >= 4
@@ -193,5 +194,5 @@ def test_capabilities_includes_flux2(client):
     /capabilities must list it."""
     caps = client.get("/capabilities").json()["pipelines"]
     assert "flux2" in caps
-    assert caps["flux2"]["present"] is True and caps["flux2"]["modes"] == ["ref", "t2i"]
+    assert caps["flux2"]["present"] is True and caps["flux2"]["modes"] == ["ref", "t2i", "img2img"]
     assert caps["flux2"]["multi_ref"]["via"] == "encode_image_refs"

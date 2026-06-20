@@ -41,11 +41,14 @@ PIPELINE = "flux2"
 MODULE = "pipeline.flux2.run_pipeline"
 SUPPORTED_MODES = ("t2i", "img2img", "ref")
 # loom wires `ref` (identity-preserving Stage-B expansion, §11/R147) + `t2i` (standalone
-# casting/sandbox — flux2 as a first-class generator, not only inside `multi`).
-WIRED_MODES = ("ref", "t2i")
+# casting/sandbox — flux2 as a first-class generator, not only inside `multi`) + `img2img`
+# (M0d Part C — flux.2-dev structured-JSON i2i via the M0c postprocess step: edit/re-pose an
+# existing image; SINGLE-run only — the worker's batch run_jobs does t2i/ref, img2img is the
+# single-run `run_img2img` path).
+WIRED_MODES = ("ref", "t2i", "img2img")
 WIRED_PARAMS = (
     "prompt", "mode", "width", "height", "seed", "model_name",
-    "num_steps", "guidance", "ref_images",
+    "num_steps", "guidance", "ref_images", "init_image", "strength",
 )
 # Reference caps (kb-flux2.md §6): klein ≤4, dev ≤6.
 MAX_REFS = {"flux.2-dev": 6}

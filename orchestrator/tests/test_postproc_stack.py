@@ -215,6 +215,41 @@ def test_restore_preset_queues_io_job(client):
     assert body["params"]["blend"] == 0.7
 
 
+def test_flux2_i2i_step_is_single_run_with_init_image(client):
+    """M0d Part C — flux2 joins zimage/sd35 as an i2i backend; its job is a SINGLE run (no
+    batch_items — the worker batch path is t2i/ref only) carrying init_image + the prompt. A
+    flux.2-dev structured-JSON prompt rides the step's `prompt` param unchanged."""
+    base = _base_image()
+    json_prompt = '{"scene":"a forest clearing","camera":{"angle":"full left profile, looking left"}}'
+    stacks = client.post("/postproc/step",
+                         json={"base": base, "preset": "refine", "backend": "flux2",
+                               "params": {"model_name": "flux.2-dev", "prompt": json_prompt}}
+                         ).json()["stacks"]
+    step = stacks[0]["steps"][0]
+    assert step["backend"] == "flux2" and step["mode"] == "img2img"
+    assert step["params"]["model_name"] == "flux.2-dev"
+    d = client.post(f"/postproc/step/{step['id']}/queue", json={"dry_run": True})
+    assert d.status_code == 200, d.text
+    body = d.json()
+    assert body["pipeline"] == "flux2" and body["mode"] == "img2img"
+    p = body["params"]
+    assert "batch_items" not in p                       # single-run, not a batch job
+    assert p["init_image"].replace("\\", "/").endswith(base)
+    assert p["prompt"] == json_prompt                   # the JSON rides the prompt verbatim
+    assert p["strength"] == 0.25                         # the refine preset strength
+
+
+def test_i2i_backend_must_be_known(client):
+    """An unknown i2i backend is rejected; flux2 is now accepted alongside zimage/sd35."""
+    base = _base_image()
+    assert client.post("/postproc/step",
+                       json={"base": base, "preset": "clean", "backend": "nope"}
+                       ).status_code == 422
+    assert client.post("/postproc/step",
+                       json={"base": base, "preset": "clean", "backend": "flux2"}
+                       ).status_code == 200
+
+
 def test_remove_only_last_step(client):
     base = _base_image()
     sid1 = client.post("/postproc/step", json={"base": base, "preset": "clean"}

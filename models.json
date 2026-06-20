@@ -52,7 +52,7 @@
     "refined": [
       {"id": "flux2-klein-9b", "repo_id": "black-forest-labs/FLUX.2-klein-9B", "probe": "flux-2-klein-9b.safetensors", "gated": true, "pipeline": "flux2"},
       {"id": "flux2-dev-ae", "repo_id": "black-forest-labs/FLUX.2-dev", "probe": "ae.safetensors", "gated": true, "pipeline": "flux2"},
-      {"id": "qwen3-8b-text-encoder", "repo_id": "Qwen/Qwen3-8B", "fp8_repo_id": "Qwen/Qwen3-8B-FP8", "probe": "config.json", "gated": false, "pipeline": "flux2"},
+      {"id": "qwen3-8b-text-encoder", "repo_id": "Qwen/Qwen3-8B-FP8", "fp8_repo_id": "Qwen/Qwen3-8B-FP8", "probe": "config.json", "gated": false, "pipeline": "flux2"},
       {"id": "sd35-large", "repo_id": "stabilityai/stable-diffusion-3.5-large", "probe": "model_index.json", "gated": true, "pipeline": "sd35"},
       {"id": "zimage-base", "repo_id": "Tongyi-MAI/Z-Image", "probe": "model_index.json", "gated": false, "pipeline": "zimage"}
     ]

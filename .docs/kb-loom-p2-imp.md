@@ -344,7 +344,7 @@ camera wiped. Fix: a `useEffect` keeps the textarea synced to the **live** `seri
 while the panel is open (deps `[json, rawOpen]`), so apply round-trips the current form; typing/
 pasting doesn't change `json`, so a manual/pasted edit survives until applied (external-JSON import
 still works). Removed `openRaw`; the toggle just flips `rawOpen`. Also fixed the header layout
-(subtitle under the title, `d6e5b07`). `tsc` + `vite build` clean.
+(subtitle under the title, `d6e5b07`). `tsc` + `vite build` clean. **✅ PUSHED `cb17833`.**
 
 ---
 

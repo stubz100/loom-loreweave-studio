@@ -21,7 +21,9 @@ and a **proxy-based readiness meter** (no VLM). The VLM (Qwen3-VL) and a project
 > that will become much harder to fix once P2/P3 controls pile onto the same surfaces. This M0 is a
 > product-shape correction, not a trainer feature. **M0d added 2026-06-20:** pull in flux.2 **advanced
 > prompting + sampling presets** (structured prompts + configurable guidance/steps) to fix loose pose
-> adherence in flux2 `ref`-mode expansion — design in §12 "M0d solution design".
+> adherence in flux2 `ref`-mode expansion — design in §12 "M0d solution design". **Extended same day
+> with Part C:** a `flux.2-dev` **structured-JSON prompt tree** in the params panel for t2i/i2i
+> authoring straight from the schema.
 
 ---
 
@@ -54,7 +56,8 @@ If a P1-curated character can be trained and then re-generated recognizably via 
   Visual Styles / World / Story Spine tabs; make long text fields readable; decouple L2
   postprocessing into a stackable, independent image-postprocess workflow; and **(M0d) flux.2
   advanced prompting — structured prompts + configurable guidance/steps with a sampling-preset
-  pull-down** to fix loose pose adherence in flux2 `ref`-mode expansion (§12 M0 + "M0d solution design").
+  pull-down, plus a `flux.2-dev` structured-JSON prompt tree for t2i/i2i authoring** to fix loose pose
+  adherence in flux2 `ref`-mode expansion (§12 M0 + "M0d solution design").
 - **Template captioning** of the curated `ref_set` (v1: deterministic from P1 coverage-cell metadata
   + trigger token; **no VLM**) — *not* auto-tagging (research). VLM enrichment → P4 (R116).
 - **Readiness meter via cheap proxies** (v1: coverage from metadata, perceptual-hash dupes,
@@ -370,28 +373,34 @@ enriches captions + scoring with project context. **None of that is built in P2.
      (manual mask, generated mask, or future SAM/Grounded-SAM style tools). M0 only needs the UI/data
      shape and source/output lineage; later adapters can plug into the same stack without crowding
      the Asset Studio.
-   - **M0d — flux.2 advanced prompting + sampling presets** (added 2026-06-20; full design below).
-     flux2 `ref`-mode Stage-B identity expansion holds identity well but **follows pose loosely**
-     (e.g. "three-quarter left" → body one way, head the other). Two levers FLUX.2 offers but loom
-     doesn't yet use: **structured/labeled (optionally JSON) prompting** with explicit camera+pose
-     directives, and **configurable guidance/steps** (the default klein variants are step-distilled,
-     so adherence is capped). Add both: a flux2 structured-prompt builder + an individually-editable
-     `guidance`/`num_steps` pair fronted by a **Sampling preset pull-down** (≥3 researched presets).
+   - **M0d — flux.2 advanced prompting + sampling presets + dev JSON prompt tree** (added 2026-06-20;
+     full design below). flux2 `ref`-mode Stage-B identity expansion holds identity well but **follows
+     pose loosely** (e.g. "three-quarter left" → body one way, head the other). Three levers FLUX.2
+     offers but loom doesn't yet use: **structured/labeled (optionally JSON) prompting** with explicit
+     camera+pose directives; **configurable guidance/steps** (the default klein variants are
+     step-distilled, so adherence is capped); and — on **`flux.2-dev`** — a **structured-JSON prompt
+     tree** for authoring **t2i/i2i** images straight from the schema. Add all three: a flux2
+     structured-prompt builder + an individually-editable `guidance`/`num_steps` pair fronted by a
+     **Sampling preset pull-down** (≥3 researched presets) + a dev-gated **JSON entry tree** (Part C).
 
    **M0 done-line:** the app still performs the P1 MVP flow, but the shell uses File-menu project
    actions, L1/L2 are tabbed workspaces, L1 content is readable in sub-tabs, L2 can generate a
    base image then run at least one independent i2i/postprocess preset from a stack-like surface,
-   **and a flux2 Stage-B expansion can be fired with structured prompting + a chosen sampling preset
-   (or hand-set guidance/steps), producing visibly tighter pose adherence than the distilled default.**
+   **a flux2 Stage-B expansion can be fired with structured prompting + a chosen sampling preset
+   (or hand-set guidance/steps), producing visibly tighter pose adherence than the distilled default,
+   and — with `flux.2-dev` selected — a t2i/i2i image can be authored from the structured-JSON prompt
+   tree (Part C).**
 
 #### M0d solution design — flux.2 advanced prompting & sampling presets
 
-*Status: design (2026-06-20), not yet implemented. Web research sourced below.* Pull the flux.2
-"complex prompting" capability into M0 (author request). Goal: make flux2 `ref`-mode expansion (and
-flux2 t2i casting) **obey pose/composition reliably**, by (A) richer structured prompting and (B)
-exposing + presetting the sampling knobs. Both are **additive** — no change to the frozen
-coverage-cell contract ([[coverage]]) or the §11 `ref`-mode wiring; the structured prompt + sampling
-choice ride the existing catalog `params` channel + the flux2 adapter's `_SHARED_KEYS`.
+*Status: design (2026-06-20, extended 2026-06-20 with Part C), not yet implemented. Web research
+sourced below.* Pull the flux.2 "complex prompting" capability into M0 (author request). Goal: make
+flux2 `ref`-mode expansion (and flux2 t2i casting) **obey pose/composition reliably**, by (A) richer
+structured prompting, (B) exposing + presetting the sampling knobs, and (C) — when **`flux.2-dev`** is
+the selected model — a **structured-JSON prompt tree** in the params panel for authoring **t2i/i2i**
+images directly from the schema. All three are **additive** — no change to the frozen coverage-cell
+contract ([[coverage]]) or the §11 `ref`-mode wiring; the structured prompt + sampling choice + JSON
+tree ride the existing catalog `params` channel + the flux2 adapter's `_SHARED_KEYS`.
 
 **Why pose is hit-and-miss (root cause).** The default `flux.2-klein-4b/9b` are **step-distilled**
 (4 steps, CFG pinned ≈1.0) → they follow the text prompt *loosely* and ignore guidance, and loom asks
@@ -417,7 +426,8 @@ prompt **structure with leading-token priority**, **JSON/labeled structured prom
 - loom assembles the structured prompt **deterministically** from the frozen cell + character clause
   + L1 style (a flux2 prompt-builder alongside `recipe.py`). UX: an **"advanced prompting" toggle**
   (off ⇒ today's flat string), a **per-cell prompt preview/edit** (reuse the dry-run pre-flight
-  modal), and an optional power-user **structured/JSON override** field.
+  modal), and — on `flux.2-dev` — the **structured-JSON prompt tree** of Part C as the power-user
+  override (replacing the raw free-text JSON field the first draft sketched).
 
 **B. Guidance/steps — individually configurable + a Sampling preset pull-down.**
 - Surface **`guidance`** and **`num_steps`** as first-class, individually-editable fields on the
@@ -440,10 +450,45 @@ prompt **structure with leading-token priority**, **JSON/labeled structured prom
   guidance > ~1.5 on a distilled model (no effect). **Fast stays the default** (speed); **Balanced**
   is the recommended one-click pose fix.
 
+**C. `flux.2-dev` structured-JSON prompt tree (t2i + i2i authoring).** *(author request 2026-06-20)*
+Part A's structured prompt is loom-assembled from a coverage cell; Part C lets the author **drive the
+JSON schema directly** as a first-class prompt for **stand-alone t2i and i2i** (not tied to a coverage
+cell), because `flux.2-dev`'s Mistral VLM interprets true JSON precisely.
+- **Trigger / gating.** The tree appears **only when the selected model is `flux.2-dev`** (the
+  JSON-faithful variant). On klein (Qwen3-text) it stays hidden — klein keeps the Part A labeled
+  semi-structured string (JSON there is unreliable; offering it would mislead). Selecting/clearing
+  `flux.2-dev` reveals/collapses the tree without touching the plain prompt field.
+- **The tree (entry form).** A **collapsible node editor** mirroring the BFL/RunDiffusion schema, each
+  field optional (omitted fields are dropped from the emitted JSON, never sent empty):
+  `scene` · `subjects[]` { `description`, `pose`, `position` } · `camera` { `angle`, `lens`,
+  `depth_of_field` } · `lighting` · `style` · `mood` · `color_palette[]`. `subjects` and
+  `color_palette` are **add/remove arrays**; `camera.angle` offers the same coverage angle→directive
+  vocabulary as Part A (so the pose fix is reusable here). A **"view raw JSON"** affordance shows the
+  exact serialized object and allows paste-in (parsed back into the tree; invalid JSON flagged, never
+  silently sent).
+- **Serialization.** The tree serializes to a compact JSON **string** that becomes the flux2 `prompt`
+  on the existing catalog `params` channel — **no adapter/contract change**. (BFL accepts a JSON
+  object *as* the prompt; loom sends it as the prompt string the dev VLM parses.) An empty tree ⇒
+  fall back to the plain text prompt, so the field is never required.
+- **t2i.** Tree → JSON prompt → standard flux2-dev t2i cast (uses the Part B Dev/JSON preset:
+  50 steps / guidance ~4.5). This is general image authoring, available on the **t2i cast bar**, not
+  only character coverage.
+- **i2i.** Same tree, but a **reference/source image rides as `img_cond`** (the existing i2i/postproc
+  channel from M0c) while the JSON describes the **target** — re-pose, restyle, or edit an existing
+  image with precise structured intent. Lives on the M0c **postprocess/i2i step** when the step's
+  model is `flux.2-dev`, so Part C and the M0c stack share one surface.
+- **Seeding (nice-to-have).** In `ref`-mode Stage-B the deterministic Part A builder can **pre-fill**
+  the tree from the coverage cell + character clause; the author then tweaks nodes before firing.
+  Keeps Part A (auto) and Part C (manual) as two views of the same schema rather than parallel code.
+
 **Constraints / risks.** klein uses the Qwen3 *text* encoder (JSON less precise than dev's Mistral
 VLM) → default to the labeled semi-structured form, reserve true-JSON for dev. base/dev are heavier
 (24–50 steps, cpu-offload) on the 16 GB ROCm target → keep Fast default; presets, not forced. M0d
-improves adherence but is **not** ControlNet-precise pose control.
+improves adherence but is **not** ControlNet-precise pose control. **Part C depends on `flux.2-dev`
+being runnable on the rig** — it is the heaviest variant (gated weights, Mistral VLM, ~50 steps +
+cpu-offload at 16 GB); if dev proves impractical on ROCm, Part C ships **disabled-until-available**
+(the tree is dev-gated anyway, so klein/base users see no regression). The JSON tree is **authoring
+UI, not validation of model output** — a well-formed tree doesn't guarantee the VLM honors every node.
 
 **Out of scope (later).** ControlNet/OpenPose/depth pose conditioning → P3 keyframes (R128) / P6 3D;
 **Muse SLM auto-authoring** of these structured prompts → P3/P4 (M0d's deterministic builder is the
@@ -528,7 +573,7 @@ flagged — noted for `kb-loom-p4.md`.)
 | P2-M0a | **Shell + workspace navigation reset** — File menu for project actions; tabbed L1/L2 workspace navigation with room for future L3/L4 controls | M0 | M | 🟢 |
 | P2-M0b | **L1 tabbed authoring** — Visual Styles / World / Story Spine sub-tabs; readable multi-line editors for long style/world/spine fields | M0 | M | 🟢 |
 | P2-M0c | **L2 postprocess stack surface** — base-image generation separated from postprocess; clean/refine as i2i presets; source/output lineage and mask-ready step contract | M0 | M | 🟡 |
-| P2-M0d | **flux.2 advanced prompting + sampling presets** — structured/labeled (opt-JSON) flux2 prompts with explicit angle→camera/pose directives (the pose-adherence fix) + individually-editable guidance/steps fronted by a ≥3-preset Sampling pull-down (Fast/Balanced/Quality, model↔guidance pairing guard). Additive (no coverage-contract change). Design: §12 "M0d solution design" | M0 | M | 🟡 |
+| P2-M0d | **flux.2 advanced prompting + sampling presets + dev JSON tree** — (A) structured/labeled (opt-JSON) flux2 prompts with explicit angle→camera/pose directives (the pose-adherence fix); (B) individually-editable guidance/steps fronted by a ≥3-preset Sampling pull-down (Fast/Balanced/Quality, model↔guidance pairing guard); (C) a `flux.2-dev`-gated **structured-JSON prompt tree** in params for t2i/i2i authoring from the schema. Additive (no coverage-contract change). Design: §12 "M0d solution design" | M0 | M–L (FE-heavy) | 🟡 |
 | P2-0 | **ai-toolkit ROCm *can-it-run-at-all* gate** — prove ai-toolkit trains on **RX 9070 XT / ROCm** before the rest of P2 is built; **hard go/no-go** (if no-go, the whole training approach changes) | M1 | M | 🔴 **make-or-break front-gate** |
 | P2-1 | **Training spike (no UI)** — vendor **ai-toolkit**, train one `zimage` LoRA from a fixed dataset, load-test it | M1 | M | 🔴 **no trainer exists** |
 | P2-2 | Trainer as a **staged queued job** (wrap in P0 queue + manifest; `jobs/staged.json`; auto-generate, don't auto-start) | M2 | M | 🟡 |

@@ -302,6 +302,10 @@ class StageBRequest(BaseModel):
     # (default-when-available), False = opt out, True = require (422 without an anchor).
     identity: bool | None = None
     identity_min_det_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    # M0d Part A (flux2) — build each cell prompt from the explicit camera+pose DIRECTIVE form
+    # (flux2_prompt) instead of the flat coverage phrase: the loose-pose fix for ref-mode. Only
+    # meaningful for flux2 (the UI exposes it there); harmless on zimage/sd35.
+    advanced_prompt: bool = False
 
 
 class CreateVersionRequest(BaseModel):
@@ -1283,7 +1287,10 @@ def create_app() -> FastAPI:
         try:
             built = recipe.build_recipe(req.preset, character_clause=clause,
                                         style_fragment=style_fragment, base_seed=req.base_seed or 0,
-                                        realize=req.realize)
+                                        realize=req.realize,
+                                        # M0d Part A: directive-led prompts are the flux2 pose fix;
+                                        # gate to flux2 so zimage/sd35 keep their flat phrasing.
+                                        advanced_prompt=req.advanced_prompt and is_flux2)
         except recipe.RecipeError as e:
             raise HTTPException(422, str(e))
 
@@ -1465,6 +1472,7 @@ def create_app() -> FastAPI:
             return {"dry_run": True, "preset": req.preset, "pipeline": req.pipeline,
                     "planned_jobs": len(groups), "items": built["target"], "split": split,
                     "realize": req.realize, "bg_mask": req.bg_mask,
+                    "advanced_prompt": built["advanced_prompt"],
                     "identity": want_identity, "identity_note": identity_note,
                     "kept_target": built["kept_target"], "post_passes": post_passes,
                     "hero": str(hero_path), "first_cell": cell0,

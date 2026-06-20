@@ -26,9 +26,10 @@ It only *reads* the frozen vocabulary + reuses its canonical phrases.
 from __future__ import annotations
 
 try:
-    from . import coverage
+    from . import coverage, flux2_prompt
 except ImportError:  # pragma: no cover - direct-run convenience
     import coverage  # type: ignore
+    import flux2_prompt  # type: ignore
 
 
 class RecipeError(ValueError):
@@ -133,7 +134,7 @@ def _matrix(preset: str) -> list[tuple[str, str, str]]:
 
 def build_recipe(preset: str, *, character_clause: str, style_fragment: str = "",
                  base_seed: int = 0, backgrounds: tuple[str, ...] | None = None,
-                 realize: str = "img2img") -> dict:
+                 realize: str = "img2img", advanced_prompt: bool = False) -> dict:
     """Expand a preset into the concrete Stage-B work list (P1-4). **Deterministic**: the same
     (preset, clause, style, base_seed, backgrounds, realize) yields the same cells/prompts/seeds,
     in a fixed order. Each cell carries a validated `coverage_cell` (the frozen contract), the
@@ -152,7 +153,12 @@ def build_recipe(preset: str, *, character_clause: str, style_fragment: str = ""
     cycled `backgrounds` pool for inpaint-method cells (subject isolation, §7.1).
 
     `character_clause` defaults to the asset's stub prompt-template snippet (R112) — passed in
-    by the caller, kept fixed across the set so the LoRA learns the character, not the noise."""
+    by the caller, kept fixed across the set so the LoRA learns the character, not the noise.
+
+    `advanced_prompt` (M0d Part A, flux2): build each cell prompt from the explicit
+    camera+pose **directive** form (`flux2_prompt.build_cell_prompt`) instead of the flat
+    coverage phrase — pins head/body alignment for flux2 `ref`-mode (the loose-pose fix). The
+    coverage vocabulary is unchanged; only the phrasing differs. Off ⇒ today's flat string."""
     if not character_clause or not character_clause.strip():
         raise RecipeError("character_clause must not be empty (defaults to the asset's snippet)")
     if realize not in ("img2img", "mixed"):
@@ -170,7 +176,10 @@ def build_recipe(preset: str, *, character_clause: str, style_fragment: str = ""
         bg = bgs[i % len(bgs)] if (realize == "mixed" and method == "inpaint") else ""
         cov = {"shot_size": shot_size, "angle": angle, "expression": expr, "background": bg}
         coverage.validate_cell(cov)   # frozen-contract guard
-        prompt = ", ".join(p for p in (_cell_prompt_fragment(cov), clause, style) if p)
+        if advanced_prompt:
+            prompt = flux2_prompt.build_cell_prompt(cov, clause, style)
+        else:
+            prompt = ", ".join(p for p in (_cell_prompt_fragment(cov), clause, style) if p)
         cells.append({
             "index": i,
             "coverage_cell": cov,
@@ -185,5 +194,6 @@ def build_recipe(preset: str, *, character_clause: str, style_fragment: str = ""
         "kept_target": PRESET_METADATA[preset]["kept_target"],
         "character_clause": clause,
         "style_fragment": style,
+        "advanced_prompt": advanced_prompt,
         "cells": cells,
     }

@@ -153,6 +153,8 @@ export default function App() {
   // M0d Part B — flux2 Sampling preset id ("" = Custom: the hand-set model/steps/guidance).
   const [stageBSampling, setStageBSampling] = useState("");
   const [castSampling, setCastSampling] = useState("");
+  // M0d Part A — flux2 advanced (directive-led) prompting toggle for Stage-B expansion.
+  const [advancedPromptB, setAdvancedPromptB] = useState(false);
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [stageBStrength, setStageBStrength] = useState(0.55);
   // M3.5 — cell realization: img2img-only, or mixed (inpaint cells repaint the background
@@ -957,6 +959,7 @@ export default function App() {
       realize,
       ...(realize === "mixed" ? { bg_mask: bgMask ?? undefined } : {}),
       ...(identityOn !== null ? { identity: identityOn } : {}),   // omit = auto (R93)
+      ...(stageBPipeline === "flux2" && advancedPromptB ? { advanced_prompt: true } : {}),
       character_clause: characterClause.trim() || undefined,
       apply_style: applyStyle,
       ...(genStyleId ? { style_id: genStyleId } : {}),
@@ -1692,6 +1695,11 @@ export default function App() {
                       }
                     }}
                   />
+                  <label className="p-flag" title="M0d: build each cell prompt from an explicit camera+pose DIRECTIVE (e.g. 'body AND head both turned three-quarters left') instead of the loose 'three-quarter left view' phrase — pins head/body alignment for ref-mode. Preview to see the resolved prompt.">
+                    <input type="checkbox" checked={advancedPromptB}
+                           onChange={(e) => setAdvancedPromptB(e.target.checked)} />
+                    advanced prompting
+                  </label>
                   <span className="muted" title="flux2 (§11) conditions on the hero ★ as an in-context reference — identity is carried into each cell's pose/scene, so there is no img2img strength or mixed/inpaint axis">
                     ✨ reference-conditioned (identity-preserving)
                   </span>

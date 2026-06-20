@@ -252,7 +252,27 @@ there). Note: `guidance`/`num_steps` already rendered as individual fields in th
 (catalog params) — Part B adds the one-click combos + the guard on top. **Tests:** `test_model_catalog.py`
 +1 (`test_flux2_sampling_presets_reference_real_variants` — real variants, exactly one default,
 recommended is non-distilled, served on the entry). **259 backend tests** (257→+2 incl. earlier), green;
-`tsc --noEmit` clean. **Parts A + C pending.**
+`tsc --noEmit` clean. **✅ PUSHED `d327719`.**
+
+**Part A — structured (directive-led) prompting (finished 2026-06-20 16:57).** The pose fix.
+New **`orchestrator/flux2_prompt.py`**: an `ANGLE_DIRECTIVES` table mapping each frozen coverage
+angle → an explicit camera+pose directive that names **head AND body** (e.g. `three_quarter_left`
+→ "body and head both turned three-quarters toward the viewer's left (¾ left view)", replacing the
+loose "three-quarter left view" the reference overrode), plus `SHOT_DIRECTIVES` for framing.
+`build_cell_prompt(cell, clause, style)` assembles `<pose directive>, <framing>, <expression>[, <bg>
+background], <clause>, <style>` — same slot order as the flat builder (pose leads → dominates the
+loosely-adhering model; identity rides the reference + clause; style trails), positive-only (FLUX.2
+takes no negatives). **Coverage vocab stays frozen** — the module only reads + rephrases it (a test
+asserts the directive tables cover `coverage.ANGLES`/`SHOT_SIZES` exactly). `recipe.build_recipe`
+gained `advanced_prompt=False`: when on, cells use `flux2_prompt.build_cell_prompt` instead of the
+flat phrase (everything else — matrix, cells, seeds — identical); returns the flag. `main.py` Stage-B:
+`StageBRequest.advanced_prompt` (extra="forbid" model), passed as `advanced_prompt and is_flux2`
+(**gated to flux2** so zimage/sd35 keep flat phrasing), echoed in the dry-run payload. Frontend: an
+**"advanced prompting" checkbox** on the Stage-B bar's flux2 branch (`advancedPromptB` → `advanced_prompt`
+in `buildStageBBody`, flux2-only); the existing dry-run **Preview** shows the resolved directive
+prompt (first_cell). **Tests:** `test_flux2_prompt.py` (**+9** — directive coverage, head+body pin,
+fallbacks, prompt order, bg inclusion, vocab validation, recipe on/off determinism). **268 backend
+tests**, green; `tsc` clean. No `src/pipeline/` → no re-vendor. **✅ PUSHED `<pending>`.** **Part C pending.**
 
 ---
 

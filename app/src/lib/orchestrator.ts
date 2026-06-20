@@ -638,6 +638,9 @@ export interface StageBRequest {
    * false = opt out; true = require (422 without an anchor). */
   identity?: boolean;
   identity_min_det_score?: number;
+  /** M0d Part A (flux2) — build each cell prompt from the explicit camera+pose DIRECTIVE
+   * form (the loose-pose fix) instead of the flat coverage phrase. flux2-only (gated server-side). */
+  advanced_prompt?: boolean;
 }
 
 /** M7 — video-sketch harvest: one ltxv i2v job from the hero ★ aimed at a target

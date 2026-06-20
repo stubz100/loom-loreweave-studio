@@ -253,6 +253,10 @@ body {
   background: transparent; color: var(--muted); border: 1px solid var(--line); font-weight: 400;
 }
 .generate-bar .ghost:hover:not(:disabled) { color: var(--text); border-color: var(--muted); filter: none; }
+/* M0d Part B — flux2 Sampling preset pull-down + the distilled-guidance guard hint. */
+.flux2-sampling { gap: 4px; }
+.flux2-sampling .flux2-warn { color: var(--amber); font-size: 11px; margin-left: 4px; cursor: help; }
+
 .params-bar { background: var(--panel-2); }
 .params-bar label { font-size: 11px; }
 .params-bar .p-num input { width: 64px; }

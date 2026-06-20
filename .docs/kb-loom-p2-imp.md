@@ -64,10 +64,11 @@ first**, before the trainer gate; see below.)*
 
 ---
 
-## M0 — shell/workspace UI + postprocess workflow reset (spec §12 M0; WBS P2-M0a/b/c)
+## M0 — shell/workspace UI + postprocess workflow reset (spec §12 M0; WBS P2-M0a/b/c/d)
 
 started: 2026-06-18
-finished: 2026-06-18 18:35  (✅ M0a + M0b + M0c built — visual sign-off owed)
+finished: 2026-06-18 18:35 for a+b+c (✅ built — visual sign-off owed); **M0d added 2026-06-20,
+in progress** (flux.2 advanced prompting + sampling presets + dev JSON tree — see "### M0d" below)
 
 **Author (2026-06-18):** before trainer work, a **UI/workflow reset** over the P0/P1 MVP so later
 P2/P3 controls inhabit a better surface (spec §12 M0 — a product-shape correction, not a trainer
@@ -220,8 +221,38 @@ only if the linked job is genuinely still active** (live queued/running), not on
 `liveStatus` treats a vanished job as canceled; a dead tail shows **↻ re-queue + ✕ remove** so the
 stack is never stuck. +2 tests; **257 backend tests**; build clean.
 
-**✅ M0 COMPLETE (a+b+c).** ⏭ Next P2 work: **M1** training spike — the **P2-0 ROCm go/no-go
-front-gate** (does ai-toolkit train on RX 9070 XT / ROCm at all?).
+**✅ M0a+b+c COMPLETE.** (M0d added after — below.) ⏭ After M0d: **M1** training spike — the
+**P2-0 ROCm go/no-go front-gate** (does ai-toolkit train on RX 9070 XT / ROCm at all?).
+
+### M0d — flux.2 advanced prompting + sampling presets + dev JSON tree (spec §12 "M0d"; WBS P2-M0d)
+
+started: 2026-06-20 15:28
+
+Author request (2026-06-20): flux2 `ref`-mode Stage-B holds identity but **follows pose loosely**
+(e.g. "three-quarter left" → body one way, head the other). Design (spec §12 "M0d solution design",
+committed `5089850`/`1e89375`) has three additive levers: **A** structured/labeled prompting with
+explicit angle→camera/pose directives (the pose fix); **B** configurable guidance/steps fronted by a
+Sampling preset pull-down; **C** a `flux.2-dev`-gated structured-JSON prompt tree for t2i/i2i. Built
+part-by-part (build → push). **No `src/pipeline/` worker code changes → no re-vendor** (the catalog
+already exposes the flux2 variants + `guidance`/`num_steps`; the worker already honours distilled-vs-
+base sampling — M0d is orchestrator + frontend surface only).
+
+**Part B — Sampling preset pull-down (finished 2026-06-20 15:28).** ⚙ Backend: `FLUX2_SAMPLING_PRESETS`
+in `model_catalog.py` (4 rows — **Fast** klein-4b 4/1.0 ★default, **Balanced** klein-base-4b 24/4.0
+⭐recommended = the one-click pose fix, **Quality** klein-base-9b 40/4.5, **Dev/JSON** flux.2-dev
+50/4.5) attached to `CATALOG["flux2"]["sampling_presets"]` so `GET /models` serves it; `flux2_sampling_presets()`
+helper. Each preset's `model_name` is a real variant (asserted). Frontend: `Flux2SamplingPreset` type +
+`sampling_presets?` on `PipelineModels`; a reusable **`Flux2SamplingSelect`** dropdown on the **Stage-B
+bar** (flux2 family) and the **t2i cast bar** (castPipeline=flux2). Picking a preset sets the model +
+merges `num_steps`+`guidance` into the params drawer (Stage-B: `stageBModel`+`advParamsB`; cast:
+`advParamsA.model_name`+steps+guidance, both top-level/channel-routed as before). **Custom** = the
+hand-set fields; hand-editing model/steps/guidance (or reset / pipeline change) falls the label back to
+Custom. **Distilled guard:** a ⚠ hint shows when guidance > ~1.5 on a step-distilled variant (CFG inert
+there). Note: `guidance`/`num_steps` already rendered as individual fields in the flux2 ⚙ params drawer
+(catalog params) — Part B adds the one-click combos + the guard on top. **Tests:** `test_model_catalog.py`
++1 (`test_flux2_sampling_presets_reference_real_variants` — real variants, exactly one default,
+recommended is non-distilled, served on the entry). **259 backend tests** (257→+2 incl. earlier), green;
+`tsc --noEmit` clean. **Parts A + C pending.**
 
 ---
 

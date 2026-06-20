@@ -111,6 +111,29 @@ def test_validate_model_rejects_unknown_allows_known_and_none():
         mc.validate_model("zimage", "bogus-model")
 
 
+def test_flux2_sampling_presets_reference_real_variants():
+    """M0d Part B: every Sampling preset maps to a real flux2 variant + sane steps/guidance,
+    exactly one is the default, and it's served on the flux2 catalog entry."""
+    presets = mc.flux2_sampling_presets()
+    assert presets, "no flux2 sampling presets"
+    ids = {p["id"] for p in presets}
+    assert {"fast", "balanced", "quality"}.issubset(ids)   # the ≥3 researched presets
+    flux2_variants = set(mc.variant_ids("flux2"))
+    defaults = 0
+    for p in presets:
+        assert p["model_name"] in flux2_variants, f"{p['id']} → unknown variant {p['model_name']}"
+        assert isinstance(p["num_steps"], int) and p["num_steps"] >= 1
+        assert 0.0 <= float(p["guidance"]) <= 30.0
+        defaults += 1 if p.get("default") else 0
+    assert defaults == 1, "exactly one preset must be the default"
+    # the default preset uses a distilled (fast) variant; the recommended one is non-distilled
+    rec = next(p for p in presets if p.get("recommended"))
+    rec_variant = mc.find_variant("flux2", rec["model_name"])
+    assert rec_variant and rec_variant.get("distilled") is False
+    # served to the UI on the flux2 entry
+    assert mc.catalog_for_api()["flux2"]["sampling_presets"] == presets
+
+
 @pytest.mark.parametrize("pipeline", ["flux2", "sd35", "zimage", "birefnet", "ltxv"])
 def test_catalog_variants_match_vendored_source(pipeline):
     """Drift guard: the catalog's variant ids == the *_MODEL_INFO keys in the vendored worker

@@ -814,11 +814,25 @@ export interface ParamSpec {
   post?: boolean;
 }
 
+/** M0d Part B — a flux2 "Sampling" preset (one-click model_name + steps + guidance). */
+export interface Flux2SamplingPreset {
+  id: string;
+  label: string;
+  model_name: string;
+  num_steps: number;
+  guidance: number;
+  default?: boolean;
+  recommended?: boolean;
+  note?: string;
+}
+
 export interface PipelineModels {
   variants: ModelVariant[];
   params: ParamSpec[];
   modes?: string[];
   loom_access?: string;
+  /** flux2 only (M0d Part B): the Sampling pull-down rows. */
+  sampling_presets?: Flux2SamplingPreset[];
 }
 export type ModelCatalog = Record<string, PipelineModels>;
 

@@ -330,6 +330,38 @@ for _spec_p in POST_PARAMS:
     if _spec_p["name"] in ("clean_model", "polish_model"):
         _spec_p["choices"] = _POST_MODEL_IDS
 
+# --- flux2 sampling presets (M0d Part B) ----------------------------------------
+# One-click (model_name + num_steps + guidance) combos fronting the flux2 generation
+# knobs, so an author fixes loose pose adherence without hand-tuning each field.
+# Researched values (kb-loom-p2 §12 "M0d"): the default **distilled** klein follows the
+# prompt loosely and IGNORES guidance (CFG pinned ≈1); the non-distilled `-base` variants
+# honour guidance + more steps → the actual pose fix. Each preset's `model_name` MUST be a
+# real flux2 variant (asserted in tests). The UI also offers an implicit **Custom** (no
+# preset row) = whatever the hand-set guidance/num_steps fields hold. `default` marks the
+# one selected on load (speed); `recommended` marks the one-click pose fix.
+FLUX2_SAMPLING_PRESETS: list[dict] = [
+    {"id": "fast", "label": "Fast (draft)", "model_name": "flux.2-klein-4b",
+     "num_steps": 4, "guidance": 1.0, "default": True,
+     "note": "quick exploration; distilled — loose adherence, guidance inert"},
+    {"id": "balanced", "label": "Balanced", "model_name": "flux.2-klein-base-4b",
+     "num_steps": 24, "guidance": 4.0, "recommended": True,
+     "note": "non-distilled base — good pose/prompt adherence; the one-click pose fix"},
+    {"id": "quality", "label": "Quality", "model_name": "flux.2-klein-base-9b",
+     "num_steps": 40, "guidance": 4.5,
+     "note": "strongest adherence; slower + needs cpu-offload on 16 GB"},
+    {"id": "dev", "label": "Dev / JSON", "model_name": "flux.2-dev",
+     "num_steps": 50, "guidance": 4.5,
+     "note": "Mistral-VLM; best true-JSON prompting (gated weights, heaviest)"},
+]
+# Attach to the flux2 catalog entry so GET /models serves it alongside variants/params.
+CATALOG["flux2"]["sampling_presets"] = FLUX2_SAMPLING_PRESETS
+
+
+def flux2_sampling_presets() -> list[dict]:
+    """The flux2 Sampling pull-down rows (M0d Part B) — model_name+steps+guidance combos."""
+    return FLUX2_SAMPLING_PRESETS
+
+
 # --- multi (casting) tunables ---------------------------------------------------
 # `multi` is not an image-model entry (no variants of its own — the ideation preset fixes
 # the member models), but its tunables ARE catalog-served so the UI's param drawer + the

@@ -70,6 +70,7 @@ import {
   type GenerateRequest,
   type JobsResponse,
   type ModelCatalog,
+  type Flux2SamplingPreset,
   type AssetSummary,
   type CastingCandidate,
   type DiskStatus,
@@ -149,6 +150,9 @@ export default function App() {
   const [recipePreset, setRecipePreset] = useState<RecipePreset>("full_coverage");
   const [stageBPipeline, setStageBPipeline] = useState<"zimage" | "sd35" | "flux2">("zimage");
   const [stageBModel, setStageBModel] = useState("");   // "" = the worker default variant
+  // M0d Part B — flux2 Sampling preset id ("" = Custom: the hand-set model/steps/guidance).
+  const [stageBSampling, setStageBSampling] = useState("");
+  const [castSampling, setCastSampling] = useState("");
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [stageBStrength, setStageBStrength] = useState(0.55);
   // M3.5 — cell realization: img2img-only, or mixed (inpaint cells repaint the background
@@ -325,6 +329,15 @@ export default function App() {
       (TOP_LEVEL.has(k) ? top : channel)[k] = v;
     }
     return { top, channel };
+  };
+
+  // M0d Part B — is a flux2 variant step-distilled? Distilled klein/dev pin CFG ≈1 and
+  // ignore guidance, so a set guidance on one is wasted (drives the Sampling guard hint).
+  // Unknown / unset (the klein-4b default) → distilled.
+  const flux2IsDistilled = (modelId: string): boolean => {
+    const def = (catalog?.flux2?.params?.find((p) => p.name === "model_name")?.default as string) || "";
+    const v = catalog?.flux2?.variants?.find((x) => x.id === (modelId || def));
+    return v ? (v as { distilled?: boolean }).distilled === true : true;
   };
 
   // Build the Stage-A / sandbox generate request (shared by Run and Preview).
@@ -1471,6 +1484,7 @@ export default function App() {
                 onChange={(e) => {
                   setCastPipeline(e.target.value as "multi" | "zimage" | "sd35" | "flux2");
                   setAdvParamsA({});   // tunables are per-pipeline
+                  setCastSampling(""); // M0d: preset is flux2-only
                 }}
               >
                 <option value="multi">multi</option>
@@ -1516,16 +1530,34 @@ export default function App() {
                 </label>
               </>
             ) : (
-              <label className="n">
-                N
-                <input
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={count}
-                  onChange={(e) => setCount(clamp(parseInt(e.target.value || "1", 10), 1, 8))}
-                />
-              </label>
+              <>
+                <label className="n">
+                  N
+                  <input
+                    type="number"
+                    min={1}
+                    max={8}
+                    value={count}
+                    onChange={(e) => setCount(clamp(parseInt(e.target.value || "1", 10), 1, 8))}
+                  />
+                </label>
+                {castPipeline === "flux2" && (
+                  <Flux2SamplingSelect
+                    presets={catalog?.flux2?.sampling_presets ?? []}
+                    value={castSampling}
+                    warn={advParamsA.guidance != null && Number(advParamsA.guidance) > 1.5
+                          && flux2IsDistilled(advParamsA.model_name as string)}
+                    onPick={(p) => {
+                      setCastSampling(p?.id ?? "");
+                      if (p) {
+                        setAdvParamsA((prev) => ({
+                          ...prev, model_name: p.model_name, num_steps: p.num_steps, guidance: p.guidance,
+                        }));
+                      }
+                    }}
+                  />
+                )}
+              </>
             )}
             <button
               className="ghost"
@@ -1563,13 +1595,17 @@ export default function App() {
                   : catalog?.[castPipeline]?.params ?? []}
                 mode={castPipeline === "multi" ? "ideate" : "t2i"}
                 values={advParamsA}
-                onChange={(k, v) => setAdvParamsA((p) => {
-                  const next = { ...p };
-                  if (v === undefined) delete next[k]; else next[k] = v;
-                  return next;
-                })}
+                onChange={(k, v) => {
+                  // M0d: hand-editing a preset-controlled key falls the label back to Custom.
+                  if (["model_name", "num_steps", "guidance"].includes(k)) setCastSampling("");
+                  setAdvParamsA((p) => {
+                    const next = { ...p };
+                    if (v === undefined) delete next[k]; else next[k] = v;
+                    return next;
+                  });
+                }}
               />
-              <button className="ghost" onClick={() => setAdvParamsA({})}
+              <button className="ghost" onClick={() => { setAdvParamsA({}); setCastSampling(""); }}
                       title="clear all overrides (back to model defaults)">reset</button>
             </div>
           )}
@@ -1622,6 +1658,7 @@ export default function App() {
                           const v = e.target.value as "zimage" | "sd35" | "flux2";
                           setStageBPipeline(v);
                           setStageBModel("");   // reset variant when the family changes
+                          setStageBSampling(""); // M0d: preset is flux2-only
                           setAdvParamsB({});    // tunables are per-pipeline — a stale
                                                 // zimage-only key would 422 on sd35
                           if (v === "flux2") setRealize("img2img");  // flux2 has no mixed axis
@@ -1633,7 +1670,7 @@ export default function App() {
               </label>
               <label title="model variant (default = the pipeline's; ⚠ gated variants need a fetch)">
                 model
-                <select value={stageBModel} onChange={(e) => setStageBModel(e.target.value)}>
+                <select value={stageBModel} onChange={(e) => { setStageBModel(e.target.value); setStageBSampling(""); }}>
                   <option value="">default</option>
                   {(catalog?.[stageBPipeline]?.variants ?? []).map((v) => (
                     <option key={v.id} value={v.id}>{v.id}{v.gated ? " 🔒" : ""}</option>
@@ -1641,9 +1678,24 @@ export default function App() {
                 </select>
               </label>
               {stageBPipeline === "flux2" ? (
-                <span className="muted" title="flux2 (§11) conditions on the hero ★ as an in-context reference — identity is carried into each cell's pose/scene, so there is no img2img strength or mixed/inpaint axis">
-                  ✨ reference-conditioned (identity-preserving)
-                </span>
+                <>
+                  <Flux2SamplingSelect
+                    presets={catalog?.flux2?.sampling_presets ?? []}
+                    value={stageBSampling}
+                    warn={advParamsB.guidance != null && Number(advParamsB.guidance) > 1.5
+                          && flux2IsDistilled(stageBModel)}
+                    onPick={(p) => {
+                      setStageBSampling(p?.id ?? "");
+                      if (p) {
+                        setStageBModel(p.model_name);
+                        setAdvParamsB((prev) => ({ ...prev, num_steps: p.num_steps, guidance: p.guidance }));
+                      }
+                    }}
+                  />
+                  <span className="muted" title="flux2 (§11) conditions on the hero ★ as an in-context reference — identity is carried into each cell's pose/scene, so there is no img2img strength or mixed/inpaint axis">
+                    ✨ reference-conditioned (identity-preserving)
+                  </span>
+                </>
               ) : (
                 <>
                   <label className="n" title="img2img strength (0–1): higher = more variation, less identity">
@@ -1779,14 +1831,18 @@ export default function App() {
                 specs={catalog?.[stageBPipeline]?.params ?? []}
                 mode="img2img"
                 values={advParamsB}
-                onChange={(k, v) => setAdvParamsB((p) => {
-                  const next = { ...p };
-                  if (v === undefined) delete next[k]; else next[k] = v;
-                  return next;
-                })}
+                onChange={(k, v) => {
+                  // M0d: hand-editing steps/guidance falls the Sampling label back to Custom.
+                  if (["num_steps", "guidance"].includes(k)) setStageBSampling("");
+                  setAdvParamsB((p) => {
+                    const next = { ...p };
+                    if (v === undefined) delete next[k]; else next[k] = v;
+                    return next;
+                  });
+                }}
                 exclude={["model_name", "strength", "init_image", "mask_image"]}
               />
-              <button className="ghost" onClick={() => setAdvParamsB({})}
+              <button className="ghost" onClick={() => { setAdvParamsB({}); setStageBSampling(""); }}
                       title="clear all overrides (back to model defaults)">reset</button>
             </div>
           )}
@@ -2872,6 +2928,56 @@ const MULTI_PARAM_SPECS: ParamSpec[] = [
  * non-advanced tunable for the pipeline+mode from GET /models — int/float as bounded
  * numbers, enum as a select (with the model_name variants), flag as a checkbox, str as
  * text. Unset (empty) = the worker/model default; nothing is sent for it. */
+/** M0d Part B — the flux2 "Sampling" pull-down: one click sets model_name + steps +
+ * guidance from a researched preset. Fast (distilled draft, loose pose) is the default;
+ * Balanced ⭐ (non-distilled base + guidance) is the one-click pose fix. "Custom" = the
+ * hand-set fields drive it. `warn` shows when guidance is wasted on a distilled model. */
+function Flux2SamplingSelect({
+  presets,
+  value,
+  onPick,
+  warn = false,
+}: {
+  presets: Flux2SamplingPreset[];
+  value: string;
+  onPick: (preset: Flux2SamplingPreset | null) => void;
+  warn?: boolean;
+}) {
+  if (!presets.length) return null;
+  const sel = presets.find((p) => p.id === value);
+  return (
+    <label
+      className="flux2-sampling"
+      title={
+        sel?.note ??
+        "Sampling preset (M0d): one-click model + steps + guidance. Fast = distilled draft (loose pose adherence); Balanced ⭐ = the pose fix (non-distilled base + guidance); Quality = strongest; Dev = JSON-capable. Custom = the ⚙ params fields drive it."
+      }
+    >
+      sampling
+      <select
+        value={value}
+        onChange={(e) => {
+          const id = e.target.value;
+          onPick(id ? presets.find((p) => p.id === id) ?? null : null);
+        }}
+      >
+        <option value="">Custom</option>
+        {presets.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.label}
+            {p.recommended ? " ⭐" : ""}
+          </option>
+        ))}
+      </select>
+      {warn && (
+        <span className="flux2-warn" title="this is a step-distilled variant — it ignores guidance (CFG pinned ≈1). Pick Balanced/Quality (a -base variant) or flux.2-dev to make guidance bite.">
+          ⚠ distilled ignores guidance
+        </span>
+      )}
+    </label>
+  );
+}
+
 function ParamControls({
   specs,
   mode,

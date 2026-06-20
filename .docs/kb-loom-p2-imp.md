@@ -346,6 +346,22 @@ pasting doesn't change `json`, so a manual/pasted edit survives until applied (e
 still works). Removed `openRaw`; the toggle just flips `rawOpen`. Also fixed the header layout
 (subtitle under the title, `d6e5b07`). `tsc` + `vite build` clean. **✅ PUSHED `cb17833`.**
 
+**M0d fix — flux.2-dev crashed loading the Mistral processor (2026-06-20 18:24, user-found, worker
+lib).** First real dev run died: `HFValidationError: Repo id must be 'namespace/repo_name':
+'model/unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit'`. Root cause in the **vendored
+BFL flux2 lib** (`flux2/src/flux2/text_encoder.py` `Mistral3SmallEmbedder.__init__`): the upstream
+`model_spec_processor` default is a BFL-infra **local path** `"model/unsloth/…"` whose stray
+`model/` prefix is an invalid HF repo id (3 segments). The dev MODEL loads from
+`mistralai/Mistral-Small-3.2-24B-Instruct-2506`, but its **processor** must come from the **unsloth
+bnb-4bit** repo — that repo ships the HF-transformers `processor_config.json`/`tokenizer.json`, while
+the official mistralai repo has only `tekken.json` (no `AutoProcessor`). Fix: strip the `model/`
+prefix → `unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit` (both repos already cached in
+`F:\HF_HOME`). **loom patch to a vendored third-party lib** — applied to BOTH the monorepo source
+`flux2/src/flux2/text_encoder.py` and the vendored `loom/.../pipelines/multistack/flux2/src/flux2/`
+(byte-identical, md5 `fdc29d8…`), commented as a deviation so a future re-vendor won't silently
+revert it. Verified offline: `validate_repo_id` passes + `AutoProcessor.from_pretrained` loads from
+cache (PixtralProcessor) + yes/no token encode works. 276 backend tests green. **✅ PUSHED `<pending>`.**
+
 ---
 
 ## P2-era fixes (non-milestone)

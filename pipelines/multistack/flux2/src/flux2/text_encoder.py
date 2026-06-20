@@ -34,7 +34,13 @@ class Mistral3SmallEmbedder(nn.Module):
     def __init__(
         self,
         model_spec: str = "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
-        model_spec_processor: str = "model/unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit",
+        # loom patch (deviates from upstream BFL): upstream default was
+        # "model/unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit" — a BFL-infra LOCAL
+        # path whose stray "model/" prefix is an invalid HF repo id (3 segments → HFValidationError).
+        # The processor must come from the unsloth bnb-4bit repo (it ships the HF-transformers
+        # processor_config/tokenizer; the official mistralai repo has only tekken.json, no
+        # AutoProcessor). Strip the prefix so AutoProcessor.from_pretrained resolves the real repo.
+        model_spec_processor: str = "unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit",
         torch_dtype: str = "bfloat16",
     ):
         super().__init__()

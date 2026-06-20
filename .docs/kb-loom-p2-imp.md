@@ -311,7 +311,11 @@ JSON → the step's `prompt`), hides the negative field (flux2 takes none), and 
 klein/base; `angle_directives` passed through. **Tests:** `test_postproc_stack.py` (**+2** — flux2 i2i
 is single-run with init_image + the JSON prompt + refine strength; unknown i2i backend 422 / flux2
 accepted); updated 2 flux2-adapter caps tests for the new mode. **271 backend tests**, green; `tsc` +
-`vite build` clean. **✅ M0d COMPLETE (A + B + C-t2i + C-i2i).**
+`vite build` clean. **✅ PUSHED `16874e4`. M0d COMPLETE (A + B + C-t2i + C-i2i).**
+
+**M0d commit trail:** Part B `d327719` · Part A `d88eb01` · Part C-t2i `3aac9ac` · Part C-i2i
+`16874e4`. ⚠ Visual sign-off owed on the running app (all four levers — sampling pull-down,
+advanced-prompting toggle, dev t2i JSON tree, dev i2i JSON tree on the postproc step).
 
 ---
 

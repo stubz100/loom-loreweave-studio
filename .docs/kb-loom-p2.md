@@ -393,8 +393,10 @@ enriches captions + scoring with project context. **None of that is built in P2.
 
 #### M0d solution design — flux.2 advanced prompting & sampling presets
 
-*Status: design (2026-06-20, extended 2026-06-20 with Part C), not yet implemented. Web research
-sourced below.* Pull the flux.2 "complex prompting" capability into M0 (author request). Goal: make
+*Status: **✅ IMPLEMENTED 2026-06-20** — Parts A (structured prompting) + B (sampling presets) +
+C-t2i (dev JSON tree) + C-i2i (flux2-img2img on the M0c postproc step). See `kb-loom-p2-imp.md`
+"### M0d" (commits `d327719`/`d88eb01`/`3aac9ac`/`16874e4`). Original design below; web research
+sourced at the end.* Pull the flux.2 "complex prompting" capability into M0 (author request). Goal: make
 flux2 `ref`-mode expansion (and flux2 t2i casting) **obey pose/composition reliably**, by (A) richer
 structured prompting, (B) exposing + presetting the sampling knobs, and (C) — when **`flux.2-dev`** is
 the selected model — a **structured-JSON prompt tree** in the params panel for authoring **t2i/i2i**

@@ -334,7 +334,7 @@ override > top-level, matching the existing precedence) and echoes it in the dry
 **Dev / JSON** Stage-B preset now auto-ticks **advanced prompting** (so dev actually emits JSON in one
 pick) + a "→ structured JSON (dev)" hint. klein/base keep the labeled directive string. **+5 tests**
 (flux2_prompt JSON ×3, catalog guidance_fixed, endpoint dev-JSON dry-run); **276 backend**, green;
-`tsc` + `vite build` clean. No `src/pipeline/` → no re-vendor. **✅ PUSHED `<pending>`.**
+`tsc` + `vite build` clean. No `src/pipeline/` → no re-vendor. **✅ PUSHED `2f2d07f`.**
 
 ---
 

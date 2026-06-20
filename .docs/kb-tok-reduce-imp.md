@@ -188,3 +188,25 @@ Important limitations:
 
 M3 is accepted for explicit, focused lookup only. M4 document extraction must remain gated until a
 provider/data-residency decision is made; M5 hooks and M6 MCP remain deferred.
+
+## 2026-06-20 - automatic pre-push graph refresh
+
+Git has no standard client-side `post-push` hook. Added the closest deterministic equivalent: a
+repository `pre-push` hook under `.githooks/` that runs the pinned, AST-only
+`Update-GraphifyCodeGraph.ps1` immediately before network transfer. A successful push therefore
+leaves the local graph describing the source state that was pushed.
+
+The hook:
+
+- performs no semantic extraction and keeps Graphify query logging disabled through the wrapper;
+- is fail-open, warning without blocking a push if Graphify or PowerShell is unavailable;
+- supports one-push bypass with `LOOM_SKIP_GRAPHIFY_PUSH_HOOK=1`;
+- is activated per clone by `Install-GraphifyPushHook.ps1`, which safely refuses to overwrite a
+  different existing `core.hooksPath`.
+
+Also added a native-Windows Claude `PreToolUse` query-first hook in `.claude/settings.json`. Unlike
+the upstream generated Bash hook, it runs through Windows PowerShell. It emits advisory context only
+once per Claude session when broad Read/Glob/Grep or shell-search exploration begins, skips Graphify
+commands and graph artifacts, and fails open. It recommends scoped `explain`/`query` use while
+preserving direct source reads for verification. The per-session marker lives under the ignored
+`graphify-out/.hook-state/` directory.

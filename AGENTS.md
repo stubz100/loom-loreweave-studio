@@ -15,3 +15,5 @@
 - Treat Graphify as an index, never as source of truth. Verify cited source files before editing.
 - Refresh after milestone merges or substantial refactors with
   `tools/token-reduction/Update-GraphifyCodeGraph.ps1`; fall back to source when stale.
+- The repository pre-push hook also runs that code-only refresh automatically. Set
+  `LOOM_SKIP_GRAPHIFY_PUSH_HOOK=1` only when a push must bypass local Graphify tooling.

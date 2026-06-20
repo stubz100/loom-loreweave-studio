@@ -1,0 +1,37 @@
+#!/bin/sh
+
+# Git has no client-side post-push hook. Refresh immediately before each push so the local graph
+# describes the exact source state being pushed. Tooling failures warn but never block the push.
+
+if [ "${LOOM_SKIP_GRAPHIFY_PUSH_HOOK:-}" = "1" ]; then
+    echo "[graphify] pre-push refresh skipped (LOOM_SKIP_GRAPHIFY_PUSH_HOOK=1)" >&2
+    exit 0
+fi
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+refresh_script="$repo_root/tools/token-reduction/Update-GraphifyCodeGraph.ps1"
+
+if [ ! -f "$refresh_script" ]; then
+    echo "[graphify] refresh script is missing; continuing push without graph update" >&2
+    exit 0
+fi
+
+if command -v pwsh.exe >/dev/null 2>&1; then
+    powershell_cmd=pwsh.exe
+elif command -v powershell.exe >/dev/null 2>&1; then
+    powershell_cmd=powershell.exe
+else
+    echo "[graphify] PowerShell is unavailable; continuing push without graph update" >&2
+    exit 0
+fi
+
+echo "[graphify] refreshing the local code graph before push..." >&2
+"$powershell_cmd" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+    -File "$refresh_script"
+status=$?
+
+if [ "$status" -ne 0 ]; then
+    echo "[graphify] refresh failed (exit $status); continuing push with the previous graph" >&2
+fi
+
+exit 0

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Glob|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tools/token-reduction/GraphifyQueryHook.ps1",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

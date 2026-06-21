@@ -216,6 +216,39 @@ def test_single_pipeline_unset_size_uses_catalog_default_not_project_default(cli
     assert argv3[argv3.index("--width") + 1] == "1536"
 
 
+def test_flux2_dev_unset_size_defaults_to_512(client):
+    """M0e Part A: flux.2-dev is the heaviest flux2 variant and far faster at low res, so an
+    UNSET dev cast resolves to its per-variant 512² default — not flux2's 1360×768 pipeline
+    default. Non-dev flux2 models keep 1360×768; explicit dims (top-level or params) still win;
+    a params-channel model_name also drives the size default."""
+    r = client.post("/generate", json={"pipeline": "flux2", "prompt": "a hero",
+                                       "model_name": "flux.2-dev", "count": 1, "dry_run": True})
+    assert r.status_code == 200, r.text
+    argv = r.json()["argv"]
+    assert argv[argv.index("--width") + 1] == "512"
+    assert argv[argv.index("--height") + 1] == "512"
+    # a non-dev flux2 model keeps the pipeline default (no size override)
+    r2 = client.post("/generate", json={"pipeline": "flux2", "prompt": "a hero",
+                                        "model_name": "flux.2-klein-4b", "count": 1, "dry_run": True})
+    argv2 = r2.json()["argv"]
+    assert argv2[argv2.index("--width") + 1] == "1360"
+    assert argv2[argv2.index("--height") + 1] == "768"
+    # explicit dims still win on dev
+    r3 = client.post("/generate", json={"pipeline": "flux2", "prompt": "a hero",
+                                        "model_name": "flux.2-dev", "width": 1024, "height": 1024,
+                                        "count": 1, "dry_run": True})
+    argv3 = r3.json()["argv"]
+    assert argv3[argv3.index("--width") + 1] == "1024"
+    assert argv3[argv3.index("--height") + 1] == "1024"
+    # a params-channel model_name also resolves the 512² default
+    r4 = client.post("/generate", json={"pipeline": "flux2", "prompt": "a hero",
+                                        "params": {"model_name": "flux.2-dev"}, "count": 1,
+                                        "dry_run": True})
+    argv4 = r4.json()["argv"]
+    assert argv4[argv4.index("--width") + 1] == "512"
+    assert argv4[argv4.index("--height") + 1] == "512"
+
+
 def test_generate_multi_footgun_subparams_without_toggle_422(client):
     r = client.post("/generate", json={
         "pipeline": "multi", "prompt": "a hero",

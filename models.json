@@ -70,6 +70,9 @@
     "face_restore": [
       {"id": "gfpgan-1.4", "repo_id": "facefusion/models-3.0.0", "probe": "gfpgan_1.4.onnx", "filename": "gfpgan_1.4.onnx", "gated": false, "pipeline": "face_restore", "note": "GFPGAN v1.4 as ONNX (~340 MB; upstream GFPGAN is Apache-2.0; facefusion model mirror) — the M6 restore pass. ⚙ Deliberately ONNX, not the gfpgan/basicsr pip stack (breaks on modern torchvision; M6 spike: ~0.3 s/face CPU). ⚠ `filename` is REQUIRED here: the mirror repo hosts dozens of models — an unrestricted snapshot would pull them all (M6 review)"},
       {"id": "buffalo-l", "insightface_pack": "buffalo_l", "probe": "w600k_r50.onnx", "gated": false, "pipeline": "face_restore", "note": "shared detection/alignment pack (see the identity entry) — listed here too so THIS tool's gate is self-contained"}
+    ],
+    "sd35_tile_cn": [
+      {"id": "sd3-controlnet-tile", "repo_id": "InstantX/SD3-Controlnet-Tile", "probe": "config.json", "gated": false, "pipeline": "sd35", "note": "InstantX SD3 Tile ControlNet (~1.2 GB; Apache-2.0) — the M0e `Upscale ✨` creative-upscale conditioner. Used by the sd35 worker's cn-inpaint mode (--controlnet tile). SD3-MEDIUM family (hidden-dim match), so paired with the sd3.5-medium base; a genuine multi-file repo (config.json + safetensors) → snapshot fetch. The worker already registers the repo in stage1_load_pipeline._CN_REPOS['tile']"}
     ]
   }
 }

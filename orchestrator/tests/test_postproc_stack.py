@@ -94,6 +94,52 @@ def test_param_validation(client):
                        ).status_code == 422
 
 
+def _last_step_id(resp, base):
+    """The tail step id for a base from a /postproc/step response (which returns ALL stacks)."""
+    stack = next(s for s in resp.json()["stacks"] if s["base"] == base)
+    return stack["steps"][-1]["id"]
+
+
+def test_i2i_step_output_size_scale_and_explicit(client):
+    """M0e Part B: a Clean/Refine step can UPSCALE — a scale factor over the source dims, or an
+    explicit W×H. The fake base reads as the 1024² fallback, so ×2 → 2048²; explicit wins; no
+    override → source dims preserved (today's behaviour)."""
+    base = _base_image()
+    sid = _last_step_id(client.post("/postproc/step",
+                        json={"base": base, "preset": "clean", "params": {"scale": 2}}), base)
+    d = client.post(f"/postproc/step/{sid}/queue", json={"dry_run": True}).json()
+    assert d["params"]["width"] == 2048 and d["params"]["height"] == 2048
+    base2 = _base_image("job_base02/base.png")
+    sid2 = _last_step_id(client.post("/postproc/step",
+                         json={"base": base2, "preset": "refine",
+                               "params": {"width": 1536, "height": 768}}), base2)
+    d2 = client.post(f"/postproc/step/{sid2}/queue", json={"dry_run": True}).json()
+    assert d2["params"]["width"] == 1536 and d2["params"]["height"] == 768
+    base3 = _base_image("job_base03/base.png")
+    sid3 = _last_step_id(client.post("/postproc/step", json={"base": base3, "preset": "clean"}),
+                         base3)
+    d3 = client.post(f"/postproc/step/{sid3}/queue", json={"dry_run": True}).json()
+    assert d3["params"]["width"] == 1024 and d3["params"]["height"] == 1024
+
+
+def test_i2i_output_size_validation_and_flux2_rejects_size(client):
+    """M0e Part B: width/height must be ÷16 ints in range & set together; scale in [1,4]. flux2
+    i2i (re-pose at source dims) does NOT accept an output size (not in its allowed param set)."""
+    base = _base_image()
+
+    def bad(params):
+        return client.post("/postproc/step",
+                           json={"base": base, "preset": "clean", "params": params}).status_code
+    assert bad({"width": 1000, "height": 1000}) == 422   # not ÷16
+    assert bad({"width": 1024}) == 422                    # height missing (pair)
+    assert bad({"scale": 8}) == 422                       # scale out of [1,4]
+    assert bad({"width": 100, "height": 112}) == 422      # below min 256
+    # flux2 i2i rejects the size params entirely (zimage/sd35 only)
+    assert client.post("/postproc/step",
+                       json={"base": base, "preset": "clean", "backend": "flux2",
+                             "params": {"scale": 2}}).status_code == 422
+
+
 def test_queue_dry_run_real_and_completion_records_output(client):
     from orchestrator.runner import RUNNER
     base = _base_image()
@@ -237,6 +283,56 @@ def test_flux2_i2i_step_is_single_run_with_init_image(client):
     assert p["init_image"].replace("\\", "/").endswith(base)
     assert p["prompt"] == json_prompt                   # the JSON rides the prompt verbatim
     assert p["strength"] == 0.25                         # the refine preset strength
+
+
+def test_upscale_preset_single_run_tile_cn(client):
+    """M0e Part C: the Upscale preset = a SINGLE-run sd35 cn-inpaint job over the source as the
+    tile-CN CONTROL image at the target size (preset default ×2 → 2048² from the 1024² fallback).
+    No batch_items; controlnet fixed to 'tile'; prompt + cn_scale carried."""
+    base = _base_image(prompt="a knight")
+    sid = _last_step_id(client.post("/postproc/step", json={"base": base, "preset": "upscale"}), base)
+    d = client.post(f"/postproc/step/{sid}/queue", json={"dry_run": True}).json()
+    assert d["pipeline"] == "sd35" and d["mode"] == "cn-inpaint"
+    p = d["params"]
+    assert "batch_items" not in p                       # single-run (CN modes aren't batchable)
+    assert p["controlnet"] == "tile"
+    assert "init_image" not in p                        # the tile CN is the conditioner, not i2i
+    assert p["control_image"].replace("\\", "/").endswith(base)
+    assert p["width"] == 2048 and p["height"] == 2048   # ×2 over the 1024² fallback
+    assert p["cn_scale"] == "0.6" and p["prompt"] == "a knight"   # inherited source prompt
+
+
+def test_upscale_backend_fixed_and_medium_only(client):
+    """M0e Part C: upscale is sd35-fixed (the SD3-medium tile CN) — a non-sd35 backend or a
+    non-medium model is 422. cn_scale + an explicit output size override are accepted."""
+    base = _base_image()
+    assert client.post("/postproc/step",
+                       json={"base": base, "preset": "upscale", "backend": "zimage"}
+                       ).status_code == 422
+    assert client.post("/postproc/step",
+                       json={"base": base, "preset": "upscale",
+                             "params": {"model_name": "sd3.5-large"}}).status_code == 422
+    sid = _last_step_id(client.post("/postproc/step",
+                        json={"base": base, "preset": "upscale",
+                              "params": {"cn_scale": "0.8", "width": 1536, "height": 1024}}), base)
+    d = client.post(f"/postproc/step/{sid}/queue", json={"dry_run": True}).json()
+    assert d["params"]["cn_scale"] == "0.8"
+    assert d["params"]["width"] == 1536 and d["params"]["height"] == 1024
+
+
+def test_upscale_missing_tile_cn_weight_412(client, monkeypatch):
+    """M0e Part C: a real upscale queue offers the tile-CN fetch (412) when the InstantX SD3 tile
+    ControlNet weight is missing — a separate gate from the sd3.5-medium base check."""
+    from orchestrator import components
+    base = _base_image()
+    sid = _last_step_id(client.post("/postproc/step", json={"base": base, "preset": "upscale"}), base)
+    monkeypatch.setattr(components, "image_model_present", lambda repo: True)   # base present
+    monkeypatch.setattr(components, "postproc_weights_status",
+                        lambda tool, variant_id=None: (False, [{"id": "sd3-controlnet-tile",
+                                                                "repo_id": "InstantX/SD3-Controlnet-Tile"}]))
+    r = client.post(f"/postproc/step/{sid}/queue", json={})
+    assert r.status_code == 412
+    assert "Tile ControlNet" in r.text and "sd35_tile_cn" in r.text
 
 
 def test_i2i_backend_must_be_known(client):

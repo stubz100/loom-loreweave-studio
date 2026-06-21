@@ -355,6 +355,17 @@ export default function App() {
   // M0d Part C — the dev JSON prompt tree is offered only when flux.2-dev is the cast model.
   const castDevSelected = castPipeline === "flux2" && advParamsA.model_name === "flux.2-dev";
 
+  // M0e Part A — the selected model's per-variant size default (flux.2-dev → 512²) so the
+  // width/height drawer placeholders advertise what an unset cast actually renders. Reads the
+  // catalog variant `defaults`; undefined for models without an override (the drawer then keeps
+  // the pipeline catalog default, e.g. flux2 klein → 1360×768).
+  const modelSizeDefaults = (pipeline: string, modelId?: string):
+      { width?: number; height?: number } | undefined => {
+    const d = catalog?.[pipeline]?.variants?.find((x) => x.id === modelId)?.defaults;
+    if (!d || (d.width == null && d.height == null)) return undefined;
+    return { width: d.width, height: d.height };
+  };
+
   // Build the Stage-A / sandbox generate request (shared by Run and Preview).
   const buildGenerateReq = (): GenerateRequest | null => {
     setError(null);
@@ -1623,6 +1634,7 @@ export default function App() {
                   : catalog?.[castPipeline]?.params ?? []}
                 mode={castPipeline === "multi" ? "ideate" : "t2i"}
                 values={advParamsA}
+                sizeDefaults={modelSizeDefaults(castPipeline, advParamsA.model_name as string | undefined)}
                 onChange={(k, v) => {
                   // M0d: hand-editing a preset-controlled key falls the label back to Custom.
                   if (["model_name", "num_steps", "guidance"].includes(k)) setCastSampling("");
@@ -1878,6 +1890,7 @@ export default function App() {
                 specs={catalog?.[stageBPipeline]?.params ?? []}
                 mode="img2img"
                 values={advParamsB}
+                sizeDefaults={modelSizeDefaults(stageBPipeline, stageBModel || undefined)}
                 onChange={(k, v) => {
                   // M0d: hand-editing steps/guidance falls the Sampling label back to Custom.
                   if (["num_steps", "guidance"].includes(k)) setStageBSampling("");
@@ -2765,6 +2778,12 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
   const [prompt, setPrompt] = useState("");
   const [neg, setNeg] = useState("");
   const [blend, setBlend] = useState("");
+  // M0e Part B — optional OUTPUT size (i2i creative upscale): a scale-factor quick pick AND an
+  // explicit W×H override. Blank / ×1 = preserve source dims. zimage/sd35 i2i + the Upscale preset.
+  const [scale, setScale] = useState("");
+  const [outW, setOutW] = useState("");
+  const [outH, setOutH] = useState("");
+  const [cnScale, setCnScale] = useState("");    // M0e Part C — tile-CN conditioning scale
   // M0d Part C — the flux.2-dev structured-JSON prompt tree for an i2i step.
   const [jsonTree, setJsonTree] = useState<Flux2PromptTree>(emptyFlux2PromptTree);
   const steps = stack?.steps ?? [];
@@ -2779,11 +2798,15 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
   const last = steps[steps.length - 1];
   const canAdd = !last || last.output != null || liveStatus(last) === "done";
   const dead = (s: string) => s === "failed" || s === "canceled";
-  const isI2i = preset !== "restore";
+  const isI2i = preset === "clean" || preset === "refine";   // plain img2img presets
+  const isUpscale = preset === "upscale";                    // M0e Part C — sd35 tile-CN upscale
   // M0d Part C — flux.2-dev gets the structured-JSON tree (the dev VLM parses JSON); klein/base
   // flux2 + zimage/sd35 use the plain prompt. flux2 takes no negatives.
   const isFlux2 = isI2i && backend === "flux2";
   const devJson = isFlux2 && model === "flux.2-dev";
+  // M0e Part B/C — output size (creative upscale) is offered on zimage/sd35 i2i (flux2 i2i
+  // re-poses at source dims; restore is a face pass) and the Upscale preset (tile-CN).
+  const sizeable = (isI2i && !isFlux2) || isUpscale;
 
   const submit = () => {
     const params: Record<string, unknown> = {};
@@ -2797,13 +2820,45 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
         params.prompt = prompt.trim();
       }
       if (!isFlux2 && neg.trim()) params.negative_prompt = neg.trim();   // flux2 = no negatives
+    } else if (isUpscale) {
+      // tile-CN upscale (sd35-fixed): optional prompt (defaults to the source's) + CN scale.
+      if (cnScale.trim()) params.cn_scale = cnScale.trim();
+      if (prompt.trim()) params.prompt = prompt.trim();
     } else if (blend.trim()) {
       params.blend = Number(blend);
     }
-    onAdd(preset, isI2i ? backend : undefined, params);
+    if (sizeable) {
+      // explicit W×H wins (both required); else a scale factor; else (blank) preserve source.
+      if (outW.trim() && outH.trim()) {
+        params.width = Number(outW); params.height = Number(outH);
+      } else if (scale.trim() && Number(scale) !== 1) {
+        params.scale = Number(scale);
+      }
+    }
+    onAdd(preset, isI2i ? backend : undefined, params);   // upscale/restore = preset-fixed backend
     setModel(""); setStrength(""); setPrompt(""); setNeg(""); setBlend("");
+    setScale(""); setOutW(""); setOutH(""); setCnScale("");
     setJsonTree(emptyFlux2PromptTree());
   };
+
+  // M0e Part B/C — shared output-size row (scale quick pick + explicit W×H), rendered on every
+  // `sizeable` preset (zimage/sd35 i2i + the tile-CN Upscale).
+  const sizeRow = sizeable && (
+    <div className="pp-size" title="output size (creative upscale): a scale factor over the source, or an explicit W×H (both required, ÷16). Blank = keep the source size.">
+      <select value={scale} onChange={(e) => setScale(e.target.value)}
+              disabled={outW.trim() !== "" || outH.trim() !== ""}>
+        <option value="">size: source</option>
+        <option value="1.5">×1.5</option>
+        <option value="2">×2</option>
+        <option value="4">×4</option>
+      </select>
+      <input className="pp-dim" type="number" step="16" min="256" max="2048"
+             placeholder="out W" value={outW} onChange={(e) => setOutW(e.target.value)} />
+      <span className="muted">×</span>
+      <input className="pp-dim" type="number" step="16" min="256" max="2048"
+             placeholder="out H" value={outH} onChange={(e) => setOutH(e.target.value)} />
+    </div>
+  );
 
   return (
     <div className="postproc">
@@ -2820,6 +2875,9 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
             st.backend,
             typeof p.strength === "number" ? `str ${p.strength}` : null,
             typeof p.blend === "number" ? `blend ${p.blend}` : null,
+            typeof p.scale === "number" ? `×${p.scale}` : null,
+            (typeof p.width === "number" && typeof p.height === "number")
+              ? `${p.width}×${p.height}` : null,
             p.model_name ? String(p.model_name) : null,
             p.prompt ? `“${String(p.prompt).slice(0, 28)}”` : null,
             p.negative_prompt ? `neg “${String(p.negative_prompt).slice(0, 18)}”` : null,
@@ -2858,6 +2916,7 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
                     onChange={(e) => setPreset(e.target.value as PostprocStep["preset"])}>
               <option value="clean">Clean (i2i 0.5)</option>
               <option value="refine">Refine (i2i 0.25)</option>
+              <option value="upscale">Upscale ✨ (tile)</option>
               <option value="restore">Restore (GFPGAN)</option>
             </select>
             {isI2i && (
@@ -2898,6 +2957,19 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
                   ✨ pick flux.2-dev for the JSON prompt tree
                 </span>
               )}
+              {sizeRow}
+            </>
+          ) : isUpscale ? (
+            <>
+              <span className="muted" title="SD3.5 Tile ControlNet creative upscale — single-run sd35 cn-inpaint on the sd3.5-medium base. Re-renders detail at the target size; structure-preserving.">
+                ✨ SD3.5 Tile ControlNet · sd3.5-medium
+              </span>
+              <input className="prompt" type="number" step="0.05" min="0" max="2"
+                     placeholder="CN scale (default 0.6 — lower = more creative)"
+                     value={cnScale} onChange={(e) => setCnScale(e.target.value)} />
+              <input className="prompt" placeholder="prompt (optional — defaults to the image's own)"
+                     value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+              {sizeRow}
             </>
           ) : (
             <input className="prompt" type="number" step="0.05" min="0" max="1"
@@ -3188,12 +3260,17 @@ function ParamControls({
   values,
   onChange,
   exclude = [],
+  sizeDefaults,
 }: {
   specs: ParamSpec[];
   mode: string;
   values: Record<string, unknown>;
   onChange: (name: string, value: unknown) => void;
   exclude?: string[];
+  /** M0e Part A — per-MODEL width/height default override for the drawer placeholder (so the
+   * unset-size field advertises the selected model's real default, e.g. flux.2-dev → 512²,
+   * not the catalog's pipeline-wide 1360×768). Only the placeholder; values are unchanged. */
+  sizeDefaults?: { width?: number; height?: number };
 }) {
   const visible = specs.filter(
     (s) => !s.advanced && s.type !== "image" && !exclude.includes(s.name)
@@ -3217,7 +3294,7 @@ function ParamControls({
       {groups.filter(([, g]) => g.length > 0).map(([label, g]) => (
         <div key={label} className="p-group">
           <span className="p-group-label">{label}</span>
-          {g.map((s) => renderParamControl(s, values[s.name], onChange))}
+          {g.map((s) => renderParamControl(s, values[s.name], onChange, sizeDefaults))}
         </div>
       ))}
     </>
@@ -3228,8 +3305,14 @@ function renderParamControl(
   s: ParamSpec,
   v: unknown,
   onChange: (name: string, value: unknown) => void,
+  sizeDefaults?: { width?: number; height?: number },
 ) {
   const title = s.note ?? "";
+  // M0e Part A — width/height advertise the selected MODEL's size default when it has one
+  // (flux.2-dev → 512²); other params (and models without an override) keep the catalog default.
+  const sizeOverride =
+    (s.name === "width" || s.name === "height") ? sizeDefaults?.[s.name] : undefined;
+  const numDefault = sizeOverride ?? s.default;
         if (s.type === "flag") {
           return (
             <label key={s.name} className="p-flag" title={title}>
@@ -3266,7 +3349,7 @@ function renderParamControl(
                 max={s.max}
                 step={s.step ?? (s.type === "float" ? 0.05 : 1)}
                 value={v === undefined ? "" : (v as number)}
-                placeholder={s.default != null ? String(s.default) : "auto"}
+                placeholder={numDefault != null ? String(numDefault) : "auto"}
                 onChange={(e) => {
                   const raw = e.target.value;
                   if (raw === "") return onChange(s.name, undefined);

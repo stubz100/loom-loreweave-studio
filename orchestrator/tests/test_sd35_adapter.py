@@ -38,10 +38,29 @@ def test_sd35_inpaint_argv_includes_mask():
     assert argv[argv.index("--mask-image") + 1] == "/abs/mask.png"
 
 
+def test_sd35_cn_inpaint_upscale_argv():
+    """M0e Part C — a single-run cn-inpaint job (the tile-CN creative upscale) emits the CN flags
+    via emit_argv (gated to mode=cn-inpaint) over the source as the control image at the target
+    size. No --init-image (the tile CN is the conditioner, not img2img)."""
+    argv = sd35.build_argv(
+        _spec("cn-inpaint", controlnet="tile", control_image="/abs/src.png",
+              cn_scale="0.6", width=2048, height=2048),
+        "python", Path("x/sd35/run_pipeline.py"))
+    assert argv[argv.index("--mode") + 1] == "cn-inpaint"
+    assert argv[argv.index("--controlnet") + 1] == "tile"
+    assert argv[argv.index("--control-image") + 1] == "/abs/src.png"
+    assert argv[argv.index("--cn-scale") + 1] == "0.6"
+    assert argv[argv.index("--width") + 1] == "2048"
+    assert "--init-image" not in argv
+    # the CN params are advertised in WIRED_PARAMS now (honest capabilities)
+    assert {"controlnet", "control_image", "cn_scale"} <= set(sd35.WIRED_PARAMS)
+
+
 def test_sd35_capabilities_are_honest():
     caps = sd35.capabilities([])
     assert caps["pipeline"] == "sd35"
-    # t2i wired 2026-06-10 (the sandbox experimentation surface); CN modes stay unwired.
+    # t2i wired 2026-06-10 (the sandbox experimentation surface); cn-inpaint stays OUT of the
+    # /generate-facing modes (it's reachable only via the M0e Upscale postproc preset).
     assert set(caps["modes"]) == {"t2i", "img2img", "inpaint"}
     assert "cn-inpaint" in caps["worker_modes"]                # informational full capability
     assert caps["cancellable"] and caps["progress"] == "coarse"

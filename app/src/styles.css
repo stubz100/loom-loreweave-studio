@@ -460,6 +460,12 @@ a.ghost { text-decoration: none; display: inline-block; }
 .pp-add .prompt { width: 100%; }
 .pp-add .proj-btn { align-self: flex-start; }
 .pp-gate { margin-top: 6px; }
+/* M0e Part B — postproc output-size row (scale + explicit W×H). */
+.pp-size { display: flex; align-items: center; gap: 6px; }
+.pp-size select { flex: 1; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; font-size: 12px; }
+.pp-size .pp-dim { width: 64px; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; font-size: 12px; }
 
 /* Params drawer blocks (user request 2026-06-11): base / clean / polish / postproc */
 .p-group {

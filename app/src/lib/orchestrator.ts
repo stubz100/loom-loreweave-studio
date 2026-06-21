@@ -464,7 +464,7 @@ export interface AnchorInfo {
 /** M0c: one persisted postprocess step in a base image's stack (source/output lineage). */
 export interface PostprocStep {
   id: string;
-  preset: "clean" | "refine" | "custom" | "restore";
+  preset: "clean" | "refine" | "custom" | "restore" | "upscale";
   backend: string;
   mode: string;
   params: Record<string, unknown>;
@@ -798,6 +798,9 @@ export interface ModelVariant {
   repo_id: string;
   gated: boolean;
   note?: string;
+  /** Per-variant preset defaults (num_steps/guidance, and M0e: an optional size override —
+   * flux.2-dev carries width/height = 512 so its drawer placeholder + unset cast resolve to 512²). */
+  defaults?: { num_steps?: number; guidance?: number; width?: number; height?: number };
   [k: string]: unknown;
 }
 /** One tunable parameter spec from the catalog (drives the UI's parameter controls). */

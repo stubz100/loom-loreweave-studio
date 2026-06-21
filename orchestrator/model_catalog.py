@@ -87,11 +87,17 @@ def _catalog() -> dict:
                 # flux.2-dev IS guidance-distilled (uses a guidance EMBEDDING, no CFG negative) but
                 # guidance is NOT fixed — default 4.0 is a real adjustable knob (worker fixed_params
                 # is empty). So `guidance_fixed=False`: the Sampling guard must NOT warn on dev.
+                # M0e Part A — dev's `defaults` carry a per-variant **size** (512²): dev is the
+                # heaviest flux2 variant on 16 GB ROCm and its cost scales with output tokens²
+                # (resolution), so the efficient workflow is author-small-then-upscale. The size
+                # default only moves the UNSET default (explicit dims still win); model_size_default()
+                # reads it and the /generate resolution + UI placeholder consult it.
                 {"id": "flux.2-dev", "repo_id": "black-forest-labs/FLUX.2-dev",
                  "ae_repo_id": "black-forest-labs/FLUX.2-dev", "text_encoder": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
                  "gated": True, "distilled": True, "guidance_fixed": False,
-                 "defaults": {"num_steps": 50, "guidance": 4.0},
-                 "note": "full dev model; Mistral-24B VLM encoder (gated); parses structured JSON prompts"},
+                 "defaults": {"num_steps": 50, "guidance": 4.0, "width": 512, "height": 512},
+                 "note": "full dev model; Mistral-24B VLM encoder (gated); parses structured JSON "
+                         "prompts; defaults to 512² (far faster at low res — upscale after)"},
             ],
             "params": [
                 {"name": "model_name", "flag": "--model-name", "type": "enum", "default": "flux.2-klein-4b"},
@@ -447,6 +453,19 @@ def param_default(pipeline: str, name: str):
         if prm["name"] == name:
             return prm.get("default")
     return None
+
+
+def model_size_default(pipeline: str, model_name: str | None) -> tuple[int | None, int | None]:
+    """The per-VARIANT (width, height) default override for a model, or (None, None) when the
+    variant has none (the caller then falls back to the pipeline `param_default`). M0e Part A:
+    `flux.2-dev` carries `defaults.width/height = 512` so an unset dev cast resolves to 512²
+    (it runs far faster at low res on 16 GB ROCm). Display==reality — both /generate's unset-size
+    resolution and the UI drawer placeholder read this, so an unset dev cast GETS what the drawer
+    advertises. Any variant may opt in by adding width/height to its `defaults`."""
+    v = find_variant(pipeline, model_name) if model_name else None
+    d = (v or {}).get("defaults") or {}
+    w, h = d.get("width"), d.get("height")
+    return (w if isinstance(w, int) else None, h if isinstance(h, int) else None)
 
 
 def find_variant(pipeline: str, model_name: str) -> dict | None:

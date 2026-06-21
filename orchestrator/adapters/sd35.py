@@ -38,10 +38,14 @@ except ImportError:  # pragma: no cover - direct-run convenience
     import model_catalog  # type: ignore
 
 PIPELINE = "sd35"
-# Full worker capability (informational); CN modes stay unwired (postproc/M6+).
+# Full worker capability (informational); the multi-CN inpaint mode stays unwired (P3+).
 SUPPORTED_MODES = ("t2i", "img2img", "inpaint", "cn-inpaint", "cn-inpaint-mc")
 # t2i wired 2026-06-10 (review #3): the sandbox is the experimentation surface and sd35
 # t2i is a worker-supported mode — no reason to fence it to `multi` casting only.
+# `cn-inpaint` is deliberately NOT in WIRED_MODES: it is reachable only through the M0e
+# `Upscale ✨` postprocess preset (single-run tile-CN creative upscale), which submits straight
+# to the runner and never consults WIRED_MODES — so /generate still can't request it directly
+# (it needs a per-item control image). The single-run build_argv below handles it via emit_argv.
 WIRED_MODES = ("t2i", "img2img", "inpaint")
 # catalog flag → worker run() kwarg for the batch jobs file (see _batch)
 _BATCH_INVERSIONS = {"no_cpu_offload": ("cpu_offload", False),
@@ -50,6 +54,9 @@ WIRED_PARAMS = (
     "prompt", "mode", "width", "height", "seed", "model_name",
     "num_steps", "guidance_scale", "negative_prompt",
     "init_image", "mask_image", "strength",
+    # M0e Part C — single-run cn-inpaint (tile-CN creative upscale): the conditioning image +
+    # CN repo key + conditioning scale. emit_argv gates these to mode=cn-inpaint (catalog `modes`).
+    "controlnet", "control_image", "cn_scale",
 )
 
 _MANIFEST_RE = re.compile(r"^\s*Manifest:\s*(.+?)\s*$", re.MULTILINE)

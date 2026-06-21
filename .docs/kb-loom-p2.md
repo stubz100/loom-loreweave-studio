@@ -23,7 +23,11 @@ and a **proxy-based readiness meter** (no VLM). The VLM (Qwen3-VL) and a project
 > prompting + sampling presets** (structured prompts + configurable guidance/steps) to fix loose pose
 > adherence in flux2 `ref`-mode expansion — design in §12 "M0d solution design". **Extended same day
 > with Part C:** a `flux.2-dev` **structured-JSON prompt tree** in the params panel for t2i/i2i
-> authoring straight from the schema.
+> authoring straight from the schema. **M0e added 2026-06-21** (the final course-correction before the
+> M1 trainer gate): **flux.2 low-res-first + creative upscale** — default `flux.2-dev` to 512² (it runs
+> far faster at low res on 16 GB ROCm), add an **output size** to the M0c i2i postproc steps (i2i
+> upscale), and a dedicated **`Upscale ✨`** preset on the already-registered **SD3.5 Tile ControlNet**
+> — design in §12 "M0e solution design".
 
 ---
 
@@ -54,10 +58,13 @@ If a P1-curated character can be trained and then re-generated recognizably via 
 - **M0 UI/workflow reset before trainer work:** move project actions into a proper File menu; convert
   L1/L2 navigation (and future L3/L4) into workspace tabs with per-workspace controls; split L1 into
   Visual Styles / World / Story Spine tabs; make long text fields readable; decouple L2
-  postprocessing into a stackable, independent image-postprocess workflow; and **(M0d) flux.2
+  postprocessing into a stackable, independent image-postprocess workflow; **(M0d) flux.2
   advanced prompting — structured prompts + configurable guidance/steps with a sampling-preset
   pull-down, plus a `flux.2-dev` structured-JSON prompt tree for t2i/i2i authoring** to fix loose pose
-  adherence in flux2 `ref`-mode expansion (§12 M0 + "M0d solution design").
+  adherence in flux2 `ref`-mode expansion (§12 M0 + "M0d solution design"); and **(M0e) flux.2
+  low-res-first + creative upscale — `flux.2-dev` defaults to 512², an output size (scale + explicit
+  W×H) on the M0c i2i postproc steps, and a dedicated `Upscale ✨` SD3.5 Tile-ControlNet preset** (§12
+  "M0e solution design").
 - **Template captioning** of the curated `ref_set` (v1: deterministic from P1 coverage-cell metadata
   + trigger token; **no VLM**) — *not* auto-tagging (research). VLM enrichment → P4 (R116).
 - **Readiness meter via cheap proxies** (v1: coverage from metadata, perceptual-hash dupes,
@@ -382,6 +389,18 @@ enriches captions + scoring with project context. **None of that is built in P2.
      tree** for authoring **t2i/i2i** images straight from the schema. Add all three: a flux2
      structured-prompt builder + an individually-editable `guidance`/`num_steps` pair fronted by a
      **Sampling preset pull-down** (≥3 researched presets) + a dev-gated **JSON entry tree** (Part C).
+   - **M0e — flux.2 low-res-first + creative upscale** (added 2026-06-21; full design below). The
+     final course-correction before the M1 trainer gate. `flux.2-dev` (the gated Mistral-VLM variant)
+     runs **exponentially faster at low resolution** on the 16 GB ROCm rig (512² ≈ 1 k image tokens vs
+     ~4 k at 1360×768 — `kb-flux2.md` "denoising stall analysis"), so the efficient workflow is
+     **author at 512² with dev, then i2i-upscale**. Three additive levers: **(a)** default the dev
+     image size to **512²** when `flux.2-dev` is the selected model (display==reality, M0c discipline);
+     **(b)** expose an **output size** (scale-factor quick pick **and** explicit W×H override) on the
+     M0c i2i postprocess steps so a `Clean`/`Refine` step over **zimage/sd35** can re-diffuse larger =
+     i2i creative upscale (not flux2 — flux2 i2i re-poses at source dims); **(c)** a dedicated
+     **`Upscale ✨`** postprocess preset driving the already-registered **SD3.5 Tile ControlNet**
+     (`InstantX/SD3-Controlnet-Tile`, §8/M6+ "planned") as a **single-run `sd35` cn-inpaint** job at the
+     target size — the structure-preserving high-ratio upscale path the i2i preset can't match.
 
    **M0 done-line:** the app still performs the P1 MVP flow, but the shell uses File-menu project
    actions, L1/L2 are tabbed workspaces, L1 content is readable in sub-tabs, L2 can generate a
@@ -389,7 +408,9 @@ enriches captions + scoring with project context. **None of that is built in P2.
    **a flux2 Stage-B expansion can be fired with structured prompting + a chosen sampling preset
    (or hand-set guidance/steps), producing visibly tighter pose adherence than the distilled default,
    and — with `flux.2-dev` selected — a t2i/i2i image can be authored from the structured-JSON prompt
-   tree (Part C).**
+   tree (Part C); selecting `flux.2-dev` defaults the size to 512², and a base image can be
+   creatively upscaled both via an i2i postprocess step with a chosen output size and via the
+   dedicated `Upscale ✨` SD3.5 Tile-ControlNet preset (M0e).**
 
 #### M0d solution design — flux.2 advanced prompting & sampling presets
 
@@ -503,6 +524,88 @@ precursor the SLM later enriches). Per-output **identity strength** (PuLID-class
 [ltx.io — Flux prompting guide](https://ltx.io/blog/flux-prompting-guide) ·
 [fal — Flux 2 [klein] user guide](https://fal.ai/learn/devs/flux-2-klein-user-guide).
 
+#### M0e solution design — flux.2 low-res-first + creative upscale
+
+*Status: **✅ IMPLEMENTED 2026-06-21** — Parts A (dev 512² default) + B (i2i output size on the M0c
+postproc steps) + C (the `Upscale ✨` SD3.5 Tile-ControlNet preset) all built same day (284 backend
+tests; visual sign-off owed). Original design below. **No new worker capability** — flux2/sd35 workers
+already did everything; M0e is catalog + orchestrator + frontend surface, reusing the M0c postprocess-
+stack contract (no `src/pipeline/` change → no re-vendor). See `kb-loom-p2-imp.md` "### M0e".*
+
+**Why low-res-first for `flux.2-dev`.** dev is the 32B Mistral-VLM variant — the JSON-faithful one
+the author wants for precise prompting — but on the 16 GB ROCm rig it is the heaviest: its 60 GiB bf16
+flow transformer is paged from system RAM, and cost scales with **token count², dominated by output
+resolution** (`kb-flux2.md` "denoising stall analysis": 512² ≈ 1,024 image tokens vs ~4,080 at
+1360×768 — the attention pair count is ~9× larger, and a 1360×768 dev run measured **3,166 s**). So the
+sane dev workflow is **author small, then upscale**: generate at 512² (fast, JSON prompt honoured),
+then run a creative upscale pass. M0e wires exactly that loop end-to-end.
+
+**Part A — `flux.2-dev` defaults to 512².** The flux2 catalog size default is 1360×768 (`model_catalog`
+`CATALOG["flux2"]["params"]`), pipeline-wide. Add **per-variant size defaults** — `flux.2-dev` →
+`{width: 512, height: 512}` in its `defaults` block — and a `model_size_default(pipeline, model_name)`
+helper that returns the variant override when present, else the pipeline param default. The `/generate`
+single-pipeline unset-size resolution (the M6-review "display==reality" block) consults the **effective
+model** (params-channel override > top-level > catalog default — the same precedence the per-model
+weight pre-flight already uses) before falling back to the pipeline default, so an unset `flux.2-dev`
+cast actually **gets** 512². The frontend `ParamControls` width/height **placeholder** becomes
+model-aware (a `sizeDefaults` prop) so the drawer advertises 512² the moment dev is selected — never a
+1360 placeholder that lies about what will render. Klein/base/sd35/zimage are unchanged. Explicit dims
+(top-level or params channel) always win; this only moves the **unset** default.
+
+**Part B — output size on the M0c i2i postprocess steps (the i2i upscale).** Today a `Clean`/`Refine`
+step preserves the source's dims (`_image_dims(src_abs)` in the queue endpoint — the right default).
+Add an **optional output size** so the same step can re-diffuse **larger** = a quick i2i creative
+upscale: a **scale factor** quick pick (×1.5/×2/×4) **and** an explicit **W×H override** (author choice
+2026-06-21). Resolution rule: explicit W×H wins; else `round16(source × factor)`; else (blank/×1) the
+source dims (today's behaviour). The size rides the step `params` (`scale`/`width`/`height`, validated
+divisible-by-16 + catalog min/max). **zimage/sd35 only** — `flux2` i2i (the M0d dev-JSON re-pose) keeps
+source dims, since its purpose is edit-in-place, not enlarge. diffusers resizes the init image to the
+requested H×W, so init=source + a larger target *is* the upscale; no worker change.
+
+**Part C — dedicated `Upscale ✨` preset (SD3.5 Tile ControlNet).** The structure-preserving,
+high-ratio path the plain i2i resize can't match. The sd35 worker **already registers** the InstantX
+SD3 Tile ControlNet (`stage1_load_pipeline._CN_REPOS["tile"] = "InstantX/SD3-Controlnet-Tile"`) and
+supports `cn-inpaint` (= `StableDiffusion3ControlNetPipeline`, t2i + CN); the spec parked it as
+"postproc/M6+ … the polished creative-upscale orchestration remains planned" (§8, `sd35.py` header).
+M0e pulls it in early as a **postprocess preset**, NOT on `/generate`:
+- **Single-run, not batch.** The sd35 worker's batch `run_jobs` is `t2i/img2img/inpaint` only — "the
+  ControlNet modes need per-item conditioning images and stay single-run" (`run_pipeline._BATCH_MODES`).
+  So `Upscale` fires a **single-run** `sd35` job (`mode=cn-inpaint`, no `batch_items`) — exactly the
+  shape M0c's flux2-dev i2i step already uses. The orchestrator builds
+  `{prompt, mode:"cn-inpaint", controlnet:"tile", control_image:<source>, cn_scale, width, height,
+  model_name}`; `emit_argv` already gates `controlnet`/`control_image`/`cn_scale` to `modes:["cn-inpaint"]`.
+  The tile CN is the **conditioner** (no `init_image`); diffusers resizes the control image to the
+  target H×W, so source→control + a larger target is the tile upscale. Prompt defaults to the source's
+  own (the "upscale THIS image" behaviour); the dev-JSON tree is **not** offered here (tile CN is sd35,
+  Qwen/T5 text — JSON-as-text only on dev).
+- **Wiring.** `sd35` adapter: advertise `cn-inpaint` in capabilities + `WIRED_PARAMS`
+  (`controlnet`/`control_image`/`cn_scale`) so single-run `build_argv` emits them; **not** added to
+  `WIRED_MODES` (that gates `/generate`, and `Upscale` is postproc-only — it submits straight through
+  the postproc queue endpoint, which never consults `WIRED_MODES`). New `_PP_PRESETS["upscale"]`
+  (`backend:"sd35"`, `mode:"cn-inpaint"`, `params:{controlnet:"tile", cn_scale, scale:2}`), sd35-fixed.
+  Output size = Part B's resolver (default ×2). Size control is the same factor+explicit pair.
+- **Weights.** `InstantX/SD3-Controlnet-Tile` is a single `SD3ControlNetModel` (a `config.json`, **not**
+  a pipeline `model_index.json`), so `image_model_present` (which probes `model_index.json`) won't see
+  it — add it to `models.json` (a postproc/controlnet weight) + a `controlnet_present()` probe
+  (`config.json`) + a **412 pre-flight** in the queue endpoint (offer the fetch), alongside the existing
+  sd3.5-medium base check. The CN is SD3-medium-family (hidden-dim match — the worker asserts this), so
+  `Upscale` defaults to / requires the **`sd3.5-medium`** base.
+
+**Constraints / risks.** (1) On 16 GB ROCm `flux.2-dev` may still be slow even at 512² (paging) — Part A
+just removes the *resolution* penalty; if dev is impractical the klein/base presets + the sd35/zimage
+upscale paths stand alone (Part A is dev-only, no regression elsewhere). (2) The InstantX SD3 tile CN is
+**SD3-medium**; on sd3.5-large the worker already errors on the hidden-dim mismatch — so `Upscale` is
+medium-only (documented + preset-fixed). (3) Tile CN is a *creative* upscale (it re-renders detail), not
+a faithful super-resolution — expect added/altered texture; that is the intended "polish" behaviour.
+(4) Single-run `cn-inpaint` is heavier than a batch item but it is **one** image (a deliberate upscale of
+a chosen base), so no streaming-tiles concern. **Out of scope (unchanged):** depth/pose/canny CN
+conditioning and multi-CN inpaint stay `advanced`/unwired (P3 keyframes R128 / P6); a tiled-diffusion
+**megapixel** upscaler (latent tiling for >2k) → later; SD3.5-large tile CN → if/when a matching CN ships.
+
+**Sources (carried + 2026-06-21):** `kb-flux2.md` "FLUX.2-dev … denoising stall analysis" (token²/
+resolution cost, 512² recommendation) · [InstantX SD3 ControlNet Tile](https://huggingface.co/InstantX/SD3-Controlnet-Tile)
+· [diffusers SD3 ControlNet pipeline](https://huggingface.co/docs/diffusers/en/api/pipelines/controlnet_sd3).
+
 ### Phase A — Training skeleton (prove a LoRA can be made + used on this rig)
 
 1. **M1 — training spike (no UI).** Vendor **ai-toolkit**; train **one** `zimage` LoRA from a fixed
@@ -576,6 +679,7 @@ flagged — noted for `kb-loom-p4.md`.)
 | P2-M0b | **L1 tabbed authoring** — Visual Styles / World / Story Spine sub-tabs; readable multi-line editors for long style/world/spine fields | M0 | M | 🟢 |
 | P2-M0c | **L2 postprocess stack surface** — base-image generation separated from postprocess; clean/refine as i2i presets; source/output lineage and mask-ready step contract | M0 | M | 🟡 |
 | P2-M0d | **flux.2 advanced prompting + sampling presets + dev JSON tree** — (A) structured/labeled (opt-JSON) flux2 prompts with explicit angle→camera/pose directives (the pose-adherence fix); (B) individually-editable guidance/steps fronted by a ≥3-preset Sampling pull-down (Fast/Balanced/Quality, model↔guidance pairing guard); (C) a `flux.2-dev`-gated **structured-JSON prompt tree** in params for t2i/i2i authoring from the schema. Additive (no coverage-contract change). Design: §12 "M0d solution design" | M0 | M–L (FE-heavy) | 🟡 |
+| P2-M0e | **flux.2 low-res-first + creative upscale** — (a) `flux.2-dev` size defaults to 512² (per-variant catalog default + model-aware generate resolution + drawer placeholder); (b) output size (scale-factor + explicit W×H) on the M0c i2i postproc steps so a zimage/sd35 Clean/Refine re-diffuses larger = i2i upscale; (c) dedicated **`Upscale ✨`** preset = single-run `sd35` cn-inpaint + **SD3.5 Tile ControlNet** (already registered) at target size + tile-CN weight gate/fetch. Additive, postproc-only (no `/generate` mode change). Design: §12 "M0e solution design" | M0 | M (FE+orch) | 🟡 |
 | P2-0 | **ai-toolkit ROCm *can-it-run-at-all* gate** — prove ai-toolkit trains on **RX 9070 XT / ROCm** before the rest of P2 is built; **hard go/no-go** (if no-go, the whole training approach changes) | M1 | M | 🔴 **make-or-break front-gate** |
 | P2-1 | **Training spike (no UI)** — vendor **ai-toolkit**, train one `zimage` LoRA from a fixed dataset, load-test it | M1 | M | 🔴 **no trainer exists** |
 | P2-2 | Trainer as a **staged queued job** (wrap in P0 queue + manifest; `jobs/staged.json`; auto-generate, don't auto-start) | M2 | M | 🟡 |
@@ -591,7 +695,7 @@ flagged — noted for `kb-loom-p4.md`.)
 | P2-13 | **Graph-ready training facts** — write `training_context.json`, `caption_policy_hash`, and `context_digest` into the promoted LoRA manifest; no retrieval index | M3/M6 | S | 🟢 |
 | — | Style-LoRA: **declared only, not built** (R122) — 0 effort in P2; lands with multi-LoRA stacking (**P5**, R147) | §2 | — | — |
 
-**Rollup:** ~17 WP including the M0 UI reset (now M0a–M0d); **P2-0/P2-1 remain the phase's make-or-break training
+**Rollup:** ~18 WP including the M0 UI reset (now M0a–M0e); **P2-0/P2-1 remain the phase's make-or-break training
 risk** — whether **ai-toolkit even trains on RX 9070 XT / ROCm**. **P2-0 is still the hard trainer
 front-gate**: if it's no-go, P2-9–P2-12 and the rest of the trainer path don't get built as-is.
 M0 is deliberately separate: it should land before that gate so later trainer controls have a

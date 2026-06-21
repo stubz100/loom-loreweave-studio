@@ -437,7 +437,7 @@ class AddPostprocStepRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     base: str
-    preset: Literal["clean", "refine", "restore"] = "clean"
+    preset: Literal["clean", "refine", "restore", "upscale"] = "clean"
     backend: str | None = None
     params: dict = Field(default_factory=dict)
     mask: str | None = None
@@ -529,6 +529,47 @@ def _image_dims(path, default: tuple[int, int] = (1024, 1024)) -> tuple[int, int
             return im.size
     except Exception:  # noqa: BLE001 - best-effort; fall back to a square default
         return default
+
+
+def _round16(x: float) -> int:
+    """Snap a dimension to a multiple of 16 (every worker requires it), clamped to the catalog
+    width/height range [256, 2048]."""
+    return max(256, min(2048, int(round(x / 16.0)) * 16))
+
+
+def _postproc_target_dims(src_dims: tuple[int, int], params_in: dict) -> tuple[int, int]:
+    """M0e Part B/C — the OUTPUT dims for an i2i / tile-upscale postproc step. Default is the
+    source dims (today's behaviour — preserve aspect). An optional output size enlarges it:
+    explicit `width`+`height` win (both required, snapped to /16); else a `scale` factor over the
+    source; else the source unchanged. So a Clean/Refine (or Upscale) step can re-diffuse larger =
+    a creative upscale, while a step with no size override behaves exactly as before."""
+    sw, sh = src_dims
+    ow, oh = params_in.get("width"), params_in.get("height")
+    if isinstance(ow, (int, float)) and isinstance(oh, (int, float)):
+        return _round16(ow), _round16(oh)
+    scale = params_in.get("scale")
+    if isinstance(scale, (int, float)) and float(scale) > 0 and float(scale) != 1.0:
+        return _round16(sw * scale), _round16(sh * scale)
+    return sw, sh
+
+
+def _validate_postproc_size(params: dict) -> None:
+    """M0e Part B — validate an optional postproc OUTPUT size on a step's params. `width`/`height`:
+    int multiple of 16 in [256, 2048], set together (an explicit pair); `scale`: number in
+    [1.0, 4.0]. Raises HTTPException(422) on a bad value. Absent keys = preserve source dims."""
+    for dim in ("width", "height"):
+        if dim in params:
+            v = params[dim]
+            if not isinstance(v, int) or isinstance(v, bool) or not (256 <= v <= 2048):
+                raise HTTPException(422, f"postproc {dim} must be an int in [256, 2048] (got {v!r})")
+            if v % 16 != 0:
+                raise HTTPException(422, f"postproc {dim}={v} must be a multiple of 16")
+    if ("width" in params) != ("height" in params):
+        raise HTTPException(422, "postproc width and height must be set together (or use scale)")
+    if "scale" in params:
+        s = params["scale"]
+        if not isinstance(s, (int, float)) or isinstance(s, bool) or not (1.0 <= float(s) <= 4.0):
+            raise HTTPException(422, f"postproc scale must be a number in [1.0, 4.0] (got {s!r})")
 
 
 @asynccontextmanager
@@ -845,11 +886,21 @@ def create_app() -> FastAPI:
             # must actually GET the advertised default — else a 1024² sd35 cast silently ran
             # at 1280×720 (user-reported 2026-06-14). Explicit values — top-level
             # (model_fields_set) or via the params channel — still win.
+            # M0e Part A: the default is now MODEL-aware — resolve from the effective model
+            # (params-channel override > top-level > catalog default, the same precedence the
+            # weight pre-flight below uses) so an unset `flux.2-dev` cast resolves to its 512²
+            # variant default, not flux2's 1360×768 pipeline default. Non-dev models keep the
+            # pipeline default (model_size_default returns None,None for them).
+            eff_model = base.get("model_name") or model_catalog.default_model(req.pipeline)
+            md_w, md_h = model_catalog.model_size_default(req.pipeline, eff_model)
+            model_dim_default = {"width": md_w, "height": md_h}
             for dim in ("width", "height"):
                 if dim not in req.model_fields_set and dim not in req.params:
-                    cat_default = model_catalog.param_default(req.pipeline, dim)
-                    if cat_default is not None:
-                        base[dim] = cat_default
+                    d = model_dim_default[dim]
+                    if d is None:
+                        d = model_catalog.param_default(req.pipeline, dim)
+                    if d is not None:
+                        base[dim] = d
             # Per-model weight pre-flight keyed to the model the worker will ACTUALLY load
             # (review 2026-06-11): `model_name` is also a catalog param and the params
             # channel overrides the top-level field on merge, so resolve from the MERGED
@@ -1948,6 +1999,11 @@ def create_app() -> FastAPI:
         "clean":   {"backend": "zimage", "mode": "img2img", "params": {"strength": 0.5}},
         "refine":  {"backend": "zimage", "mode": "img2img", "params": {"strength": 0.25}},
         "restore": {"backend": "face_restore", "mode": "restore", "params": {"blend": 0.8}},
+        # M0e Part C — creative upscale via SD3.5 Tile ControlNet: a single-run sd35 cn-inpaint
+        # job. The tile CN is the conditioner (no init_image); diffusers resizes it to the target
+        # H×W, so source→control + a larger size = the upscale. sd35-fixed (SD3-medium tile CN).
+        "upscale": {"backend": "sd35", "mode": "cn-inpaint",
+                    "params": {"controlnet": "tile", "cn_scale": "0.6", "scale": 2}},
     }
 
     def _producing_job(src: str):
@@ -1988,6 +2044,7 @@ def create_app() -> FastAPI:
         zimage|sd35); restore = GFPGAN. A separate queue call fires the job. Token-gated."""
         spec = _PP_PRESETS[req.preset]
         is_i2i = spec["mode"] == "img2img"
+        is_upscale = spec["mode"] == "cn-inpaint"   # M0e Part C — sd35 tile-CN creative upscale
         backend = (req.backend or spec["backend"]) if is_i2i else spec["backend"]
         # M0d Part C — flux2 joins zimage/sd35 as an i2i backend (structured-JSON i2i on
         # flux.2-dev: edit/re-pose an existing image). flux2 i2i is a SINGLE-run job (the
@@ -1996,8 +2053,19 @@ def create_app() -> FastAPI:
             raise HTTPException(422, f"img2img backend must be zimage|sd35|flux2, got {backend!r}")
         if not is_i2i and req.backend and req.backend != spec["backend"]:
             raise HTTPException(422, f"{req.preset!r} backend is fixed ({spec['backend']})")
-        allowed = ({"strength", "prompt", "negative_prompt", "model_name"} if is_i2i
-                   else {"blend"})
+        if is_i2i:
+            allowed = {"strength", "prompt", "negative_prompt", "model_name"}
+            # M0e Part B — an optional OUTPUT SIZE (scale factor + explicit W×H) so a Clean/Refine
+            # step can re-diffuse larger = an i2i creative upscale. zimage/sd35 only: flux2 i2i
+            # (the M0d dev-JSON re-pose) keeps source dims — its job is edit-in-place, not enlarge.
+            if backend != "flux2":
+                allowed |= {"width", "height", "scale"}
+        elif is_upscale:
+            # M0e Part C — tile-CN upscale: prompt (defaults to source), the output size (Part B
+            # resolver), CN conditioning scale, model. `controlnet` is fixed (tile) by the preset.
+            allowed = {"prompt", "model_name", "cn_scale", "width", "height", "scale"}
+        else:
+            allowed = {"blend"}
         params = dict(spec["params"])
         for k, v in req.params.items():
             if k not in allowed:
@@ -2007,6 +2075,12 @@ def create_app() -> FastAPI:
         model = params.get("model_name")
         if model and model_catalog.find_variant(backend, model) is None:
             raise HTTPException(422, f"model {model!r} is not a {backend} variant")
+        # The InstantX SD3 tile CN is SD3-MEDIUM (hidden-dim match) — the worker errors on large;
+        # so the upscale preset needs the sd3.5-medium base (the sd35 default when unset).
+        if is_upscale and model and model != "sd3.5-medium":
+            raise HTTPException(422, "tile-CN upscale needs the sd3.5-medium base (the InstantX "
+                                     "SD3 tile ControlNet is SD3-medium)")
+        _validate_postproc_size(params)
         try:
             return postproc.add_step(_require_ws(), base=req.base, preset=req.preset,
                                      backend=backend, mode=spec["mode"], params=params,
@@ -2034,6 +2108,7 @@ def create_app() -> FastAPI:
         if live and live.get("status") in ("queued", "running"):
             raise HTTPException(409, f"step already {live['status']}")
         backend, mode = step["backend"], step["mode"]
+        is_upscale = mode == "cn-inpaint"    # M0e Part C — sd35 tile-CN creative upscale (single-run)
         params_in = step.get("params") or {}
         # Resolve + traversal-guard the source image (out/-relative, like init_image).
         obase = ws.out_dir.resolve()
@@ -2059,26 +2134,38 @@ def create_app() -> FastAPI:
                         "error": f"{backend} model {variant['id']!r} not in cache",
                         "repo_id": variant["repo_id"], "gated": variant["gated"],
                         "hint": "fetch it first (gated repos need a HF license + token)"})
+                # M0e Part C — the tile-CN upscale also needs the InstantX SD3 Tile ControlNet
+                # weight (separate from the sd3.5-medium base above; a config.json repo, not a
+                # pipeline) — offer its fetch rather than dying inside the worker.
+                if is_upscale:
+                    cn_ok, cn_missing = components.postproc_weights_status("sd35_tile_cn")
+                    if not cn_ok:
+                        raise HTTPException(412, {
+                            "error": "SD3.5 Tile ControlNet weight missing",
+                            "missing": cn_missing,
+                            "hint": "POST /components/fetch?postproc=sd35_tile_cn"})
             if estimate_vram(backend) > CONFIG.vram_budget_gb:
                 raise HTTPException(422, f"{backend} needs ~{estimate_vram(backend)} GB VRAM "
                                          f"> budget {CONFIG.vram_budget_gb} GB")
-        # img2img (clean/refine) re-diffuses the source, so it NEEDS a prompt — the worker
-        # rejects an empty-prompt batch item (returns 2 → the whole job fails). Default to the
-        # SOURCE image's own prompt (the natural "refine THIS image" behavior, mirroring the
-        # chained clean/polish passes): the source's producing job, or — for a chained step —
-        # the previous step's per-output meta prompt; else an author-typed prompt; else 422.
+        # img2img (clean/refine) + tile-CN upscale re-render the source, so they NEED a prompt —
+        # the worker rejects an empty-prompt item (the batch returns 2 → the whole job fails; a
+        # cn-inpaint t2i+CN run needs a prompt too). Default to the SOURCE image's own prompt (the
+        # natural "process THIS image" behavior, mirroring the chained clean/polish passes): the
+        # source's producing job, or — for a chained step — the previous step's per-output meta
+        # prompt; else an author-typed prompt; else 422.
         parent = _producing_job(src) or {}
-        is_io = mode != "img2img"
+        needs_prompt = mode in ("img2img", "cn-inpaint")
+        is_io = mode == "restore"
         item_prompt = ""
-        if not is_io:
+        if needs_prompt:
             pmeta = (parent.get("result") or {}).get("output_meta") or {}
             src_prompt = ((pmeta.get(src) or {}).get("prompt")
                           or (parent.get("params") or {}).get("prompt"))
             item_prompt = (params_in.get("prompt") or src_prompt or "").strip()
             if not item_prompt:
-                raise HTTPException(422, "this image has no source prompt to re-diffuse from — "
-                                         "type a prompt for the clean/refine step")
-        w, h = _image_dims(src_abs)   # preserve the source aspect (img2img dims + tile aspect)
+                raise HTTPException(422, "this image has no source prompt to re-render from — "
+                                         "type a prompt for the clean/refine/upscale step")
+        w, h = _image_dims(src_abs)   # source dims (restore + flux2 i2i preserve these)
         is_flux2 = backend == "flux2"
         if is_flux2:
             # M0d Part C — flux2 i2i is a SINGLE-run job (the worker's batch run_jobs does only
@@ -2090,20 +2177,40 @@ def create_app() -> FastAPI:
                 job_params["strength"] = params_in["strength"]
             if params_in.get("model_name"):
                 job_params["model_name"] = params_in["model_name"]
-        else:
-            items = ([{"input": str(src_abs)}] if is_io
-                     else [{"prompt": item_prompt, "init_image": str(src_abs)}])
+        elif is_upscale:
+            # M0e Part C — SD3.5 Tile ControlNet creative upscale: a SINGLE-run sd35 cn-inpaint
+            # job (the worker's batch run_jobs is t2i/img2img/inpaint only; CN modes are single-
+            # run). The tile CN is the CONDITIONER (no init_image); diffusers resizes the control
+            # image to the target H×W, so source→control + a larger size IS the upscale. The
+            # single-run sd35 build_argv → emit_argv gates --controlnet/--control-image/--cn-scale
+            # to mode=cn-inpaint. Output dims = the Part B resolver (preset default ×2).
+            tw, th = _postproc_target_dims((w, h), params_in)
+            job_params = {"prompt": item_prompt, "control_image": str(src_abs),
+                          "controlnet": params_in.get("controlnet", "tile"),
+                          "width": tw, "height": th}
+            if params_in.get("cn_scale") is not None:
+                job_params["cn_scale"] = params_in["cn_scale"]
+            if params_in.get("model_name"):
+                job_params["model_name"] = params_in["model_name"]
+        elif is_io:
+            # restore (GFPGAN io-worker): preserve source dims (it's a face pass, not a resize).
             job_params = {"prompt": f"[{step['preset']} postproc of {src}]",
-                          "batch_items": items, "width": w, "height": h}
-            if is_io:
-                job_params["blend"] = params_in.get("blend", 0.8)
-            else:
-                if params_in.get("strength") is not None:
-                    job_params["strength"] = params_in["strength"]
-                if params_in.get("negative_prompt"):
-                    job_params["negative_prompt"] = params_in["negative_prompt"]
-                if params_in.get("model_name"):
-                    job_params["model_name"] = params_in["model_name"]
+                          "batch_items": [{"input": str(src_abs)}], "width": w, "height": h,
+                          "blend": params_in.get("blend", 0.8)}
+        else:
+            # img2img (clean/refine, zimage/sd35) — a batch job over the source. M0e Part B: the
+            # output dims default to the source but an optional scale/explicit-W×H ENLARGES them
+            # (creative i2i upscale); diffusers resizes the init image to the requested H×W.
+            tw, th = _postproc_target_dims((w, h), params_in)
+            job_params = {"prompt": f"[{step['preset']} postproc of {src}]",
+                          "batch_items": [{"prompt": item_prompt, "init_image": str(src_abs)}],
+                          "width": tw, "height": th}
+            if params_in.get("strength") is not None:
+                job_params["strength"] = params_in["strength"]
+            if params_in.get("negative_prompt"):
+                job_params["negative_prompt"] = params_in["negative_prompt"]
+            if params_in.get("model_name"):
+                job_params["model_name"] = params_in["model_name"]
         if req.dry_run:
             return {"dry_run": True, "pipeline": backend, "mode": mode,
                     "source": src, "params": job_params, "step_id": step_id}

@@ -19,7 +19,7 @@
               "required": ["id", "preset", "backend", "mode", "source", "status"],
               "properties": {
                 "id": { "type": "string", "pattern": "^pps_[0-9a-f]{6}$" },
-                "preset": { "type": "string", "enum": ["clean", "refine", "restore", "identity"] },
+                "preset": { "type": "string", "enum": ["clean", "refine", "restore", "identity", "upscale"] },
                 "backend": { "type": "string" },
                 "mode": { "type": "string" },
                 "params": { "type": "object" },

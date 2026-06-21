@@ -362,6 +362,101 @@ prefix → `unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit` (both 
 revert it. Verified offline: `validate_repo_id` passes + `AutoProcessor.from_pretrained` loads from
 cache (PixtralProcessor) + yes/no token encode works. 276 backend tests green. **✅ PUSHED `2188f7a`.**
 
+### M0e — flux.2 low-res-first + creative upscale (spec §12 "M0e"; WBS P2-M0e)
+
+started: 2026-06-21 07:43
+finished: 2026-06-21 08:15 (Parts A + B + C all built same day; 284 backend tests; visual sign-off owed)
+
+Author request (2026-06-21) — the **final course-correction before the M1 trainer gate**. `flux.2-dev`
+(the gated Mistral-VLM variant) runs **far faster at low resolution** on the 16 GB ROCm rig (512² ≈ 1 k
+image tokens vs ~4 k at 1360×768 — `kb-flux2.md` "denoising stall analysis"), so the efficient workflow
+is **author small with dev, then i2i-upscale**. Design (spec §12 "M0e solution design", committed with
+this entry) has three **additive** parts — **no new worker capability**, catalog + orchestrator +
+frontend only, reusing the M0c postprocess-stack contract:
+- **a** — default `flux.2-dev` image size to **512²** (per-variant catalog default + model-aware
+  `/generate` resolution + model-aware drawer placeholder; display==reality, M0c discipline).
+- **b** — an **output size** (scale-factor quick pick **and** explicit W×H override) on the M0c i2i
+  postproc steps so a `Clean`/`Refine` over **zimage/sd35** re-diffuses larger = i2i creative upscale
+  (not flux2 — flux2 i2i re-poses at source dims).
+- **c** — a dedicated **`Upscale ✨`** preset = single-run `sd35` **cn-inpaint + SD3.5 Tile ControlNet**
+  (`InstantX/SD3-Controlnet-Tile`, already registered in the worker) at the target size + tile-CN
+  weight gate/fetch. Postproc-only (not on `/generate`).
+
+Built part-by-part (build → push) like M0d. **No `src/pipeline/` worker code changes expected → no
+re-vendor** (the sd35 worker already registers the tile CN + supports cn-inpaint; the flux2/zimage
+workers already honour width/height — M0e is orchestrator + frontend surface).
+
+**Part A — `flux.2-dev` defaults to 512² (finished 2026-06-21 07:57).** ⚙ Backend: the `flux.2-dev`
+catalog variant's `defaults` now carries `width:512, height:512` (model_catalog.py); a new
+`model_size_default(pipeline, model_name) -> (w|None, h|None)` reads the per-variant override (else
+(None,None) → caller falls back to `param_default`). The `/generate` single-pipeline unset-size block
+(the M6-review "display==reality" fix) now resolves the **effective model** first (`base.get("model_name")`
+— params-channel override > top-level > default, matching the weight pre-flight's precedence) and uses
+its `model_size_default` before the pipeline default, so an unset dev cast emits `--width 512 --height
+512`; non-dev flux2 keeps 1360×768; explicit dims (top-level or params) still win. Frontend: `ModelVariant.defaults`
+typed (`orchestrator.ts`); `ParamControls`/`renderParamControl` gained a `sizeDefaults` prop that overrides
+**only the width/height placeholder** (values untouched); App computes it via `modelSizeDefaults(pipeline,
+modelId)` from the catalog variant `defaults` and passes it to both the cast (A) and Stage-B drawers, so
+selecting flux.2-dev shows a 512 placeholder (never a 1360 that lies about what renders). **Tests:**
+`test_model_catalog.py` +1 (`model_size_default` dev=512²/others None + served on the variant);
+`test_multi_params.py` +1 (`test_flux2_dev_unset_size_defaults_to_512` — dry-run argv 512² on dev top-level
++ params-channel; non-dev 1360×768; explicit dims win). **278 backend tests** (276→+2), green; `tsc
+--noEmit` clean. No `src/pipeline/` → no re-vendor.
+
+**Part B — output size on the M0c i2i postproc steps (finished 2026-06-21 08:04).** The i2i upscale.
+⚙ Backend (`main.py`): two module helpers — `_round16(x)` (snap to /16, clamp [256,2048]) and
+`_postproc_target_dims(src_dims, params_in)` (explicit `width`+`height` win → else a `scale` factor
+over the source → else source dims unchanged). `add_postproc_step` now adds `width`/`height`/`scale` to
+the **i2i allowed set for zimage/sd35 only** (flux2 i2i re-poses at source dims — excluded); a new
+`_validate_postproc_size` enforces width/height = /16 ints in [256,2048] set as a pair, scale a number
+in [1.0,4.0] (422 otherwise). The queue endpoint's img2img branch (refactored to `if is_flux2 / elif
+is_io / else`) computes the batch job's width/height via `_postproc_target_dims` instead of the hard
+`_image_dims` source dims; restore (io) + flux2 i2i keep source dims. diffusers resizes the init image
+to the requested H×W → init=source + larger target IS the upscale (no worker change). Frontend
+(`App.tsx`/`styles.css`): the `PostprocPanel` add-form gained a `.pp-size` row (scale select ×1.5/×2/×4
++ explicit out-W/out-H inputs, mutually exclusive) shown when `sizeable = isI2i && !isFlux2`; `submit`
+sends `width`+`height` (both typed) else `scale`; the step-attrs line shows `×N` / `W×H`. **Tests:**
+`test_postproc_stack.py` (**+2** — scale ×2 → 2048², explicit W×H wins, no-override = source dims;
+validation 422s for not-÷16 / unpaired / out-of-range scale / below-min, and flux2 rejecting size).
+**280 backend tests** (278→+2), green; `tsc --noEmit` clean. No `src/pipeline/` → no re-vendor.
+
+**Part C — dedicated `Upscale ✨` preset (SD3.5 Tile ControlNet) (finished 2026-06-21 08:15).** The
+structure-preserving high-ratio upscale the i2i resize can't match. ⭐ Key finding: the sd35 worker
+**already registers** the tile CN (`stage1_load_pipeline._CN_REPOS["tile"]="InstantX/SD3-Controlnet-Tile"`)
+and supports `cn-inpaint`, and its batch `run_jobs` is t2i/img2img/inpaint **only** ("CN modes … stay
+single-run") — so this is a **single-run** sd35 job exactly like M0c's flux2-dev i2i, **no
+`src/pipeline/` worker change → no re-vendor**. ⚙ **Adapter** (`sd35.py`): `WIRED_PARAMS` += `controlnet`/
+`control_image`/`cn_scale` (single-run `build_argv` already routes through `emit_argv`, which gates them
+to `modes=["cn-inpaint"]`); `cn-inpaint` **kept OUT of `WIRED_MODES`** (postproc-only — it's reachable
+solely via the queue endpoint, which never consults `WIRED_MODES`, so `/generate` still can't request a
+mode that needs a per-item control image). **Backend** (`main.py`): new `_PP_PRESETS["upscale"]`
+(`backend:sd35`, `mode:cn-inpaint`, `params:{controlnet:"tile", cn_scale:"0.6", scale:2}`);
+`AddPostprocStepRequest.preset` Literal += `upscale`; `add_postproc_step` handles `is_upscale`
+(sd35-fixed backend; allowed `{prompt,model_name,cn_scale,width,height,scale}`; a **medium-only guard** —
+the InstantX tile CN is SD3-medium, so a non-`sd3.5-medium` model 422s); the queue endpoint gained an
+`is_upscale` branch building a single-run `{prompt, control_image=source, controlnet:"tile", cn_scale,
+width/height}` job at the Part B target dims (no `init_image` — the tile CN is the conditioner; diffusers
+resizes it to the target H×W = the upscale), with the prompt resolved like clean/refine (typed > source
+prompt) and a **tile-CN weight 412 pre-flight** (`postproc_weights_status("sd35_tile_cn")`, separate from
+the sd3.5-medium base check) offering `POST /components/fetch?postproc=sd35_tile_cn`. **models.json**:
+new `postproc.sd35_tile_cn` weight entry (`InstantX/SD3-Controlnet-Tile`, probe `config.json`, snapshot
+fetch — a CN repo has no `model_index.json`, so the generic postproc gate/fetch handles it). **Schema**:
+`postproc_store` preset enum += `upscale`. **Frontend** (`App.tsx`/`orchestrator.ts`): `PostprocStep.preset`
+type += `upscale`; the PostprocPanel add-form gained an **`Upscale ✨ (tile)`** option — no backend picker
+(sd35-fixed), a `cn_scale` field + optional prompt + the shared (factored) `sizeRow` (scale + explicit
+W×H, default ×2). **Tests:** `test_postproc_stack.py` (**+3** — single-run cn-inpaint with tile control
+image at ×2 / inherited prompt / cn_scale; sd35-fixed + medium-only + explicit-size override; tile-CN
+412 pre-flight via monkeypatch); `test_sd35_adapter.py` (**+1** — cn-inpaint argv emits
+`--controlnet/--control-image/--cn-scale`, no `--init-image`, WIRED_PARAMS advertises the CN params).
+**284 backend tests** (280→+4), green; `tsc --noEmit` + `vite build` clean. **No `src/pipeline/` worker
+code touched → no re-vendor.**
+
+**✅ M0e COMPLETE (Parts A + B + C).** ⚠ Visual sign-off owed on the running app (the dev 512² default in
+the cast drawer; the i2i output-size row on Clean/Refine; the `Upscale ✨` tile-CN preset — needs the
+`InstantX/SD3-Controlnet-Tile` weight fetched on first use). ⚠ Rig run owed to confirm a real flux.2-dev
+512² → tile-CN upscale loop end-to-end on ROCm. ⏭ Next: **M1** training spike — the **P2-0 ROCm go/no-go
+front-gate** (does ai-toolkit train on RX 9070 XT / ROCm at all?).
+
 ---
 
 ## P2-era fixes (non-milestone)

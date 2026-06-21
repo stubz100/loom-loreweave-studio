@@ -1,0 +1,82 @@
+---
+job: extension
+config:
+  name: loom_character_zimage
+  process:
+    - type: diffusion_trainer
+      training_folder: "<absolute-temp-run-directory>"
+      sqlite_db_path: "<absolute-temp-run-directory>/aitk_db.sqlite"
+      device: cuda:0
+      trigger_word: character_lw
+      performance_log_every: 10
+      network:
+        type: lora
+        linear: 16
+        linear_alpha: 16
+      save:
+        dtype: bf16
+        save_every: 50
+        max_step_saves_to_keep: 2
+        save_format: diffusers
+        push_to_hub: false
+      datasets:
+        - folder_path: "<absolute-captioned-ref-set-directory>"
+          caption_ext: txt
+          caption_dropout_rate: 0.0
+          shuffle_tokens: false
+          cache_latents_to_disk: true
+          resolution: [512]
+          num_repeats: 1
+      train:
+        batch_size: 1
+        # M1's fixed 17-ref spike needed 500 total steps for a convincing full-character
+        # reproduction. The 100-step can-run checkpoint loaded but did not learn identity.
+        steps: 500
+        gradient_accumulation: 1
+        train_unet: true
+        train_text_encoder: false
+        gradient_checkpointing: true
+        noise_scheduler: flowmatch
+        optimizer: adamw
+        optimizer_params:
+          weight_decay: 0.0001
+        lr: 0.0001
+        timestep_type: weighted
+        content_or_style: balanced
+        unload_text_encoder: false
+        cache_text_embeddings: false
+        ema_config:
+          use_ema: false
+          ema_decay: 0.99
+        skip_first_sample: true
+        force_first_sample: false
+        disable_sampling: true
+        dtype: bf16
+      logging:
+        log_every: 1
+        use_ui_logger: false
+      model:
+        name_or_path: Tongyi-MAI/Z-Image
+        arch: zimage
+        quantize: true
+        qtype: qfloat8
+        quantize_te: true
+        qtype_te: qfloat8
+        low_vram: true
+        layer_offloading: false
+        compile: false
+      sample:
+        sampler: flowmatch
+        sample_every: 1000
+        width: 512
+        height: 512
+        samples:
+          - prompt: "character_lw, front portrait, neutral expression"
+        neg: ""
+        seed: 42
+        walk_seed: false
+        guidance_scale: 4
+        sample_steps: 30
+meta:
+  name: "[name]"
+  version: "p2m1-zimage-default"

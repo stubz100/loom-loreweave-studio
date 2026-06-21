@@ -22,5 +22,9 @@ app/src-tauri/target/
 # intentionally being evaluated.
 pipelines/
 
+# Vendored upstream trainer source is provenance-pinned but is not part of Loom's application
+# architecture graph. Trace Loom's future queued-job wrapper, not ai-toolkit internals.
+trainers/
+
 # Code-only pilot boundary. Remove this entry at M4 for the controlled planning/document pass.
 .docs/

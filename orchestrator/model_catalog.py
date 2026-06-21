@@ -185,6 +185,12 @@ def _catalog() -> dict:
             ],
             "params": [
                 {"name": "model_name", "flag": "--model-name", "type": "enum", "default": "zimage-turbo"},
+                {"name": "lora_path", "flag": "--lora-path", "type": "str", "default": None,
+                 "note": "local Diffusers-compatible LoRA file or directory"},
+                {"name": "lora_name", "flag": "--lora-name", "type": "str", "default": None,
+                 "note": "adapter name; worker defaults to loom_character"},
+                {"name": "lora_weight", "flag": "--lora-weight", "type": "float", "default": None,
+                 "note": "runtime adapter scale; worker defaults to 1.0"},
                 *_COMMON_PARAMS,
                 {"name": "guidance_scale", "flag": "--guidance-scale", "type": "float", "default": None,
                  "min": 0.0, "max": 30.0, "note": "defaults to the model preset"},

@@ -109,3 +109,17 @@ def test_sd35_parse_result_no_manifest(tmp_path):
 def test_zimage_now_wires_stage_b_modes():
     caps = zimage.capabilities([])
     assert {"t2i", "img2img", "inpaint"} <= set(caps["modes"])  # M3 wired img2img/inpaint
+
+
+def test_zimage_lora_argv_and_capability():
+    spec = JobSpec(
+        pipeline="zimage", mode="t2i",
+        params={"prompt": "char01_lw, portrait", "lora_path": "/weights/char01.safetensors",
+                "lora_name": "char01_lw", "lora_weight": 0.9},
+        output_dir=Path("out/job_lora"),
+    )
+    argv = zimage.build_argv(spec, "python", Path("x/zimage/run_pipeline.py"))
+    assert argv[argv.index("--lora-path") + 1] == "/weights/char01.safetensors"
+    assert argv[argv.index("--lora-name") + 1] == "char01_lw"
+    assert argv[argv.index("--lora-weight") + 1] == "0.9"
+    assert {"lora_path", "lora_name", "lora_weight"} <= set(zimage.capabilities([])["params"])

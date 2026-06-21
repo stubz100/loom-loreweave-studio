@@ -267,3 +267,10 @@ _migrate_models.log
 # Development-only token tooling outputs
 graphify-out/
 .token-tools/
+
+# Vendored ai-toolkit runtime outputs/state. Source + config remain tracked; trained weights are
+# already excluded by the global weight rules above.
+/trainers/ai-toolkit/output/*
+!/trainers/ai-toolkit/output/.gitkeep
+/trainers/ai-toolkit/**/*.sqlite
+/trainers/ai-toolkit/**/*.sqlite-journal

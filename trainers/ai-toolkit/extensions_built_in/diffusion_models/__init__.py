@@ -1,0 +1,58 @@
+import os
+
+if os.environ.get("AI_TOOLKIT_MINIMAL_ZIMAGE") == "1":
+    # Windows ROCm wheels omit torch.distributed. Avoid eagerly importing unrelated
+    # model extensions (for example HiDream MoE) that require it.
+    from .z_image import ZImageModel
+
+    AI_TOOLKIT_MODELS = [ZImageModel]
+else:
+    from .chroma import ChromaModel, ChromaRadianceModel
+    from .hidream import HidreamModel, HidreamE1Model
+    from .f_light import FLiteModel
+    from .omnigen2 import OmniGen2Model
+    from .flux_kontext import FluxKontextModel
+    from .wan22 import Wan225bModel, Wan2214bModel, Wan2214bI2VModel
+    from .qwen_image import QwenImageModel, QwenImageEditModel, QwenImageEditPlusModel
+    from .flux2 import Flux2Model, Flux2Klein4BModel, Flux2Klein9BModel
+    from .z_image import ZImageModel
+    from .ltx2 import LTX2Model, LTX23Model
+    from .zeta_chroma import ZetaChromaModel
+    from .ernie_image import ErnieImageModel
+    from .nucleus_image import NucleusImageModel
+    from .hidream.hidream_o1_model import HidreamO1Model
+    from .z_image.z_image_l2p_model import ZImageL2PModel
+    from .ideogram4 import Ideogram4Model
+    from .prx_pixel_t2i import PRXPixelT2IModel
+    from .boogu_image import BooguImageModel, BooguImageEditModel
+
+    AI_TOOLKIT_MODELS = [
+        ChromaModel,
+        ChromaRadianceModel,
+        HidreamModel,
+        HidreamE1Model,
+        FLiteModel,
+        OmniGen2Model,
+        FluxKontextModel,
+        Wan225bModel,
+        Wan2214bI2VModel,
+        Wan2214bModel,
+        QwenImageModel,
+        QwenImageEditModel,
+        QwenImageEditPlusModel,
+        Flux2Model,
+        ZImageModel,
+        LTX2Model,
+        LTX23Model,
+        Flux2Klein4BModel,
+        Flux2Klein9BModel,
+        ZetaChromaModel,
+        ErnieImageModel,
+        NucleusImageModel,
+        HidreamO1Model,
+        ZImageL2PModel,
+        Ideogram4Model,
+        PRXPixelT2IModel,
+        BooguImageModel,
+        BooguImageEditModel,
+    ]

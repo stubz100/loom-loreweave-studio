@@ -532,7 +532,7 @@ upstream deviation, and record it before vendoring.
 ## M1 — ai-toolkit ROCm gate + fixed-dataset training spike (P2-0/P2-1)
 
 started: 2026-06-21 10:50
-finished:
+finished: 2026-06-21 22:45
 
 ### P2-0 — ROCm can-run gate (2026-06-21 11:05–12:08; **✅ GO**)
 
@@ -554,19 +554,28 @@ Diffusers FSDP imports optional for single-GPU; `AI_TOOLKIT_MINIMAL_ZIMAGE=1` re
 `sd_trainer` + `ZImageModel`; missing `torch.distributed.is_initialized` cleanup predicate supplied.
 These are eager-import/cleanup seams, not changes to the training algorithm. **Gate verdict: GO.**
 
-### P2-1 — fixed 17-ref training + inference bridge (2026-06-21 12:10–15:41; **IN PROGRESS**)
+### P2-1 — fixed 17-ref training + inference bridge (2026-06-21 12:10–22:45; **✅ GO**)
 
 **Full fixed-set training passed.** Copied all **17** finalized P1 refs + deterministic captions to
 the ignored fixture; trained Z-Image at 512 px, rank/alpha 16/16, 100 steps, batch 1, bf16,
 gradient-checkpointed qfloat8/Quanto, low-VRAM, plain AdamW 1e-4, no sampling. The real run exited 0
 after **1,600.7 s (~26.7 min)** and produced an **85,094,880-byte** adapter (plus the step-50
 checkpoint), SHA-256
-`BD29BCD70C389E3CA110B0F28D02E12C5982D39F1CC4A2EA9C4D888D49B96E91`.
+`BD29BCD70C389E3CA110B0F28D02E12C5982D39F1CC4A2EA9C4D888D49B96E91`. This was a valid can-run
+artifact but its fixed-seed inference did **not** reproduce the subject (younger/different face;
+ArcFace centroid similarity `-0.067`, base control `-0.016`). **100 steps is not the default.**
+
+**Preset-finding continuation (same run, real resume):** raised only the total-step target; ai-toolkit
+twice discovered the latest final adapter, read step metadata (**100→300→500**), restored
+`optimizer.pt`, kept the exact dataset/network/LR, and exited 0. Aggregate training time was
+**8,097.5 s (~135.0 min)**. The accepted final is **500 steps**, 85,094,896 bytes, SHA-256
+`B84DA64D6E642D18F62950BB522405AC560B101ADA6B4C2A89E46A3CAEB1EA1C`. This also validates the
+upstream checkpoint/optimizer mechanism M2 will wrap (but does not replace M2's queued resume tests).
 
 **Vendored after the GO (R162):** the proven source snapshot landed first at
 `src/trainer/ai-toolkit/`, then byte-identically at app `trainers/ai-toolkit/` (**0 drift across 381
 non-cache/non-weight files**). `LOOM_VENDOR.md` pins upstream/license, every compatibility seam,
-dependency-overlay constraints, artifact evidence, and the still-open check; the exercised preset
+dependency-overlay constraints and artifact evidence; the exercised 500-step preset
 shape is `config/loom_zimage_rocm.example.yaml`. Trainer outputs/state/weights stay ignored, and
 `trainers/` is excluded from the Loom Graphify graph so third-party internals do not swamp the
 application architecture.
@@ -578,14 +587,30 @@ the base model loads, and the resolved path/name/weight + SHA-256 are written in
 Catalog/adapter capability + argv wiring added. Drift guard: stage1 MD5
 `C1E8A3CE273B131D404930BAE38A0BF0`; runner MD5 `F8D20C7FC287BD8863E5FB5B073B5F48`
 across monorepo + both app copies. Verification: Python compile clean; focused LoRA/catalog/adapter
-contracts **32 passed**; full backend **289 passed**.
+contracts **32 passed**; milestone-close full backend **294 passed**.
 
-**⚠ M1 remains open:** the attempted real Diffusers load of the 85 MB adapter, followed by a fixed-
-seed character reproduction generation/visual comparison, was blocked when this session's external-
-execution allowance was exhausted. Training success proves the ROCm gate and most of P2-1, but it
-does **not** prove ai-toolkit's saved key format is accepted by the exact inference pipeline or that
-100 steps reproduces `char01`. Do not stamp `finished`, close M1, or start M2 until that real load +
-generation is green (or the saved-key incompatibility/quality gap is corrected and rerun).
+**Real inference + reproduction acceptance:** the first exact-worker load exposed one integration
+dependency honestly: the shared inference venv lacks PEFT (`ValueError: PEFT backend is required`).
+Per the environment guardrail, it was **not mutated**; the already-isolated overlay (`peft==0.18.1`
+and pinned Diffusers) loaded the adapter successfully. M2 must make that overlay a declared runtime
+dependency before exposing queued LoRA jobs.
+
+The accepted worker run used Z-Image Base, 512², 30 steps, guidance 4, seed `424242`, LoRA weight
+**1.0**, and only the deterministic caption `char01_lw, front view, full body, neutral expression`—
+no explicit age/hair/costume/background/style hints. It exited 0 in **134.49 s**; its manifest records
+the adapter name/weight/path + exact SHA. The output (338,392-byte PNG, SHA-256
+`6BA1CC4D6A9017C6956AE14391F1529BED7DC73D14AE535F53CA0FF22F242E92`) visibly reproduces the older
+silver-haired subject, olive trench coat, stern expression, fluorescent room, and vintage treatment.
+
+**Identity honesty:** InsightFace detected 16/17 refs; their own mean pairwise similarity is `0.537`
+(p10 `0.405`). The final test rises materially over the base control (`centroid -0.016 → 0.263`,
+best-ref `0.044 → 0.300`) but remains below the curated set's cross-view band. Verdict: the LoRA
+reproduces the **whole character concept** and retires the M1 training risk, but it is not a face-lock
+replacement; Loom's existing identity pass remains appropriate where exact facial identity matters.
+
+**✅ M1 COMPLETE.** P2-0 ROCm training GO + P2-1 adapter load/reproduction GO. Default Z-Image
+spike preset frozen at **500 steps / rank-alpha 16/16 / 512 px / bf16 / qfloat8 Quanto / AdamW
+1e-4 / LoRA weight 1.0**. Commit/push + Graphify pre-push refresh pending below.
 
 ---
 

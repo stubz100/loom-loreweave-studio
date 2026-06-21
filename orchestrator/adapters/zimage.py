@@ -39,6 +39,7 @@ WIRED_MODES = ("t2i", "img2img", "inpaint")
 WIRED_PARAMS = (
     "prompt", "mode", "width", "height", "seed", "model_name",
     "num_steps", "guidance_scale", "negative_prompt",
+    "lora_path", "lora_name", "lora_weight",
 )
 
 _MANIFEST_RE = re.compile(r"^\s*Manifest:\s*(.+?)\s*$", re.MULTILINE)

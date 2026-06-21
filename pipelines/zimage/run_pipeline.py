@@ -34,6 +34,9 @@ def run(
     cpu_offload: bool = True,
     dtype: str = "bfloat16",
     attention_backend: str | None = None,
+    lora_path: str | None = None,
+    lora_name: str = "loom_character",
+    lora_weight: float = 1.0,
     mode: str = "t2i",
     init_image: str | None = None,
     mask_image: str | None = None,
@@ -52,6 +55,9 @@ def run(
             region).
         cfg_truncation: zimage-base only; fraction of the schedule (0-1) over
             which CFG is applied. <1.0 lets the final steps run unconditional.
+        lora_path: Optional local Diffusers-compatible LoRA file or directory.
+        lora_name: Adapter name registered in the pipeline.
+        lora_weight: Runtime adapter scale.
 
     Returns the completed PipelineManifest.
     """
@@ -125,7 +131,10 @@ def run(
     # --- Stage 1: Load pipeline ---
     rec = manifest.begin_stage(
         "load_pipeline",
-        stage1_load_pipeline.get_manifest_inputs(model_name, device, cpu_offload, attention_backend, mode),
+        stage1_load_pipeline.get_manifest_inputs(
+            model_name, device, cpu_offload, attention_backend, mode,
+            lora_path, lora_name, lora_weight,
+        ),
     )
     try:
         s1 = stage1_load_pipeline.run(
@@ -135,6 +144,9 @@ def run(
             dtype=dtype,
             attention_backend=attention_backend,
             mode=mode,
+            lora_path=lora_path,
+            lora_name=lora_name,
+            lora_weight=lora_weight,
         )
         manifest.end_stage(
             rec,
@@ -238,7 +250,7 @@ def run(
 # gets the normal per-image PNG + sidecar manifest pair.
 
 _BATCH_SHARED_ONLY = ("mode", "model_name", "dtype", "attention_backend",
-                      "cpu_offload", "device")
+                      "cpu_offload", "device", "lora_path", "lora_name", "lora_weight")
 _BATCH_MODES = ("t2i", "img2img", "inpaint")
 
 
@@ -276,6 +288,9 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
     model_info = ZIMAGE_MODEL_INFO[model_name]
     defaults = model_info["defaults"]
     device = shared.get("device", device)
+    lora_path = shared.get("lora_path")
+    lora_name = shared.get("lora_name", "loom_character")
+    lora_weight = shared.get("lora_weight", 1.0)
 
     out_dir = Path(shared.get("output_dir") or output_dir)
     if not out_dir.is_absolute():
@@ -297,6 +312,8 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
         summary = {
             "kind": "jobs_batch", "schema_version": 1, "pipeline": "zimage",
             "model_name": model_name, "mode": mode, "status": status, "error": error,
+            "lora_path": lora_path, "lora_name": lora_name if lora_path else None,
+            "lora_weight": lora_weight if lora_path else None,
             "count": len(items), "ok": n_ok, "failed": n_fail, "skipped": n_skip,
             "load_duration_s": load_s,
             "total_duration_s": round(time.time() - t0, 4),
@@ -324,6 +341,9 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
             dtype=shared.get("dtype", "bfloat16"),
             attention_backend=shared.get("attention_backend"),
             mode=mode,
+            lora_path=lora_path,
+            lora_name=lora_name,
+            lora_weight=lora_weight,
         )
     except Exception as e:
         _skip_rest(0, "pipeline load failed")
@@ -461,6 +481,22 @@ def main():
         choices=["native_flash", "math", "flash", "_flash_3"],
         help="Attention backend. On ROCm use 'native_flash' or leave unset; avoid 'flash'/'_flash_3'",
     )
+    parser.add_argument(
+        "--lora-path",
+        default=None,
+        help="Local Diffusers-compatible LoRA file or directory to load before generation",
+    )
+    parser.add_argument(
+        "--lora-name",
+        default="loom_character",
+        help="Adapter name used when loading --lora-path",
+    )
+    parser.add_argument(
+        "--lora-weight",
+        type=float,
+        default=1.0,
+        help="Runtime scale for --lora-path (default: 1.0)",
+    )
     # --- B.1 mode + image inputs ---
     parser.add_argument(
         "--mode",
@@ -507,6 +543,9 @@ def main():
         cpu_offload=not args.no_cpu_offload,
         dtype=args.dtype,
         attention_backend=args.attention_backend,
+        lora_path=args.lora_path,
+        lora_name=args.lora_name,
+        lora_weight=args.lora_weight,
         mode=args.mode,
         init_image=args.init_image,
         mask_image=args.mask_image,

@@ -1,6 +1,8 @@
 """Stage 1 — Load Z-Image pipeline (transformer, VAE, Qwen3 text encoder, scheduler)."""
 
+import hashlib
 import time
+from pathlib import Path
 
 import torch
 from diffusers import ZImageImg2ImgPipeline, ZImageInpaintPipeline, ZImagePipeline
@@ -44,6 +46,9 @@ def run(
     dtype: str = "bfloat16",
     attention_backend: str | None = None,
     mode: str = "t2i",
+    lora_path: str | None = None,
+    lora_name: str = "loom_character",
+    lora_weight: float = 1.0,
 ) -> dict:
     """Load the Z-Image pipeline and return it with metadata.
 
@@ -58,6 +63,9 @@ def run(
         mode: One of "t2i" (default), "img2img", "inpaint". Selects the diffusers
             pipeline class. All three modes share the same checkpoint, so model
             download is identical.
+        lora_path: Optional local LoRA file or directory accepted by Diffusers.
+        lora_name: Adapter name registered in the pipeline.
+        lora_weight: Runtime adapter scale.
 
     Returns dict with keys: pipe, model_info, model_name, device, mode, timings.
     """
@@ -70,6 +78,25 @@ def run(
     repo_id = model_info["repo_id"]
     torch_dtype = torch.bfloat16 if dtype == "bfloat16" else torch.float16
     timings: dict[str, float] = {}
+    lora: dict | None = None
+    load_root: Path | None = None
+    load_kwargs: dict = {}
+    if lora_path:
+        path = Path(lora_path).expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"LoRA path does not exist: {path}")
+        if not lora_name.strip():
+            raise ValueError("lora_name must not be empty when lora_path is set")
+        load_root = path.parent if path.is_file() else path
+        load_kwargs = {"adapter_name": lora_name}
+        if path.is_file():
+            load_kwargs["weight_name"] = path.name
+        lora = {
+            "path": str(path),
+            "name": lora_name,
+            "weight": float(lora_weight),
+            "sha256": _sha256(path) if path.is_file() else None,
+        }
 
     t0 = time.time()
     # low_cpu_mem_usage=False is explicitly recommended by the Z-Image model card
@@ -79,6 +106,10 @@ def run(
         torch_dtype=torch_dtype,
         low_cpu_mem_usage=False,
     )
+
+    if load_root is not None:
+        pipe.load_lora_weights(str(load_root), **load_kwargs)
+        pipe.set_adapters(lora_name, adapter_weights=float(lora_weight))
 
     if attention_backend is not None:
         pipe.transformer.set_attention_backend(attention_backend)
@@ -100,8 +131,17 @@ def run(
         "cpu_offload": cpu_offload,
         "dtype": dtype,
         "attention_backend": attention_backend,
+        "lora": lora,
         "timings": timings,
     }
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def get_manifest_inputs(
@@ -110,6 +150,9 @@ def get_manifest_inputs(
     cpu_offload: bool,
     attention_backend: str | None,
     mode: str = "t2i",
+    lora_path: str | None = None,
+    lora_name: str = "loom_character",
+    lora_weight: float = 1.0,
 ) -> dict:
     return {
         "model_name": model_name,
@@ -117,6 +160,9 @@ def get_manifest_inputs(
         "cpu_offload": cpu_offload,
         "attention_backend": attention_backend,
         "mode": mode,
+        "lora_path": lora_path,
+        "lora_name": lora_name if lora_path else None,
+        "lora_weight": lora_weight if lora_path else None,
     }
 
 
@@ -133,6 +179,7 @@ def get_manifest_outputs(result: dict) -> dict:
         "cpu_offload": result["cpu_offload"],
         "dtype": result["dtype"],
         "attention_backend": result["attention_backend"],
+        "lora": result["lora"],
         "timings": result["timings"],
     }
 

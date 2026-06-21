@@ -82,10 +82,15 @@ def test_validate_params_rejects_unknown_type_range_mode():
 
 def test_emit_argv_maps_flags_and_respects_mode():
     argv = mc.emit_argv("zimage", {"cfg_normalization": True, "guidance_scale": 4.0,
-                                   "init_image": "h.png", "strength": 0.5}, "img2img")
+                                   "init_image": "h.png", "strength": 0.5,
+                                   "lora_path": "character.safetensors",
+                                   "lora_name": "char01_lw", "lora_weight": 0.85}, "img2img")
     assert "--cfg-normalization" in argv                       # flag → bare
     assert argv[argv.index("--guidance-scale") + 1] == "4.0"   # value flag
     assert argv[argv.index("--init-image") + 1] == "h.png"     # img2img mode → emitted
+    assert argv[argv.index("--lora-path") + 1] == "character.safetensors"
+    assert argv[argv.index("--lora-name") + 1] == "char01_lw"
+    assert argv[argv.index("--lora-weight") + 1] == "0.85"
     # in t2i the img2img-gated params are skipped
     t2i = mc.emit_argv("zimage", {"init_image": "h.png", "strength": 0.5, "guidance_scale": 4.0}, "t2i")
     assert "--init-image" not in t2i and "--strength" not in t2i

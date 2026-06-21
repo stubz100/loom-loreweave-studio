@@ -73,6 +73,10 @@ invoked); GPU batch smoke verified.
 > → promote into the version → test-gen reproduces it on-model. **P2-0 is a make-or-break front-gate:**
 > does ai-toolkit train on RX 9070 XT / ROCm at all? Spec: [`kb-loom-p2.md`](../../.github/copilot/kb-loom-p2.md),
 > journal: [`kb-loom-p2-imp.md`](../../.github/copilot/kb-loom-p2-imp.md).
+> **M1 complete (2026-06-21):** ai-toolkit trains Z-Image LoRAs on the RX 9070 XT; the accepted
+> fixed-set preset is 500 steps / rank-alpha 16/16 / 512 px / bf16 / qfloat8 Quanto / AdamW 1e-4,
+> and Loom's Z-Image worker loads the result at inference with recorded adapter provenance. Next:
+> **M2 staged queued trainer skeleton**, including the isolated PEFT runtime and real checkpoint resume.
 Spec:
 > [`kb-loom-p1.md`](../../.github/copilot/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:

@@ -610,7 +610,9 @@ replacement; Loom's existing identity pass remains appropriate where exact facia
 
 **✅ M1 COMPLETE.** P2-0 ROCm training GO + P2-1 adapter load/reproduction GO. Default Z-Image
 spike preset frozen at **500 steps / rank-alpha 16/16 / 512 px / bf16 / qfloat8 Quanto / AdamW
-1e-4 / LoRA weight 1.0**. Commit/push + Graphify pre-push refresh pending below.
+1e-4 / LoRA weight 1.0**. **✅ PUSHED `3a391d8`**; pre-push Graphify re-extracted 110/110 code
+files and correctly reported no application-graph delta (`trainers/` is intentionally excluded).
+⏭ Next: **M2 — staged queued trainer skeleton**, beginning with the isolated PEFT/runtime contract.
 
 ---
 

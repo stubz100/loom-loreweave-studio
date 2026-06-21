@@ -175,6 +175,32 @@ def finalize_version(ws: Workspace, asset_id: str,
     return _write_version(vdir, version)
 
 
+def unfinalize_version(ws: Workspace, asset_id: str,
+                       version_id: str | None = None) -> dict:
+    """Unfinalize = UNLOCK a finalized version (user 2026-06-21): re-open it for editing so its
+    curation / refs / casting can be cleaned up. The finalize lock is a declaration of intent,
+    not a hard guarantee — an explicit, deliberate unlock is the author's escape hatch (vs. the
+    deep-duplicate-to-a-new-version path). Idempotent (unlocking an unlocked version is a no-op)."""
+    vdir, version = _resolve_version_dir(ws, asset_id, version_id)
+    if not version.get("finalized"):
+        return version
+    version["finalized"] = False
+    version["saved_at"] = _now()
+    return _write_version(vdir, version)
+
+
+def delete_asset(ws: Workspace, asset_id: str) -> dict:
+    """Delete a whole AssetProfile and ALL its versions (refs, casting, faces, anchors) — the
+    profile directory `assets/<class>/<slug>/` (user 2026-06-21). Project-level out/ generations
+    + lineage edges are left intact (rebuildable; deletable separately). Raises on unknown id."""
+    found = _find_profile(ws, asset_id)
+    if found is None:
+        raise ws_mod.WorkspaceError(f"unknown asset {asset_id!r}")
+    adir, profile = found
+    shutil.rmtree(adir, ignore_errors=True)
+    return {"deleted": True, "id": asset_id, "name": profile.get("name")}
+
+
 def set_active_version(ws: Workspace, asset_id: str, version_id: str) -> dict:
     """Switch the profile's active version (the version selector; everything downstream
     — grids, casting, curation, Stage-B — scopes to it). Returns the updated profile."""

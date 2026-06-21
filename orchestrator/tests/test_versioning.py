@@ -152,6 +152,42 @@ def test_finalize_locks_every_mutator(client):
                         version_id=v2["id"])     # no raise
 
 
+def test_unfinalize_unlocks_a_finalized_version(client):
+    """User 2026-06-21: a finalized version's Curation can't be cleaned up (every mutator is
+    locked). Unfinalize re-opens it for editing — idempotent, and curation mutators work again."""
+    from orchestrator import assets
+    from orchestrator.runner import RUNNER
+    ws = RUNNER.workspace
+    a, jid, names = _rich_asset(ws)
+    v1 = a["active_version"]
+    client.post(f"/assets/{a['id']}/versions/{v1}/finalize")
+    with pytest.raises(ws_mod.WorkspaceError, match="FINALIZED"):
+        assets.keep_ref(ws, a["id"], job_id=jid, source_output=names[2],
+                        coverage_cell=_CELL, version_id=v1)
+    u = client.post(f"/assets/{a['id']}/versions/{v1}/unfinalize")
+    assert u.status_code == 200 and u.json()["finalized"] is False
+    # idempotent
+    assert client.post(f"/assets/{a['id']}/versions/{v1}/unfinalize").json()["finalized"] is False
+    # the previously-locked version is editable again (keep also un-rejects names[2])
+    assets.keep_ref(ws, a["id"], job_id=jid, source_output=names[2],
+                    coverage_cell=_CELL, version_id=v1)        # no raise
+
+
+def test_delete_asset_removes_profile_and_all_versions(client):
+    """User 2026-06-21: delete a whole character (L2 asset) + all its versions. 404 on unknown."""
+    from orchestrator import assets
+    from orchestrator.runner import RUNNER
+    ws = RUNNER.workspace
+    a, _jid, _names = _rich_asset(ws)
+    adir = assets._find_profile(ws, a["id"])[0]
+    assert adir.is_dir()
+    r = client.request("DELETE", f"/assets/{a['id']}")
+    assert r.status_code == 200 and r.json()["deleted"] is True
+    assert not adir.is_dir()
+    assert a["id"] not in {x["id"] for x in client.get("/assets").json()["assets"]}
+    assert client.request("DELETE", f"/assets/{a['id']}").status_code == 404   # now unknown
+
+
 def test_activate_switches_and_validates(client):
     from orchestrator.runner import RUNNER
     ws = RUNNER.workspace

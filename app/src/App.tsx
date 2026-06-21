@@ -6,6 +6,7 @@ import {
   closeProject,
   createAsset,
   createProject,
+  deleteAsset,
   deleteJob,
   deleteOutput,
   estimateFootprint,
@@ -60,6 +61,7 @@ import {
   rejectOutput,
   createVersion,
   finalizeVersion,
+  unfinalizeVersion,
   activateVersion,
   cullRef,
   saveProfile,
@@ -839,6 +841,36 @@ export default function App() {
     }
   };
 
+  // Unlock a finalized version so its curation/refs can be cleaned up (user 2026-06-21: a
+  // finalized version's Curation grid hides every control — the explicit escape hatch).
+  const onUnfinalizeVersion = async () => {
+    if (!activeAsset) return;
+    if (!window.confirm("Unlock this finalized version so you can edit/clean up its curation? "
+                        + "(You can finalize again when you're done.)")) return;
+    setError(null);
+    try {
+      await unfinalizeVersion(activeAsset.id, activeAsset.active_version);
+      await refreshCasting(activeAsset);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  // Delete a whole character (L2 asset) + all its versions (user 2026-06-21). Falls back to the
+  // Sandbox if the deleted character was active.
+  const onDeleteAsset = async (a: AssetSummary) => {
+    if (!window.confirm(`Delete character “${a.name}” and ALL its versions `
+                        + `(curated refs, casting, anchor)? This cannot be undone.`)) return;
+    setError(null);
+    try {
+      await deleteAsset(a.id);
+      if (activeAsset?.id === a.id) onSelectAsset(null);   // back to Sandbox
+      await refreshAssets();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const onSelectAsset = (asset: AssetSummary | null) => {
     setActiveAsset(asset);
     setSelected(null);
@@ -1419,14 +1451,17 @@ export default function App() {
                 ▦ Sandbox <span className="muted">(unscoped)</span>
               </button>
               {assets.map((a) => (
-                <button
-                  key={a.id}
-                  className={`asset-row ${activeAsset?.id === a.id ? "sel" : ""}`}
-                  onClick={() => onSelectAsset(a)}
-                  title={`${a.asset_class} · ${a.version_count} version(s)`}
-                >
-                  <span className="asset-dot" /> {a.name}
-                </button>
+                <div key={a.id} className="asset-row-wrap">
+                  <button
+                    className={`asset-row ${activeAsset?.id === a.id ? "sel" : ""}`}
+                    onClick={() => onSelectAsset(a)}
+                    title={`${a.asset_class} · ${a.version_count} version(s)`}
+                  >
+                    <span className="asset-dot" /> {a.name}
+                  </button>
+                  <button className="asset-del" title="delete this character + all its versions"
+                          onClick={() => void onDeleteAsset(a)}>🗑</button>
+                </div>
               ))}
             </>
           )}
@@ -1489,12 +1524,13 @@ export default function App() {
                 + version
               </button>
               {versionList.find((v) => v.id === activeAsset.active_version)?.finalized ? (
-                <span
-                  className="muted"
-                  title="finalized = locked (R60): immutable — create a new version to change anything"
+                <button
+                  className="ghost"
+                  onClick={() => void onUnfinalizeVersion()}
+                  title="finalized (locked, R60) — click to UNLOCK this version so you can edit / clean up its curation; finalize again when done"
                 >
-                  🔒 finalized
-                </span>
+                  🔒 finalized — unlock 🔓
+                </button>
               ) : (
                 <button
                   className="ghost"

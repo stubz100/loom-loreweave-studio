@@ -1708,6 +1708,26 @@ def create_app() -> FastAPI:
         except ws_mod.WorkspaceError as e:
             raise HTTPException(400, str(e))
 
+    @app.post("/assets/{asset_id}/versions/{version_id}/unfinalize")
+    def unfinalize_version(asset_id: str, version_id: str,
+                           _auth: None = Depends(require_token)) -> dict:
+        """Unlock a finalized version (user 2026-06-21) so its curation/refs/casting can be
+        cleaned up — the explicit escape hatch from the finalize lock. Idempotent. Token-gated."""
+        try:
+            return assets.unfinalize_version(_require_ws(), asset_id, version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+
+    @app.delete("/assets/{asset_id}")
+    def delete_asset(asset_id: str, _auth: None = Depends(require_token)) -> dict:
+        """Delete a whole character/AssetProfile + ALL its versions (refs/casting/faces/anchors)
+        — the profile directory (user 2026-06-21). out/ generations + lineage are left (project-
+        level, rebuildable). 404 on an unknown asset. Token-gated."""
+        try:
+            return assets.delete_asset(_require_ws(), asset_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
     @app.post("/assets/{asset_id}/versions/activate")
     def activate_version(asset_id: str, req: ActivateVersionRequest,
                          _auth: None = Depends(require_token)) -> dict:

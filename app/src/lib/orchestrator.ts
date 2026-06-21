@@ -583,6 +583,26 @@ export async function finalizeVersion(assetId: string, versionId: string): Promi
   return await res.json();
 }
 
+/** Unlock a finalized version so its curation/refs/casting can be edited again. Idempotent. */
+export async function unfinalizeVersion(assetId: string, versionId: string): Promise<ProfileVersion> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/versions/${encodeURIComponent(versionId)}/unfinalize`, {
+    method: "POST",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`unfinalize ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+/** Delete a whole character/AssetProfile + ALL its versions (refs/casting/anchors). */
+export async function deleteAsset(assetId: string): Promise<{ deleted: boolean; id: string; name?: string }> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${encodeURIComponent(assetId)}`, {
+    method: "DELETE",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`delete asset ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
 /** Switch the profile's active version — everything downstream scopes to it. */
 export async function activateVersion(assetId: string, versionId: string):
     Promise<{ active_version: string }> {

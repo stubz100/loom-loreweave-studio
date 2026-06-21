@@ -89,6 +89,15 @@ body {
 }
 .asset-row:hover { background: rgba(255,255,255,0.05); }
 .asset-row.sel { background: rgba(224,164,75,0.15); color: var(--amber); }
+/* character row + a hover-revealed delete (the row stays a full-width selectable button). */
+.asset-row-wrap { position: relative; }
+.asset-row-wrap .asset-row { padding-right: 24px; }
+.asset-del { position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent;
+  color: var(--muted); font-size: 12px; line-height: 1; cursor: pointer; opacity: 0;
+  transition: opacity 0.1s; }
+.asset-row-wrap:hover .asset-del { opacity: 1; }
+.asset-del:hover { background: var(--err); color: #fff; }
 .asset-row.sandbox { color: var(--muted); border-bottom: 1px solid var(--line); border-radius: 0; padding-bottom: 7px; }
 .asset-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); margin-right: 4px; }
 

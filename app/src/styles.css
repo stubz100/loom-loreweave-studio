@@ -142,8 +142,10 @@ body {
   border: 1px solid var(--line); border-radius: 4px; font-size: 12px; }
 
 /* Pass 2 — Visual Styles as a TILE GRID + an expand-to-edit detail panel with a live preview. */
-.style-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
-  gap: 8px; margin-bottom: 14px; }
+/* FIXED-width tiles (not 1fr) so they stay small + never resize when a tile is selected and the
+   detail panel opens below (which can toggle the scrollbar → reflow). Leftover row space is empty. */
+.style-tiles { display: grid; grid-template-columns: repeat(auto-fill, 108px);
+  justify-content: start; gap: 8px; margin-bottom: 14px; }
 .style-tile { display: flex; flex-direction: column; gap: 4px; padding: 0; cursor: pointer;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
   text-align: left; color: var(--text); }
@@ -466,7 +468,7 @@ a.ghost { text-decoration: none; display: inline-block; }
 .view-tab.on { background: var(--amber); color: #1a1a1a; border-color: var(--amber); font-weight: 600; }
 /* M0b — extra right padding so the cards don't butt against the scrollbar (the block scrolls
    internally; max-width keeps it well clear of the inspector). */
-.world { max-width: 760px; padding: 6px 16px 6px 4px; overflow-y: auto; }
+.world { max-width: 760px; padding: 6px 16px 6px 4px; overflow-y: auto; scrollbar-gutter: stable; }
 .world-sec { margin: 14px 0; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .world-sec h3 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }
 .world-sec h3 .muted { font-weight: 400; font-size: 11px; }

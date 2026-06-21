@@ -451,11 +451,15 @@ image at ×2 / inherited prompt / cn_scale; sd35-fixed + medium-only + explicit-
 **284 backend tests** (280→+4), green; `tsc --noEmit` + `vite build` clean. **No `src/pipeline/` worker
 code touched → no re-vendor.**
 
-**✅ M0e COMPLETE (Parts A + B + C).** ⚠ Visual sign-off owed on the running app (the dev 512² default in
-the cast drawer; the i2i output-size row on Clean/Refine; the `Upscale ✨` tile-CN preset — needs the
-`InstantX/SD3-Controlnet-Tile` weight fetched on first use). ⚠ Rig run owed to confirm a real flux.2-dev
-512² → tile-CN upscale loop end-to-end on ROCm. ⏭ Next: **M1** training spike — the **P2-0 ROCm go/no-go
-front-gate** (does ai-toolkit train on RX 9070 XT / ROCm at all?).
+**✅ M0e COMPLETE (Parts A + B + C). PUSHED `1ce1540`** (single commit — A+B+C + spec/journal + tests).
+**Tile-CN weight verified present on the rig (2026-06-21):** the author fetched
+`InstantX/SD3-Controlnet-Tile` into `F:\HF_HOME\hub` (snapshot `48005f2…`, blobs ~1.19 GB incl. the real
+`diffusion_pytorch_model.safetensors`); `components.postproc_weights_status("sd35_tile_cn")` → `True` and
+the paired `sd3.5-medium` base `image_model_present` → `True`, so the `Upscale ✨` 412 pre-flight passes.
+⚠ Visual sign-off still owed on the running app (the dev 512² default in the cast drawer; the i2i
+output-size row on Clean/Refine; the `Upscale ✨` tile-CN preset). ⚠ Rig run owed to confirm a real
+flux.2-dev 512² → tile-CN upscale loop end-to-end on ROCm. ⏭ Next: **M1** training spike — the **P2-0
+ROCm go/no-go front-gate** (does ai-toolkit train on RX 9070 XT / ROCm at all?).
 
 ---
 

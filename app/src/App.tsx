@@ -7,6 +7,7 @@ import {
   createAsset,
   createProject,
   deleteJob,
+  deleteOutput,
   estimateFootprint,
   fetchComponents,
   forgetProject,
@@ -313,13 +314,27 @@ export default function App() {
   // Delete a finished generation + all its files (orchestrator-owned, atomic — no
   // orphaned manifest/log). A persistent gallery of past generations is the P1 casting
   // grid; this is just the safe per-image cull (R44 cull, P0-lite).
-  const onDelete = async (id: string) => {
-    if (!window.confirm("Delete this generation and all its files? This cannot be undone.")) return;
+  // Delete a tile. A multi-output job (a multi-cast pool / Stage-B batch) deletes just THIS
+  // image (the rest of the pool stays); a single-output tile deletes the whole generation
+  // (user 2026-06-21: whole-job delete was nuking the whole batch — make it strictly individual).
+  const onDeleteCell = async (job?: Job, output?: string, cellKey?: string) => {
+    if (!job) return;
+    const names = job.result?.output_names;
+    const perImage = !!names && names.length > 1 && !!output;
+    const msg = perImage
+      ? "Delete this image? The rest of the batch is kept."
+      : "Delete this generation and all its files? This cannot be undone.";
+    if (!window.confirm(msg)) return;
     try {
-      await deleteJob(id);
-      log.info("deleted generation:", id);
-      setBatchIds((prev) => prev.filter((b) => b !== id));
-      if (selected === id) setSelected(null);
+      if (perImage) {
+        await deleteOutput(job.id, output!);
+        log.info("deleted output:", output);
+      } else {
+        await deleteJob(job.id);
+        log.info("deleted generation:", job.id);
+        setBatchIds((prev) => prev.filter((b) => b !== job.id));
+      }
+      if (selected === cellKey || selected === job.id) setSelected(null);
     } catch (e) {
       log.error("delete failed:", e);
       setError(String(e));
@@ -2094,7 +2109,7 @@ export default function App() {
                 onClick={() => setSelected(c.key)}
                 onView={(src) => setViewer(src)}
                 onCancel={() => c.job && onCancel(c.job.id)}
-                onDelete={() => c.job && onDelete(c.job.id)}
+                onDelete={() => onDeleteCell(c.job, c.output, c.key)}
                 castable={!!activeAsset && stage === "A"}
                 isHero={!!c.output && starredOutputs.has(c.output)}
                 onStar={() => c.job && onStar(c.job.id, c.output)}
@@ -2485,13 +2500,28 @@ function GridCell({
           ✕
         </button>
       )}
-      {terminal && (
+      {terminal && !(curating && isKept) && (
         <button
           className="delete"
           title="delete this generation + its files"
           onClick={(e) => {
             e.stopPropagation();
             onDelete();
+          }}
+        >
+          🗑
+        </button>
+      )}
+      {/* Stage-C: a kept tile (incl. a durable ref whose source generation was deleted) gets an
+          explicit 🗑 REMOVE-FROM-CURATION — culls it from the ref set + deletes the curated copy.
+          (user 2026-06-21: a curated image had "no un-select or delete" once its source was gone.) */}
+      {curable && isKept && onCull && (
+        <button
+          className="delete cull-remove"
+          title="remove from the curated set (deletes this curated copy)"
+          onClick={(e) => {
+            e.stopPropagation();
+            onCull();
           }}
         >
           🗑

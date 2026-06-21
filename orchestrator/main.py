@@ -2382,6 +2382,24 @@ def create_app() -> FastAPI:
         GUARD.refresh()   # usage dropped — refresh the dock meter immediately (M6)
         return {"job_id": job_id, "deleted": True}
 
+    @app.delete("/jobs/{job_id}/output")
+    def delete_job_output(job_id: str, output: str,
+                          _auth: None = Depends(require_token)) -> dict:
+        """Delete **one** output image of a multi-output job (a `multi`-cast candidate or a
+        Stage-B batch tile) — strictly individual, leaving the rest of the pool intact (user
+        2026-06-21). When `output` is the job's last/only image, the whole job is removed (same
+        effect as DELETE /jobs/{id}). 409 if the job is unknown/not finished; 404 if `output`
+        isn't one of its outputs. Token-gated. `output` is the out/-relative name."""
+        res = RUNNER.delete_output(job_id, output)
+        if res == "missing":
+            job = RUNNER.get(job_id)
+            if job is None or job.get("status") not in ("done", "failed", "canceled"):
+                raise HTTPException(409, f"job {job_id!r} is unknown or not finished — cancel a "
+                                         "running/queued job before deleting")
+            raise HTTPException(404, f"{output!r} is not an output of job {job_id!r}")
+        GUARD.refresh()
+        return {"job_id": job_id, "output": output, "outcome": res}
+
     @app.get("/capabilities")
     def capabilities() -> dict:
         """Declared adapter contract — modes/params/presence (§8). Drives the UI."""

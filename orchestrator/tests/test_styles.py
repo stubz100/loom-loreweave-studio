@@ -52,6 +52,18 @@ def test_add_edit_delete_and_set_active(client):
     assert d.json()["active_style_id"] in {x["id"] for x in d.json()["styles"]}
 
 
+def test_new_style_lands_at_the_top(client):
+    """User 2026-06-21: a freshly added style should appear at the TOP of the list (ready to
+    edit), not appended at the bottom. The active default is unchanged by an add."""
+    before = client.get("/bible/styles").json()
+    default_id = before["active_style_id"]
+    a = client.post("/bible/styles", json={"name": "Noir", "fragment": "b&w"}).json()
+    assert a["styles"][0]["name"] == "Noir"          # newest first
+    b = client.post("/bible/styles", json={"name": "Watercolor"}).json()
+    assert [s["name"] for s in b["styles"][:2]] == ["Watercolor", "Noir"]
+    assert b["active_style_id"] == default_id          # add doesn't change the default
+
+
 def test_cannot_delete_last_style(client):
     s = client.get("/bible/styles").json()
     only = s["styles"][0]["id"]

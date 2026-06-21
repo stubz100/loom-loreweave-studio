@@ -91,6 +91,43 @@ def test_delete_last_queued_clears_pause(client):
     assert st["paused"] is False and st["pause_reason"] is None
 
 
+def test_delete_single_output_keeps_the_rest_then_whole_job(client):
+    """User 2026-06-21: deleting a multi-output tile (a multi-cast candidate / Stage-B batch
+    image) must remove ONLY that image, leaving the pool intact; the whole job is dropped only
+    when its last output goes. DELETE /jobs/{id}/output."""
+    from orchestrator.runner import RUNNER
+    RUNNER.pause()
+    out = RUNNER.workspace.out_dir
+    jid = RUNNER.submit(pipeline="zimage", mode="t2i", params={"prompt": "x"},
+                        batch_id="bat_del", index=0, batch_size=1)
+    names = [f"{jid}/a.png", f"{jid}/b.png"]
+    for n in names:
+        p = out / n
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x89PNG\r\n\x1a\n")
+        p.with_suffix(".json").write_text("{}", encoding="utf-8")
+    RUNNER.jobs[jid]["status"] = "done"
+    RUNNER.jobs[jid]["result"] = {"ok": True, "output_names": names, "output_name": names[0],
+                                  "output_meta": {names[0]: {"seed": 1}, names[1]: {"seed": 2}}}
+    # delete the first image → its file (+ sidecar) gone, the other stays, job survives pruned
+    r = client.request("DELETE", f"/jobs/{jid}/output", params={"output": names[0]})
+    assert r.status_code == 200 and r.json()["outcome"] == "output", r.text
+    assert not (out / names[0]).exists() and not (out / names[0]).with_suffix(".json").exists()
+    assert (out / names[1]).exists()
+    job = client.get(f"/jobs/{jid}").json()
+    assert job["result"]["output_names"] == [names[1]]
+    assert names[0] not in (job["result"].get("output_meta") or {})
+    assert job["result"]["output_name"] == names[1]
+    # an unknown output → 404, the job is untouched
+    assert client.request("DELETE", f"/jobs/{jid}/output",
+                          params={"output": f"{jid}/nope.png"}).status_code == 404
+    # deleting the last remaining output drops the WHOLE job (+ its dir)
+    r2 = client.request("DELETE", f"/jobs/{jid}/output", params={"output": names[1]})
+    assert r2.status_code == 200 and r2.json()["outcome"] == "job"
+    assert client.get(f"/jobs/{jid}").status_code == 404
+    assert not (out / jid).exists()
+
+
 # --- multi per-candidate progress -------------------------------------------------
 
 def test_multi_make_progress_counts_candidates():

@@ -654,6 +654,51 @@ class JobRunner:
         LOG.info("deleted %s + all artifacts", job_id)
         return True
 
+    def delete_output(self, job_id: str, output: str) -> str:
+        """Delete a **single** output image of a terminal MULTI-output job (a `multi`-cast
+        candidate or a Stage-B batch tile) — strictly individual deletion, leaving the rest of
+        the pool intact (user 2026-06-21: whole-job delete was nuking the whole batch). Prunes
+        the file + sidecar from `out/`, drops the name from `result.output_names`/`output_meta`/
+        `partial_outputs`, and persists. When it's the job's **last/only** output, the whole job
+        is removed (→ `delete()`). Returns `"output"` | `"job"` | `"missing"` (unknown job /
+        not-terminal / `output` not one of its outputs)."""
+        with self._cv:
+            job = self.jobs.get(job_id)
+            if job is None or job["status"] not in ("done", "failed", "canceled"):
+                return "missing"
+            res = job.get("result") or {}
+            names = list(res.get("output_names")
+                         or ([res["output_name"]] if res.get("output_name") else []))
+            if output not in names:
+                return "missing"
+            remaining = [n for n in names if n != output]
+            if not remaining:                      # last/only output → drop the whole job
+                drop_whole = True
+            else:
+                drop_whole = False
+                res["output_names"] = remaining
+                meta = res.get("output_meta")
+                if isinstance(meta, dict):
+                    meta.pop(output, None)
+                if res.get("output_name") == output:
+                    res["output_name"] = remaining[0]
+                job["partial_outputs"] = [p for p in (job.get("partial_outputs") or [])
+                                          if p != output]
+                self._persist_locked()
+            ws = self._ws
+        if drop_whole:
+            self.delete(job_id)                    # handles rmtree + log + lineage + persist
+            return "job"
+        if ws is not None:                         # prune just this image + its sidecar manifest
+            try:
+                f = (ws.out_dir / output)
+                f.unlink(missing_ok=True)
+                f.with_suffix(".json").unlink(missing_ok=True)
+            except OSError as e:
+                _warn(f"could not remove output {output} of {job_id}: {e}")
+        LOG.info("deleted output %s of %s (%d remain)", output, job_id, len(remaining))
+        return "output"
+
     @staticmethod
     def _kill_tree(proc: subprocess.Popen, grace_s: float = 5.0, job_handle=None) -> None:
         """Kill the worker and ALL its descendants. `multi`/`flux2` do GPU work in a

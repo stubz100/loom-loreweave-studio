@@ -173,12 +173,14 @@ def set_style(ws: Workspace, *, fragment: str | None = None,
 
 def add_style(ws: Workspace, *, name: str, fragment: str = "",
               global_negative: str = "") -> dict:
-    """Append a new named style to the collection. Returns the full styles view."""
+    """Add a new named style at the **TOP** of the collection (user 2026-06-21: a fresh style
+    should be front-and-centre to start editing, not buried at the bottom). Does NOT change the
+    active default. Returns the full styles view."""
     if not (name and name.strip()):
         raise ws_mod.WorkspaceError("style name must not be empty")
     story = load_story(ws)
-    story["styles"].append({"id": new_id("sty"), "name": name.strip(),
-                            "fragment": fragment, "global_negative": global_negative})
+    story["styles"].insert(0, {"id": new_id("sty"), "name": name.strip(),
+                               "fragment": fragment, "global_negative": global_negative})
     _save(ws, story)
     return list_styles(ws)
 

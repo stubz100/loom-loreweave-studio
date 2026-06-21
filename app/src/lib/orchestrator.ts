@@ -1109,6 +1109,17 @@ export async function deleteJob(id: string): Promise<void> {
   if (!res.ok) throw new Error(`delete ${res.status}: ${await res.text()}`);
 }
 
+/** Delete ONE output image of a multi-output job (a multi-cast candidate or a Stage-B batch
+ * tile) — strictly individual, the rest of the pool stays. The whole job is removed only when
+ * this was its last/only output. `output` is the out/-relative name. */
+export async function deleteOutput(jobId: string, output: string): Promise<void> {
+  const res = await fetch(
+    `${orchestratorUrl()}/jobs/${encodeURIComponent(jobId)}/output?output=${encodeURIComponent(output)}`,
+    { method: "DELETE", headers: { "X-Loom-Token": orchestratorToken() } },
+  );
+  if (!res.ok) throw new Error(`delete output ${res.status}: ${await res.text()}`);
+}
+
 async function queueControl(action: "pause" | "unpause"): Promise<QueueState> {
   const res = await fetch(`${orchestratorUrl()}/queue/${action}`, {
     method: "POST",

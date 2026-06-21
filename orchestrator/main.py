@@ -567,7 +567,8 @@ def _postproc_target_dims(src_dims: tuple[int, int], params_in: dict) -> tuple[i
 def _validate_postproc_size(params: dict) -> None:
     """M0e Part B — validate an optional postproc OUTPUT size on a step's params. `width`/`height`:
     int multiple of 16 in [256, 2048], set together (an explicit pair); `scale`: number in
-    [1.0, 4.0]. Raises HTTPException(422) on a bad value. Absent keys = preserve source dims."""
+    [0.25, 4.0] (≥1 enlarges, <1 reduces — e.g. ×0.5/×0.75; `_round16` clamps to the 256 floor).
+    Raises HTTPException(422) on a bad value. Absent keys = preserve source dims."""
     for dim in ("width", "height"):
         if dim in params:
             v = params[dim]
@@ -579,8 +580,8 @@ def _validate_postproc_size(params: dict) -> None:
         raise HTTPException(422, "postproc width and height must be set together (or use scale)")
     if "scale" in params:
         s = params["scale"]
-        if not isinstance(s, (int, float)) or isinstance(s, bool) or not (1.0 <= float(s) <= 4.0):
-            raise HTTPException(422, f"postproc scale must be a number in [1.0, 4.0] (got {s!r})")
+        if not isinstance(s, (int, float)) or isinstance(s, bool) or not (0.25 <= float(s) <= 4.0):
+            raise HTTPException(422, f"postproc scale must be a number in [0.25, 4.0] (got {s!r})")
 
 
 @asynccontextmanager

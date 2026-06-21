@@ -3085,6 +3085,8 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
     <div className="pp-size" title="output size (creative upscale): a scale factor over the source, or an explicit W×H (both required, ÷16). Blank = keep the source size.">
       <select value={scale} onChange={(e) => setScale(e.target.value)}
               disabled={outW.trim() !== "" || outH.trim() !== ""}>
+        <option value="0.5">×0.5 (reduce)</option>
+        <option value="0.75">×0.75 (reduce)</option>
         <option value="">size: source</option>
         <option value="1.5">×1.5</option>
         <option value="2">×2</option>

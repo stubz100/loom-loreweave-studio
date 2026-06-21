@@ -101,14 +101,20 @@ def _last_step_id(resp, base):
 
 
 def test_i2i_step_output_size_scale_and_explicit(client):
-    """M0e Part B: a Clean/Refine step can UPSCALE — a scale factor over the source dims, or an
-    explicit W×H. The fake base reads as the 1024² fallback, so ×2 → 2048²; explicit wins; no
-    override → source dims preserved (today's behaviour)."""
+    """M0e Part B: a Clean/Refine step can resize — a scale factor over the source dims (enlarge
+    OR reduce), or an explicit W×H. The fake base reads as the 1024² fallback, so ×2 → 2048² and
+    ×0.5 → 512²; explicit wins; no override → source dims preserved (today's behaviour)."""
     base = _base_image()
     sid = _last_step_id(client.post("/postproc/step",
                         json={"base": base, "preset": "clean", "params": {"scale": 2}}), base)
     d = client.post(f"/postproc/step/{sid}/queue", json={"dry_run": True}).json()
     assert d["params"]["width"] == 2048 and d["params"]["height"] == 2048
+    # reduce: ×0.5 over the 1024² fallback → 512²
+    baseR = _base_image("job_baseR/base.png")
+    sidR = _last_step_id(client.post("/postproc/step",
+                         json={"base": baseR, "preset": "refine", "params": {"scale": 0.5}}), baseR)
+    dR = client.post(f"/postproc/step/{sidR}/queue", json={"dry_run": True}).json()
+    assert dR["params"]["width"] == 512 and dR["params"]["height"] == 512
     base2 = _base_image("job_base02/base.png")
     sid2 = _last_step_id(client.post("/postproc/step",
                          json={"base": base2, "preset": "refine",
@@ -123,7 +129,7 @@ def test_i2i_step_output_size_scale_and_explicit(client):
 
 
 def test_i2i_output_size_validation_and_flux2_rejects_size(client):
-    """M0e Part B: width/height must be ÷16 ints in range & set together; scale in [1,4]. flux2
+    """M0e Part B: width/height must be ÷16 ints in range & set together; scale in [0.25, 4]. flux2
     i2i (re-pose at source dims) does NOT accept an output size (not in its allowed param set)."""
     base = _base_image()
 
@@ -132,7 +138,8 @@ def test_i2i_output_size_validation_and_flux2_rejects_size(client):
                            json={"base": base, "preset": "clean", "params": params}).status_code
     assert bad({"width": 1000, "height": 1000}) == 422   # not ÷16
     assert bad({"width": 1024}) == 422                    # height missing (pair)
-    assert bad({"scale": 8}) == 422                       # scale out of [1,4]
+    assert bad({"scale": 8}) == 422                       # scale above max
+    assert bad({"scale": 0.1}) == 422                     # scale below min (0.25)
     assert bad({"width": 100, "height": 112}) == 422      # below min 256
     # flux2 i2i rejects the size params entirely (zimage/sd35 only)
     assert client.post("/postproc/step",

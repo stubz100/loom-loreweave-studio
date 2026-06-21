@@ -419,6 +419,10 @@ sends `width`+`height` (both typed) else `scale`; the step-attrs line shows `×N
 `test_postproc_stack.py` (**+2** — scale ×2 → 2048², explicit W×H wins, no-override = source dims;
 validation 422s for not-÷16 / unpaired / out-of-range scale / below-min, and flux2 rejecting size).
 **280 backend tests** (278→+2), green; `tsc --noEmit` clean. No `src/pipeline/` → no re-vendor.
+- **Refinement (2026-06-21, user-found, ✅ PUSHED `4705a90`):** the scale select offered only ENLARGE
+  (×1.5/×2/×4); added **reduce** presets ×0.5 / ×0.75 (dropdown now ×0.5 · ×0.75 · size: source ·
+  ×1.5 · ×2 · ×4). `_validate_postproc_size` floor `1.0 → 0.25` (reductions pass; `_round16` still
+  clamps to 256); `_postproc_target_dims` already handled `<1.0`. +1 reduce test + a below-floor 422.
 
 **Part C — dedicated `Upscale ✨` preset (SD3.5 Tile ControlNet) (finished 2026-06-21 08:15).** The
 structure-preserving high-ratio upscale the i2i resize can't match. ⭐ Key finding: the sd35 worker
@@ -463,7 +467,214 @@ ROCm go/no-go front-gate** (does ai-toolkit train on RX 9070 XT / ROCm at all?).
 
 ---
 
+## Pre-M1 codebase + plan review — 2026-06-21 10:49
+
+**Scope:** reread the application description/roadmap, P0/P1/P2 specs and journals, and the P3–P6
+forward dependencies; mapped the current code with the fresh local Graphify graph; then inspected the
+workspace/record, queue/recovery, adapter, lineage, component/weight, postprocess, Tauri, and React
+surfaces against the P2 contract. The working tree started clean at `ec2519c`, tracking
+`origin/main`; `core.hooksPath=.githooks` and the pre-push Graphify refresh are installed.
+
+**Verdict: ✅ ON PLAN for P2/M1.** No architectural deviation or missing P0/P1 contract requires a
+redesign before training. The intended next milestone is **P2/M1** (the request's `P1/M1` is treated
+as a phase-number typo): P1 is functionally closed, M0a–M0e are landed, and both the P2 spec and this
+journal name the ai-toolkit ROCm gate/spike as next. The current spine is the planned one: files are
+the source of truth; orchestrator-owned atomic writes + JSON schemas; one durable workspace-bound GPU
+queue; normalized subprocess adapters; per-output lineage/provenance; Saved-unfinalized profile
+versions carrying self-contained curated refs + frozen coverage cells.
+
+**Evidence:**
+- backend: **284/284 tests passed** via `Invoke-RtkPytest.ps1` / RTK;
+- frontend: `tsc && vite build` clean (33 modules, production bundle emitted);
+- desktop shell: `cargo check --locked` clean;
+- Graphify: current code-only graph = **2,216 nodes / 3,780 edges**, benchmarked at **14.6×** less
+  context per representative query; exact-source checks matched its ownership/call-flow hints;
+- hardware baseline: shared venv reports **torch 2.9.1+rocm7.2.1**, HIP **7.2.53211**, one
+  **AMD Radeon RX 9070 XT**.
+
+**Findings / guardrails before and during P2:**
+1. **M1 remains a genuine red front-gate, not a paper exercise.** Current upstream ai-toolkit
+   (`ostris/ai-toolkit` commit `548a286`, MIT) now explicitly supports `Tongyi-MAI/Z-Image`, but its
+   official installation requirement still says **NVIDIA GPU** and documents CUDA wheels only. It
+   has no claimed Windows-ROCm path. The shared ROCm venv also lacks ai-toolkit's key training deps
+   (`optimum-quanto`, `peft`, `lycoris-lora`, `torchao`, `bitsandbytes`), while the upstream full
+   requirements resolver would try to install ordinary Windows **torch 2.12.1/CUDA-oriented**
+   packages and replace several versions used by working inference. **Guardrail:** test from the
+   pinned shallow research clone with an isolated dependency overlay first; do not mutate the known-
+   good shared ROCm stack or vendor 42 MB of trainer code until the can-run gate is green.
+2. **`resumable=true` is only a recovery marker today.** The queue correctly changes an interrupted
+   resumable job back to queued, but it has no checkpoint discovery/`--resume` handoff yet. This is
+   **not a deviation**: P2-10 explicitly belongs to M2. M2 must add a trainer-specific submission
+   shape (rather than merely flipping the boolean), checkpoint cadence, latest-valid-checkpoint
+   discovery, and a restart test.
+3. **Training-context provenance has one early watch item.** Curated refs durably retain coverage,
+   source job/output, pipeline, method, and seed, but not the selected L1 `style_id`; deleting the
+   source queue job can therefore erase the exact style selection needed by P2-13's
+   `training_context.json`. Preserve the resolved style id/snapshot at curation time before M3/M6
+   writes graph-ready training facts. This is a small additive schema/provenance correction, not a
+   blocker for the M1 fixed-dataset spike.
+4. **Complexity pressure, not a contract failure:** `App.tsx` is 3,378 lines and `main.py` is 2,439.
+   M1 is no-UI and should not refactor them. Starting with M2, put training records/services/endpoints
+   and Train-panel UI in dedicated modules/components instead of adding another feature family to
+   either monolith.
+5. **Owed rig/visual checks remain explicit and non-blocking:** formal P1 A–H rig acceptance plus
+   M0d/M0e visual/upscale checks are still open. This matches the recorded author decision to move
+   into P2 in parallel; it is not hidden acceptance debt. Run them before a later milestone depends
+   on their visual quality, not as a prerequisite for the trainer can-run probe.
+
+**Review close:** proceed with **P2-0 first** (minimum ai-toolkit import/model-load/backward/optimizer
+probe on ROCm), and only on GO continue P2-1 (fixed P1 ref set → short Z-Image LoRA → inference
+load/reproduction). If any ROCm-only patch is required, keep it minimal, comment it as a pinned
+upstream deviation, and record it before vendoring.
+
+---
+
+## M1 — ai-toolkit ROCm gate + fixed-dataset training spike (P2-0/P2-1)
+
+started: 2026-06-21 10:50
+finished:
+
+### P2-0 — ROCm can-run gate (2026-06-21 11:05–12:08; **✅ GO**)
+
+**Pinned input/runtime:** `ostris/ai-toolkit` commit
+`548a286992261fbef40c380e82495d21fd3bca86` (2026-06-19, MIT), exercised from an ignored clone +
+isolated dependency overlay. The known-good shared runtime remained unchanged:
+`torch 2.9.1+rocm7.2.1`, HIP 7.2, RX 9070 XT, cached `Tongyi-MAI/Z-Image` weights.
+
+**Probe fixture:** one real P1 `stubz001/char01/v1_base` curated ref, deterministic `char01_lw`
+caption, rank/alpha 4/4, one step, batch 1, 256 bucket, bf16, gradient checkpointing, qfloat8 Quanto,
+low-VRAM, plain AdamW, sampling disabled. It loaded + quantized Z-Image, attached **240 LoRA
+modules**, cached the ref, completed forward/backward/optimizer (`loss=.4859` on the clean rerun),
+saved a loadable-shape **21.3 MB / 480-tensor** adapter, cleaned up, and exited **0 in 37 s**.
+SHA-256: `3C8446F94DC6AC0769227E6CAD3DE71DE53285FF612A7C78DB10DEDA407299C9`.
+
+**Minimal Windows-ROCm compatibility patch (now vendor-recorded):** NumPy 1.26.4 beside upstream
+SciPy 1.12; TorchAO optional (qfloat8 remains optimum-quanto); bitsandbytes absent + AdamW; pinned
+Diffusers FSDP imports optional for single-GPU; `AI_TOOLKIT_MINIMAL_ZIMAGE=1` registers only
+`sd_trainer` + `ZImageModel`; missing `torch.distributed.is_initialized` cleanup predicate supplied.
+These are eager-import/cleanup seams, not changes to the training algorithm. **Gate verdict: GO.**
+
+### P2-1 — fixed 17-ref training + inference bridge (2026-06-21 12:10–15:41; **IN PROGRESS**)
+
+**Full fixed-set training passed.** Copied all **17** finalized P1 refs + deterministic captions to
+the ignored fixture; trained Z-Image at 512 px, rank/alpha 16/16, 100 steps, batch 1, bf16,
+gradient-checkpointed qfloat8/Quanto, low-VRAM, plain AdamW 1e-4, no sampling. The real run exited 0
+after **1,600.7 s (~26.7 min)** and produced an **85,094,880-byte** adapter (plus the step-50
+checkpoint), SHA-256
+`BD29BCD70C389E3CA110B0F28D02E12C5982D39F1CC4A2EA9C4D888D49B96E91`.
+
+**Vendored after the GO (R162):** the proven source snapshot landed first at
+`src/trainer/ai-toolkit/`, then byte-identically at app `trainers/ai-toolkit/` (**0 drift across 381
+non-cache/non-weight files**). `LOOM_VENDOR.md` pins upstream/license, every compatibility seam,
+dependency-overlay constraints, artifact evidence, and the still-open check; the exercised preset
+shape is `config/loom_zimage_rocm.example.yaml`. Trainer outputs/state/weights stay ignored, and
+`trainers/` is excluded from the Loom Graphify graph so third-party internals do not swamp the
+application architecture.
+
+**Inference bridge wired monorepo-first + byte-identical:** Z-Image now accepts
+`--lora-path/--lora-name/--lora-weight` in single and batch modes. Full-file paths are normalized to
+Diffusers directory + `weight_name`, adapters are explicitly named/scaled, missing files fail before
+the base model loads, and the resolved path/name/weight + SHA-256 are written into stage provenance.
+Catalog/adapter capability + argv wiring added. Drift guard: stage1 MD5
+`C1E8A3CE273B131D404930BAE38A0BF0`; runner MD5 `F8D20C7FC287BD8863E5FB5B073B5F48`
+across monorepo + both app copies. Verification: Python compile clean; focused LoRA/catalog/adapter
+contracts **32 passed**; full backend **289 passed**.
+
+**⚠ M1 remains open:** the attempted real Diffusers load of the 85 MB adapter, followed by a fixed-
+seed character reproduction generation/visual comparison, was blocked when this session's external-
+execution allowance was exhausted. Training success proves the ROCm gate and most of P2-1, but it
+does **not** prove ai-toolkit's saved key format is accepted by the exact inference pipeline or that
+100 steps reproduces `char01`. Do not stamp `finished`, close M1, or start M2 until that real load +
+generation is green (or the saved-key incompatibility/quality gap is corrected and rerun).
+
+---
+
 ## P2-era fixes (non-milestone)
+
+### Styles add-to-top · individual image deletion · remove-from-curation (2026-06-21, user-found)
+
+Three UX bugs/inconveniences the author reported after M0e. Fixed as **Pass 1** of two (the bigger
+**Visual-Styles tiles + enlarge + per-style preview-generation** redesign is **Pass 2 — DEFERRED**,
+author's call 2026-06-21: quick fixes first; the persistent per-style **sample image** model is agreed).
+286 backend tests (284→+2); `tsc` + `vite build` clean. **✅ PUSHED `ede3903`** (code only — this
+journal entry rides the next journal commit; the parallel LoRA/trainer workstream is not in it).
+
+- **(A) New visual style lands at the TOP** (`bible.add_style` `append`→`insert(0, …)`). The author
+  wanted a fresh style front-and-centre to edit immediately, not buried at the bottom; the add does NOT
+  change the active default. +1 test (`test_styles.test_new_style_lands_at_the_top`).
+- **(B) Image deletion is now strictly INDIVIDUAL.** Root cause: the grid 🗑 called `deleteJob(c.job.id)`
+  → `RUNNER.delete` → `shutil.rmtree(out/<job>)`, so deleting any tile of a **multi-cast pool** or a
+  **Stage-B batch** physically nuked the *whole* batch. New `RUNNER.delete_output(job_id, output)` prunes
+  ONE image (file + `.json` sidecar) and its `result.output_names`/`output_meta`/`partial_outputs`,
+  persisting; it falls through to a whole-job `delete()` only when that was the last/only output. New
+  endpoint `DELETE /jobs/{id}/output?output=<rel>` (409 unknown/not-terminal, 404 not-an-output) + client
+  `deleteOutput`. FE: the old `onDelete(id)` became `onDeleteCell(job, output, key)` — a multi-output tile
+  deletes just that image ("the rest of the batch is kept"), a single-output tile deletes the whole gen.
+  +1 test (`test_queue_feedback.test_delete_single_output_keeps_the_rest_then_whole_job`).
+- **(C) Curated images are now removable in the Curation screen.** A kept image is a **durable copy** in
+  `refs/` (survives source-job deletion by design), so after deleting its source generation it lingered in
+  Stage C as a `durableRefCells` tile whose only removal control was the ✓ toggle (read as "keep", not
+  discoverable as un-keep). Added an explicit **🗑 "remove from the curated set"** on every kept tile in
+  Stage C (durable refs *and* kept job tiles) → culls via `remove_ref` (drops from `ref_set` + deletes the
+  `refs/` copy); the whole-job 🗑 is suppressed on kept curated tiles so a curated tile's 🗑 means
+  remove-from-curation, never delete-the-source-job. The ✓ toggle stays. FE-only (cull endpoint unchanged).
+
+### Visual Styles redesign — tiles + expand-to-edit + per-style preview generation (Pass 2 of 2, 2026-06-21)
+
+The deferred half of the styles work (Pass 1 = add-to-top above). Replaces the stacked full-editor list
+with a **tile grid + an expand-to-edit detail panel that can generate a persistent sample image** per
+style. 292 backend tests (286→+3 + parallel-workstream tests); `tsc` + `vite build` clean. **✅ PUSHED
+`d002b6a`** (code only — this journal entry rides the next journal commit; the parallel LoRA/trainer
+workstream is not in it). ⚠ Visual sign-off owed on the running app.
+
+- **Persistent per-style sample (backend, like a face anchor).** `StyleEntry` gains an optional `sample`
+  {file, source_output, job_id, prompt, model, set_at}; `story.schema.json` documents it. `bible.py`:
+  `set_style_sample` copies an out/-relative output into **`<project>/bible/styles/<style_id>.<ext>`**
+  (durable — survives source-job deletion + out/ pruning), `clear_style_sample`, `style_sample_path`;
+  `remove_style` now also deletes the copy. Endpoints `POST /bible/styles/{id}/sample {output,prompt,model}`,
+  `DELETE …/sample`, `GET …/sample/file` (served unauth, mutations token-gated). +3 tests
+  (set/serve/clear + survives source delete; unknown-style/bad-output/traversal 404; delete-style removes copy).
+- **Tile grid + detail (frontend).** Visual Styles is now a `StyleTile` grid (title + sample thumbnail or 🎨
+  placeholder; ★ = the project default; click to select/expand). The selected tile opens **`StyleDetail`** —
+  the name + **Style prompt** + **Negative prompt** editors (the old StyleRow controls) **plus a PREVIEW
+  section**. Adding a style auto-selects it (it lands at the top, Pass 1) so the author edits immediately.
+- **Per-style preview generation.** The preview section = a prompt input + a **sd3.5-medium / zimage-turbo**
+  model selector + **✨ generate sample**. Generate fires a **project-scoped t2i with THIS style applied**
+  (`generate({pipeline, mode:"t2i", model_name, prompt, apply_style:true, style_id})` — sd35 for medium,
+  zimage for turbo) on the shared GPU queue; a self-contained poll (`getJob` every 1.5 s) pins the output as
+  the style's sample on completion (`setStyleSample`). The preview image shows **🔍 magnify** (lightbox via a
+  new `onView` prop → the App `viewer`) + **🗑 delete** (clear sample); while generating it shows queued/
+  running status + **✕ cancel** (`cancelJob`). New client fns: `setStyleSample`/`clearStyleSample`/
+  `styleSampleUrl` (cache-busted by `sample.set_at`) + `getJob`. CSS: `.style-tiles`/`.style-tile`/
+  `.style-thumb`/`.style-detail`/`.style-preview*`. No `src/pipeline/` touched → no re-vendor.
+  - **Refinement (2026-06-21, user-found, ✅ PUSHED `9ff7366`):** tiles **enlarged on click** — `.style-tiles`
+    used `minmax(116px, 1fr)`, so opening the detail panel toggled the `.world` scrollbar → stole width →
+    `auto-fill` dropped a column → the remaining `1fr` columns each grew. Fix: **fixed 108px tile columns**
+    (no `1fr`) so they stay small + never resize, + `scrollbar-gutter: stable` on `.world` so the scrollbar
+    can't reflow the grid. CSS-only.
+
+### Unlock a finalized version + delete a character (2026-06-21, user-found in `loom/stubz001`)
+
+Two more author-reported gaps. 294 backend tests (292→+2); `tsc` + `vite build` clean. **✅ PUSHED
+`00dfa33`** (code only — this journal entry rides the next journal commit; the parallel LoRA/trainer
+workstream is not in it).
+
+- **Curation "can't be cleaned up" → UNFINALIZE/unlock.** Root cause: the project's `char01` active
+  version was **`finalized: True`** (17 refs, 34 rejected), and the Stage-C grid gates every curation
+  control on `curable = … && !locked` — a finalized version shows NO keep/cull/remove. Finalize was a
+  one-way door (`finalize_version`, no inverse). Added `assets.unfinalize_version` (sets `finalized=False`,
+  re-stamps `saved_at`, idempotent) + `POST /assets/{id}/versions/{vid}/unfinalize` + client
+  `unfinalizeVersion`; the version-bar's static "🔒 finalized" badge became an **"🔒 finalized — unlock 🔓"**
+  button (`onUnfinalizeVersion`, confirm-guarded). The finalize lock is a *declaration of intent*, not a
+  hard guarantee — this is the explicit author escape hatch (vs. deep-duplicate-to-a-new-version).
+  +1 test (`test_unfinalize_unlocks_a_finalized_version`).
+- **Delete a character (L2 asset).** No delete-asset capability existed (only spine-character delete, a
+  different thing). Added `assets.delete_asset` (rmtree the profile dir `assets/<class>/<slug>/` + all
+  versions — refs/casting/faces/anchors; out/ generations + lineage left, project-level + rebuildable) +
+  `DELETE /assets/{id}` (404 unknown) + client `deleteAsset`. FE: a hover-revealed **🗑** on each character
+  row in the L2 rail (`.asset-row-wrap`/`.asset-del`), confirm-guarded `onDeleteAsset` → falls back to the
+  Sandbox if the deleted character was active + refreshes the list. +1 test
+  (`test_delete_asset_removes_profile_and_all_versions`). No `src/pipeline/` touched.
 
 ### flux2-klein-9b crashed encoding a non-ASCII stdout char (Windows cp1252) — 2026-06-18 18:56
 

@@ -64,6 +64,57 @@ def test_new_style_lands_at_the_top(client):
     assert b["active_style_id"] == default_id          # add doesn't change the default
 
 
+def test_style_sample_set_serve_clear_and_survives_source_delete(client):
+    """Pass 2: a finished generation output can be pinned as a style's persistent SAMPLE
+    thumbnail (durable copy in bible/styles/), served, and cleared. The copy survives deletion
+    of the source out/ image (like a face anchor)."""
+    from orchestrator.runner import RUNNER
+    out = RUNNER.workspace.out_dir
+    src = out / "job_s" / "x.png"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"\x89PNG\r\n\x1a\n")
+    sid = client.get("/bible/styles").json()["styles"][0]["id"]
+    r = client.post(f"/bible/styles/{sid}/sample",
+                    json={"output": "job_s/x.png", "prompt": "a knight", "model": "sd3.5-medium"})
+    assert r.status_code == 200, r.text
+    sty = next(s for s in r.json()["styles"] if s["id"] == sid)
+    assert sty["sample"]["file"] == f"{sid}.png" and sty["sample"]["model"] == "sd3.5-medium"
+    copy = RUNNER.workspace.bible_dir / "styles" / f"{sid}.png"
+    assert copy.is_file()
+    assert client.get(f"/bible/styles/{sid}/sample/file").status_code == 200
+    src.unlink()                                   # delete the SOURCE — sample is durable
+    assert client.get(f"/bible/styles/{sid}/sample/file").status_code == 200
+    c = client.delete(f"/bible/styles/{sid}/sample")
+    assert c.status_code == 200
+    assert "sample" not in next(s for s in c.json()["styles"] if s["id"] == sid)
+    assert not copy.is_file()
+    assert client.get(f"/bible/styles/{sid}/sample/file").status_code == 404
+
+
+def test_style_sample_unknown_style_and_bad_output(client):
+    sid = client.get("/bible/styles").json()["styles"][0]["id"]
+    assert client.post("/bible/styles/sty_ffffff/sample",
+                       json={"output": "x.png"}).status_code == 404      # unknown style
+    assert client.post(f"/bible/styles/{sid}/sample",
+                       json={"output": "nope/x.png"}).status_code == 404  # output not in out/
+    assert client.post(f"/bible/styles/{sid}/sample",
+                       json={"output": "../x.png"}).status_code == 404    # traversal guard
+
+
+def test_deleting_a_style_removes_its_sample_copy(client):
+    from orchestrator.runner import RUNNER
+    out = RUNNER.workspace.out_dir
+    (out / "j").mkdir(parents=True, exist_ok=True)
+    (out / "j" / "y.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    noir = next(s for s in client.post("/bible/styles", json={"name": "Noir"}).json()["styles"]
+                if s["name"] == "Noir")
+    client.post(f"/bible/styles/{noir['id']}/sample", json={"output": "j/y.png"})
+    copy = RUNNER.workspace.bible_dir / "styles" / f"{noir['id']}.png"
+    assert copy.is_file()
+    client.request("DELETE", f"/bible/styles/{noir['id']}")
+    assert not copy.is_file()
+
+
 def test_cannot_delete_last_style(client):
     s = client.get("/bible/styles").json()
     only = s["styles"][0]["id"]

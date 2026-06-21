@@ -9,6 +9,10 @@ atomic-write + schema rules (validated against `story.schema.json`).
 
 from __future__ import annotations
 
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+
 try:
     from . import workspace as ws_mod
     from .workspace import Workspace, new_id
@@ -17,6 +21,10 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from workspace import Workspace, new_id  # type: ignore
 
 STORY_SCHEMA_VERSION = 1
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 # A sensible generic starting style — the user edits it in L1; it auto-appends (R104).
 DEFAULT_STYLE_FRAGMENT = "cinematic, dramatic lighting, highly detailed, sharp focus"
 # The seeded default style's id is FIXED (not random) so an UNPERSISTED default story reads
@@ -205,12 +213,15 @@ def update_style(ws: Workspace, style_id: str, *, name: str | None = None,
 
 
 def remove_style(ws: Workspace, style_id: str) -> dict:
-    """Drop a style. Refuses the last one; re-points `active_style_id` if it was active."""
+    """Drop a style. Refuses the last one; re-points `active_style_id` if it was active.
+    Also deletes the style's durable sample image (Pass 2) so no orphan lingers."""
     story = load_story(ws)
-    if _find_style(story, style_id) is None:
+    sty = _find_style(story, style_id)
+    if sty is None:
         raise ws_mod.WorkspaceError(f"style {style_id!r} not found")
     if len(story["styles"]) <= 1:
         raise ws_mod.WorkspaceError("can't delete the last style — edit it instead")
+    _unlink_sample(ws, sty)
     story["styles"] = [s for s in story["styles"] if s["id"] != style_id]
     if story["active_style_id"] == style_id:
         story["active_style_id"] = story["styles"][0]["id"]
@@ -226,6 +237,78 @@ def set_active_style(ws: Workspace, style_id: str) -> dict:
     story["active_style_id"] = style_id
     _save(ws, story)
     return list_styles(ws)
+
+
+# --- Pass 2 (2026-06-21): a per-style persistent SAMPLE image (the L1 tile thumbnail) -----
+# Generated via the L1 preview (a project-scoped t2i with this style applied), then copied
+# into `bible/styles/<style_id>.<ext>` — durable like a face anchor, so it survives the
+# source generation's deletion. Recorded on the style entry as `sample` {file, source, …}.
+
+def _styles_dir(ws: Workspace) -> Path:
+    return ws.bible_dir / "styles"
+
+
+def _unlink_sample(ws: Workspace, sty: dict) -> None:
+    samp = sty.get("sample") or {}
+    fname = samp.get("file")
+    if fname:
+        try:
+            (_styles_dir(ws) / fname).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def set_style_sample(ws: Workspace, style_id: str, *, job_id: str | None,
+                     source_output: str, prompt: str | None = None,
+                     model: str | None = None) -> dict:
+    """Persist `source_output` (an out/-relative image from a finished generation) as the
+    style's SAMPLE thumbnail — copied into `bible/styles/<style_id>.<ext>` so it survives the
+    source job's deletion (mirrors the face anchor). Re-setting overwrites. Returns the styles
+    view."""
+    story = load_story(ws)
+    sty = _find_style(story, style_id)
+    if sty is None:
+        raise ws_mod.WorkspaceError(f"style {style_id!r} not found")
+    if ".." in source_output or "\\" in source_output:
+        raise ws_mod.WorkspaceError(f"invalid output {source_output!r}")
+    src = (ws.out_dir / source_output).resolve()
+    if not src.is_relative_to(ws.out_dir.resolve()) or not src.is_file():
+        raise ws_mod.WorkspaceError(f"output {source_output!r} not found in out/")
+    sdir = _styles_dir(ws)
+    sdir.mkdir(parents=True, exist_ok=True)
+    # clear any prior sample (possibly a different extension) before copying the new one
+    for old in sdir.glob(f"{style_id}.*"):
+        old.unlink(missing_ok=True)
+    dst = sdir / f"{style_id}{src.suffix}"
+    shutil.copy2(src, dst)
+    sty["sample"] = {"file": dst.name, "source_output": source_output, "job_id": job_id,
+                     "prompt": prompt, "model": model, "set_at": _now()}
+    _save(ws, story)
+    return list_styles(ws)
+
+
+def clear_style_sample(ws: Workspace, style_id: str) -> dict:
+    """Remove a style's sample image (drops the `sample` field + deletes the copy)."""
+    story = load_story(ws)
+    sty = _find_style(story, style_id)
+    if sty is None:
+        raise ws_mod.WorkspaceError(f"style {style_id!r} not found")
+    _unlink_sample(ws, sty)
+    sty.pop("sample", None)
+    _save(ws, story)
+    return list_styles(ws)
+
+
+def style_sample_path(ws: Workspace, style_id: str) -> Path:
+    """The on-disk path of a style's sample image (for serving); raises if none/missing."""
+    story = load_story(ws)
+    sty = _find_style(story, style_id)
+    if sty is None or not (sty.get("sample") or {}).get("file"):
+        raise ws_mod.WorkspaceError(f"style {style_id!r} has no sample image")
+    p = _styles_dir(ws) / sty["sample"]["file"]
+    if not p.is_file():
+        raise ws_mod.WorkspaceError("sample image file is missing")
+    return p
 
 
 # --- M8: L1 World — world prose + story spine -------------------------------------

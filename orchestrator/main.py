@@ -226,6 +226,17 @@ class ActiveStyleRequest(BaseModel):
     style_id: str
 
 
+class StyleSampleRequest(BaseModel):
+    """Pass 2 — set a style's persistent SAMPLE thumbnail from a finished generation output
+    (an out/-relative image). `prompt`/`model` are echoed for display only."""
+
+    model_config = ConfigDict(extra="forbid")
+    job_id: str | None = None
+    output: str
+    prompt: str | None = None
+    model: str | None = None
+
+
 class WorldRequest(BaseModel):
     """M8 — set the long-form world summary (markdown)."""
 
@@ -1096,6 +1107,36 @@ def create_app() -> FastAPI:
         """Set the default style (used when a generation doesn't pick one). Token-gated."""
         try:
             return bible.set_active_style(_require_ws(), req.style_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
+    # --- Pass 2 (2026-06-21): per-style persistent SAMPLE thumbnail (the L1 tile image) ---
+    @app.post("/bible/styles/{style_id}/sample")
+    def set_style_sample(style_id: str, req: StyleSampleRequest,
+                         _auth: None = Depends(require_token)) -> dict:
+        """Persist a finished generation's output as this style's sample thumbnail (durable copy
+        in bible/styles/, like a face anchor — survives source-job deletion). Token-gated. 404 on
+        an unknown style or an output not in out/."""
+        try:
+            return bible.set_style_sample(_require_ws(), style_id, job_id=req.job_id,
+                                          source_output=req.output, prompt=req.prompt,
+                                          model=req.model)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
+    @app.delete("/bible/styles/{style_id}/sample")
+    def clear_style_sample(style_id: str, _auth: None = Depends(require_token)) -> dict:
+        """Remove a style's sample thumbnail (drops the field + deletes the copy). Token-gated."""
+        try:
+            return bible.clear_style_sample(_require_ws(), style_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
+    @app.get("/bible/styles/{style_id}/sample/file")
+    def get_style_sample_file(style_id: str):
+        """Serve a style's sample thumbnail. Unauthenticated read (mirrors ref/anchor file serving)."""
+        try:
+            return FileResponse(bible.style_sample_path(_require_ws(), style_id))
         except ws_mod.WorkspaceError as e:
             raise HTTPException(404, str(e))
 

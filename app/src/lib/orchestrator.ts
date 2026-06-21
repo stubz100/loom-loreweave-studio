@@ -204,6 +204,16 @@ export interface StyleEntry {
   name: string;
   fragment: string;
   global_negative?: string;
+  /** Pass 2: a persistent SAMPLE thumbnail (durable copy in bible/styles/), generated via
+   * the L1 preview (a project-scoped t2i with this style applied). */
+  sample?: {
+    file: string;
+    source_output?: string;
+    job_id?: string | null;
+    prompt?: string | null;
+    model?: string | null;
+    set_at?: string;
+  } | null;
 }
 export interface StylesInfo {
   styles: StyleEntry[];
@@ -326,6 +336,22 @@ export const deleteStyle = (id: string) =>
   stylesMutate(`/${encodeURIComponent(id)}`, "DELETE");
 export const setActiveStyle = (style_id: string) =>
   stylesMutate("/active", "POST", { style_id });
+
+// --- Pass 2: per-style persistent SAMPLE thumbnail --------------------------------
+/** Pin a finished generation output as a style's sample thumbnail (durable copy). */
+export const setStyleSample = (id: string,
+                               body: { job_id?: string | null; output: string;
+                                       prompt?: string | null; model?: string | null }) =>
+  stylesMutate(`/${encodeURIComponent(id)}/sample`, "POST", body);
+/** Remove a style's sample thumbnail. */
+export const clearStyleSample = (id: string) =>
+  stylesMutate(`/${encodeURIComponent(id)}/sample`, "DELETE");
+/** Serve a style's sample image. `cacheKey` (the sample's set_at) busts the browser cache when
+ * the sample is regenerated to the same URL. */
+export function styleSampleUrl(id: string, cacheKey?: string): string {
+  const q = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
+  return `${orchestratorUrl()}/bible/styles/${encodeURIComponent(id)}/sample/file${q}`;
+}
 
 // --- M8: L1 World (world prose + global negative + story spine) ------------------
 
@@ -1086,6 +1112,15 @@ export async function cancelJob(id: string): Promise<void> {
   });
   // 409 = already finished/unknown — treat as a no-op.
   if (!res.ok && res.status !== 409) throw new Error(`cancel ${res.status}`);
+}
+
+/** Fetch a single job by id (Pass 2: the L1 style preview polls its sample-gen job). Returns
+ * null if the job is gone (deleted/pruned). */
+export async function getJob(id: string): Promise<Job | null> {
+  const res = await fetch(`${orchestratorUrl()}/jobs/${encodeURIComponent(id)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`job ${res.status}`);
+  return (await res.json()) as Job;
 }
 
 /** Gracefully stop a running BATCH job: finishes the current image, keeps everything

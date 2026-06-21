@@ -35,7 +35,20 @@
           "id": { "type": "string", "pattern": "^sty_[0-9a-f]{6}$" },
           "name": { "type": "string", "minLength": 1 },
           "fragment": { "type": "string" },
-          "global_negative": { "type": "string" }
+          "global_negative": { "type": "string" },
+          "sample": {
+            "type": "object",
+            "description": "Pass 2 (2026-06-21): a persistent SAMPLE thumbnail for this style — a durable copy in bible/styles/<id>.<ext>, generated via the L1 preview (a project-scoped t2i with this style applied). Survives source-job deletion.",
+            "required": ["file"],
+            "properties": {
+              "file": { "type": "string" },
+              "source_output": { "type": "string" },
+              "job_id": { "type": ["string", "null"] },
+              "prompt": { "type": ["string", "null"] },
+              "model": { "type": ["string", "null"] },
+              "set_at": { "type": "string" }
+            }
+          }
         }
       }
     },

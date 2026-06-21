@@ -120,7 +120,8 @@ body {
 .style-row.active { border-color: var(--amber); }
 .style-row-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
 .style-row-head .style-name { flex: 1; padding: 4px 6px; font-size: 12px; font-weight: 600; }
-.style-row .style-frag-edit, .style-row .style-neg-edit {
+.style-row .style-frag-edit, .style-row .style-neg-edit,
+.style-detail .style-frag-edit, .style-detail .style-neg-edit {
   width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
   border-radius: 4px; padding: 5px 6px; font-size: 11px; resize: vertical; margin-bottom: 4px;
   box-sizing: border-box;
@@ -130,6 +131,49 @@ body {
   border-bottom: 1px solid var(--line); }
 .style-add .prompt { flex: 1; padding: 5px 6px; background: var(--panel-2); color: var(--text);
   border: 1px solid var(--line); border-radius: 4px; font-size: 12px; }
+
+/* Pass 2 — Visual Styles as a TILE GRID + an expand-to-edit detail panel with a live preview. */
+.style-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 8px; margin-bottom: 14px; }
+.style-tile { display: flex; flex-direction: column; gap: 4px; padding: 0; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
+  text-align: left; color: var(--text); }
+.style-tile:hover { border-color: var(--muted); }
+.style-tile.sel { border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber); }
+.style-tile.active .style-tile-name { color: var(--amber); }
+.style-thumb { aspect-ratio: 1 / 1; width: 100%; background: var(--panel); display: flex;
+  align-items: center; justify-content: center; overflow: hidden; }
+.style-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.style-thumb-empty { font-size: 28px; opacity: 0.4; }
+.style-tile-name { font-size: 11px; font-weight: 600; padding: 0 6px 6px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.style-star { color: var(--amber); margin-right: 3px; }
+
+.style-detail { border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+.style-detail.active { border-color: var(--amber); }
+.style-detail .style-row-head { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+.style-detail .style-row-head .style-name { flex: 1; padding: 4px 6px; font-size: 12px; font-weight: 600; }
+.style-preview { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+.style-preview-img { position: relative; width: 100%; max-width: 360px; aspect-ratio: 1 / 1;
+  margin: 6px 0; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+  display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.style-preview-img img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.style-preview-status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.style-preview-img .view, .style-preview-img .delete, .style-preview-img .cancel {
+  position: absolute; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%;
+  background: rgba(0,0,0,0.55); color: #fff; font-size: 12px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; }
+.style-preview-img .view { bottom: 4px; right: 4px; }
+.style-preview-img .delete { top: 4px; right: 4px; }
+.style-preview-img .cancel { position: static; }
+.style-preview-img .view:hover { background: var(--amber); color: #1a1a1a; }
+.style-preview-img .delete:hover, .style-preview-img .cancel:hover { background: var(--err); }
+.style-preview > .prompt { width: 100%; box-sizing: border-box; padding: 5px 6px; margin-bottom: 6px;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 4px;
+  font-size: 12px; }
+.style-preview-bar { display: flex; gap: 6px; align-items: center; }
+.style-preview-bar select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 4px; padding: 4px 6px; font-size: 12px; }
 
 .banner {
   font-size: 12px; color: var(--warn); background: #2a2410;

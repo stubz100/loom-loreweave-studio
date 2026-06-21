@@ -20,10 +20,14 @@ import {
   getProject,
   getStyle,
   getStyles,
+  getJob,
   addStyle,
   updateStyle,
   deleteStyle,
   setActiveStyle,
+  setStyleSample,
+  clearStyleSample,
+  styleSampleUrl,
   getBible,
   exportProfile,
   importProfile,
@@ -1456,6 +1460,7 @@ export default function App() {
               onError={setError}
               onStubCreated={() => void refreshAssets()}
               onStylesChanged={() => { void refreshStyles(); void refreshAssets(); }}
+              onView={(src) => setViewer(src)}
             />
           ) : (
           <>
@@ -2590,12 +2595,13 @@ function GridCell({
 
 // M8 — L1 World authoring: world prose, the style fragment + global negative, and the
 // story spine (premise + characters that materialize into stub AssetProfiles, R55).
-function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged }: {
+function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged, onView }: {
   project: ProjectInfo | null;
   tab: "styles" | "world" | "spine";   // M0b — which L1 sub-tab the rail selected
   onError: (e: string) => void;
   onStubCreated: () => void;
   onStylesChanged: () => void;    // tell the parent to reload styles (the L2 bar selector)
+  onView: (src: string) => void;  // Pass 2 — open a style sample in the full-res lightbox
 }) {
   const [bible, setBible] = useState<BibleInfo | null>(null);
   const [stylesData, setStylesData] = useState<StylesInfo | null>(null);
@@ -2605,6 +2611,10 @@ function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged 
   const [newSnippet, setNewSnippet] = useState("");
   const [newStyleName, setNewStyleName] = useState("");
   const [busy, setBusy] = useState(false);
+  // Pass 2 — Visual Styles tiles: which tile is expanded, and the in-flight sample-gen job.
+  const [selStyle, setSelStyle] = useState<string | null>(null);
+  const [sampleJob, setSampleJob] =
+    useState<{ styleId: string; jobId: string; status: string } | null>(null);
 
   const refresh = async () => {
     if (!project?.open) { setBible(null); setStylesData(null); return; }
@@ -2629,6 +2639,77 @@ function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged 
     catch (e) { onError(String(e)); } finally { setBusy(false); }
   };
 
+  // Pass 2 — add a style + auto-select it (it lands at the TOP) so the user can edit immediately.
+  const onAddStyle = async () => {
+    const name = newStyleName.trim();
+    if (!name) return;
+    setBusy(true);
+    try {
+      const styles = await addStyle(name);
+      setStylesData(styles); onStylesChanged();
+      setSelStyle(styles.styles[0]?.id ?? null);   // newest is first (insert-at-top)
+      setNewStyleName("");
+    } catch (e) { onError(String(e)); } finally { setBusy(false); }
+  };
+
+  // Pass 2 — generate a SAMPLE for a style: a project-scoped t2i with THIS style applied
+  // (the preview prompt + a chosen sample model). The job runs on the shared queue; the poll
+  // effect below pins its output as the style's persistent thumbnail on completion.
+  const onGenerateSample = async (styleId: string, prompt: string, model: string) => {
+    if (!prompt.trim()) { onError("enter a preview prompt for the sample"); return; }
+    const pipeline = model === "zimage-turbo" ? "zimage" : "sd35";
+    setBusy(true); onError("");
+    try {
+      const res = await generate({ pipeline, mode: "t2i", model_name: model,
+                                   prompt: prompt.trim(), apply_style: true,
+                                   style_id: styleId, count: 1 });
+      const jid = res.job_ids?.[0];
+      if (jid) setSampleJob({ styleId, jobId: jid, status: "queued" });
+    } catch (e) { onError(String(e)); } finally { setBusy(false); }
+  };
+
+  const onCancelSample = async () => {
+    if (!sampleJob) return;
+    const jid = sampleJob.jobId;
+    setSampleJob(null);
+    try { await cancelJob(jid); } catch { /* already terminal — no-op */ }
+  };
+
+  // Poll the in-flight sample job; on success pin its output as the style's sample thumbnail.
+  useEffect(() => {
+    if (!sampleJob) return;
+    const { styleId, jobId } = sampleJob;
+    let alive = true;
+    const tick = async () => {
+      let job;
+      try { job = await getJob(jobId); } catch { return; }   // transient — retry next tick
+      if (!alive) return;
+      if (!job) { setSampleJob(null); return; }               // job vanished
+      if (job.status === "done") {
+        const out = job.result?.output_name ?? job.result?.output_names?.[0];
+        if (out) {
+          try {
+            const styles = await setStyleSample(styleId, {
+              job_id: jobId, output: out,
+              prompt: (job.params?.prompt as string) ?? null,
+              model: (job.params?.model_name as string) ?? null });
+            if (alive) { setStylesData(styles); onStylesChanged(); }
+          } catch (e) { if (alive) onError(String(e)); }
+        }
+        if (alive) setSampleJob(null);
+      } else if (job.status === "failed" || job.status === "canceled") {
+        if (alive && job.status === "failed") onError(job.result?.error ?? "sample generation failed");
+        if (alive) setSampleJob(null);
+      } else if (alive) {
+        setSampleJob((s) => (s && s.jobId === jobId ? { ...s, status: job!.status } : s));
+      }
+    };
+    void tick();
+    const iv = setInterval(tick, 1500);
+    return () => { alive = false; clearInterval(iv); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sampleJob?.jobId]);
+
   if (!project?.open) {
     return <div className="world"><p className="muted">Open a project to author its L1 World.</p></div>;
   }
@@ -2639,23 +2720,40 @@ function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged 
           and readable multi-line editors instead of one long cramped scroll. */}
       {tab === "styles" && (
       <section className="world-sec">
-        <h3>Visual styles <span className="muted">(named snippets — pick one per generation; ★ = the project default, R104)</span></h3>
+        <h3>Visual styles <span className="muted">(tiles — click one to edit + preview; ★ = the project default, R104)</span></h3>
         <div className="style-add">
           <input className="prompt" placeholder="new style name (e.g. Noir, Watercolor)…"
-                 value={newStyleName} onChange={(e) => setNewStyleName(e.target.value)} />
+                 value={newStyleName} onChange={(e) => setNewStyleName(e.target.value)}
+                 onKeyDown={(e) => { if (e.key === "Enter") void onAddStyle(); }} />
           <button className="proj-btn" disabled={busy || !newStyleName.trim()}
-                  onClick={() => { void guardStyles(() => addStyle(newStyleName.trim()));
-                                   setNewStyleName(""); }}>+ add style</button>
+                  onClick={() => void onAddStyle()}>+ add style</button>
         </div>
-        {(stylesData?.styles ?? []).map((st) => (
-          <StyleRow key={st.id} st={st} busy={busy}
-            isActive={stylesData?.active_style_id === st.id}
-            canDelete={(stylesData?.styles.length ?? 0) > 1}
-            onSave={(name, fragment, neg) => void guardStyles(() =>
-              updateStyle(st.id, { name, fragment, global_negative: neg }))}
-            onDelete={() => void guardStyles(() => deleteStyle(st.id))}
-            onSetActive={() => void guardStyles(() => setActiveStyle(st.id))} />
-        ))}
+        <div className="style-tiles">
+          {(stylesData?.styles ?? []).map((st) => (
+            <StyleTile key={st.id} st={st}
+              active={stylesData?.active_style_id === st.id}
+              selected={selStyle === st.id}
+              onClick={() => setSelStyle(selStyle === st.id ? null : st.id)} />
+          ))}
+        </div>
+        {(() => {
+          const sel = (stylesData?.styles ?? []).find((s) => s.id === selStyle);
+          if (!sel) return <p className="muted">Select a style tile to edit its prompt + generate a sample.</p>;
+          return (
+            <StyleDetail key={sel.id} st={sel} busy={busy}
+              isActive={stylesData?.active_style_id === sel.id}
+              canDelete={(stylesData?.styles.length ?? 0) > 1}
+              sampleJob={sampleJob && sampleJob.styleId === sel.id ? sampleJob : null}
+              onSave={(name, fragment, neg) => void guardStyles(() =>
+                updateStyle(sel.id, { name, fragment, global_negative: neg }))}
+              onDelete={() => { void guardStyles(() => deleteStyle(sel.id)); setSelStyle(null); }}
+              onSetActive={() => void guardStyles(() => setActiveStyle(sel.id))}
+              onGenerate={(prompt, model) => void onGenerateSample(sel.id, prompt, model)}
+              onCancelSample={() => void onCancelSample()}
+              onDeleteSample={() => void guardStyles(() => clearStyleSample(sel.id))}
+              onView={onView} />
+          );
+        })()}
       </section>
       )}
 
@@ -2753,17 +2851,53 @@ function SpineRow({ ch, busy, onSave, onDelete, onStub, onResync }: {
   );
 }
 
-function StyleRow({ st, busy, isActive, canDelete, onSave, onDelete, onSetActive }: {
+// Pass 2 — a Visual Style TILE: title + sample thumbnail (or a placeholder), selectable.
+// Clicking expands the StyleDetail below the grid. ★ marks the project default.
+function StyleTile({ st, active, selected, onClick }: {
+  st: StyleEntry; active: boolean; selected: boolean; onClick: () => void;
+}) {
+  const thumb = st.sample?.file ? styleSampleUrl(st.id, st.sample.set_at ?? undefined) : null;
+  return (
+    <button className={`style-tile ${selected ? "sel" : ""} ${active ? "active" : ""}`}
+            onClick={onClick} title={st.name}>
+      <div className="style-thumb">
+        {thumb ? <img src={thumb} alt={st.name} />
+               : <span className="style-thumb-empty">🎨</span>}
+      </div>
+      <div className="style-tile-name">{active && <span className="style-star">★</span>}{st.name}</div>
+    </button>
+  );
+}
+
+// Pass 2 — the expanded editor for the selected style tile: name + style/negative prompt +
+// a PREVIEW section (preview prompt + sample-model selector + generate → a sample image with
+// magnify/delete, or cancel while it's generating). The sample becomes the tile's thumbnail.
+function StyleDetail({ st, busy, isActive, canDelete, sampleJob, onSave, onDelete, onSetActive,
+                      onGenerate, onCancelSample, onDeleteSample, onView }: {
   st: StyleEntry; busy: boolean; isActive: boolean; canDelete: boolean;
+  sampleJob: { styleId: string; jobId: string; status: string } | null;
   onSave: (name: string, fragment: string, global_negative: string) => void;
   onDelete: () => void; onSetActive: () => void;
+  onGenerate: (prompt: string, model: string) => void;
+  onCancelSample: () => void; onDeleteSample: () => void;
+  onView: (src: string) => void;
 }) {
   const [name, setName] = useState(st.name);
   const [fragment, setFragment] = useState(st.fragment);
   const [neg, setNeg] = useState(st.global_negative ?? "");
+  const [prompt, setPrompt] = useState(st.sample?.prompt ?? "");
+  const [model, setModel] = useState(st.sample?.model ?? "sd3.5-medium");
+  // re-seed the editor fields when the selected style changes (the key remount also covers it).
+  useEffect(() => {
+    setName(st.name); setFragment(st.fragment); setNeg(st.global_negative ?? "");
+    setPrompt(st.sample?.prompt ?? ""); setModel(st.sample?.model ?? "sd3.5-medium");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [st.id]);
   const dirty = name !== st.name || fragment !== st.fragment || neg !== (st.global_negative ?? "");
+  const generating = !!sampleJob;
+  const thumb = st.sample?.file ? styleSampleUrl(st.id, st.sample.set_at ?? undefined) : null;
   return (
-    <div className={`style-row ${isActive ? "active" : ""}`}>
+    <div className={`style-detail ${isActive ? "active" : ""}`}>
       <div className="style-row-head">
         <input className="prompt style-name" value={name} onChange={(e) => setName(e.target.value)}
                placeholder="style name…" />
@@ -2775,12 +2909,50 @@ function StyleRow({ st, busy, isActive, canDelete, onSave, onDelete, onSetActive
         <button className="ghost" disabled={busy || !canDelete} onClick={onDelete}
                 title={canDelete ? "delete this style" : "can't delete the last style"}>✕</button>
       </div>
-      <textarea rows={8} className="style-frag-edit" value={fragment}
+      <label className="world-field">Style prompt</label>
+      <textarea rows={6} className="style-frag-edit" value={fragment}
                 onChange={(e) => setFragment(e.target.value)}
                 placeholder="style fragment — appended after the character prompt…" />
+      <label className="world-field">Negative prompt</label>
       <textarea rows={2} className="style-neg-edit" value={neg}
                 onChange={(e) => setNeg(e.target.value)}
                 placeholder="global negative — appended to every negative prompt…" />
+
+      <div className="style-preview">
+        <div className="rail-head">PREVIEW <span className="muted">sample image</span></div>
+        <div className="style-preview-img">
+          {generating ? (
+            <div className="style-preview-status">
+              <span>{sampleJob!.status === "running" ? "generating…" : "queued…"}</span>
+              <button className="cancel" title="cancel" onClick={onCancelSample}>✕</button>
+            </div>
+          ) : thumb ? (
+            <>
+              <img src={thumb} alt="style sample" />
+              <button className="view" title="view full resolution"
+                      onClick={() => onView(thumb)}>🔍</button>
+              <button className="delete" title="delete this sample"
+                      onClick={onDeleteSample}>🗑</button>
+            </>
+          ) : (
+            <span className="muted">no sample yet — write a prompt + generate ↓</span>
+          )}
+        </div>
+        <input className="prompt" placeholder="preview prompt (e.g. a knight portrait, three-quarter view)…"
+               value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+        <div className="style-preview-bar">
+          <select value={model} onChange={(e) => setModel(e.target.value)}
+                  title="model for the sample (this style's prompt is applied automatically)">
+            <option value="sd3.5-medium">sd3.5-medium</option>
+            <option value="zimage-turbo">zimage-turbo</option>
+          </select>
+          <button className="proj-btn" disabled={busy || generating || !prompt.trim()}
+                  onClick={() => onGenerate(prompt, model)}
+                  title="generate a sample image with this style applied (uses the GPU queue)">
+            ✨ generate sample
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

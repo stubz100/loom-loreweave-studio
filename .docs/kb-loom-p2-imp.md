@@ -693,8 +693,8 @@ path into Loom.
   `.pytest_cache` directory under the Loom repo has an ACL that denies traversal/removal; pytest was
   rerun with the cache provider disabled so it did not affect verification.
 
-**Push note:** initial vendoring commit hash is recorded in the follow-up journal-only commit after
-Git assigns it.
+**✅ PUSHED `40e5265`** (Krea2 Turbo vendoring + adapter/catalog/UI/tests + this journal entry);
+follow-up journal-only commit records the hash after Git assigned it.
 
 ### flux.2-dev Stage-B size + silent batch failure (2026-06-22, user-found in `loom/stubz001`)
 

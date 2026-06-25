@@ -616,7 +616,76 @@ files and correctly reported no application-graph delta (`trainers/` is intentio
 
 ---
 
+## M2 — staged queued Z-Image trainer skeleton (2026-06-25)
+
+**Status: backend contract slice complete.** This pass moves P2 past the M1 spike into the durable
+trainer path without spending GPU automatically:
+
+- Added a distinct queue pipeline, **`zimage_trainer`**, rather than pretending trainer work is
+  normal `zimage` inference. The runner now accepts `resumable=True` per submit; ordinary generation
+  remains non-resumable by default. The trainer VRAM estimate is registered separately.
+- Added **`jobs/staged.json`** via `orchestrator/training.py`. Staging a run writes a durable staged
+  record but does **not** write `queue.json`; the explicit `/training/staged/{id}/queue` transition is
+  the first moment the GPU queue can see the job.
+- Added deterministic P2 records during staging:
+  - `captions.jsonl` from the frozen P1 coverage-cell template (`coverage.build_caption`);
+  - `caption_policy.json` with template id/source fields/trigger rule;
+  - `training_context.json` with graph-ready asset/version/ref facts and context digest;
+  - temp dataset copy + `.txt` captions + `dataset_manifest.json`;
+  - generated ai-toolkit `train.yaml` using the M1 accepted default preset shape
+    (**500 steps / rank-alpha 16/16 / 512 px / bf16 / qfloat8 / AdamW 1e-4 / low_vram**).
+- Added the **isolated runtime contract** to staged params: `runtime_overlay`, `requires_peft`,
+  `do_not_mutate_shared_inference_venv`, and `AI_TOOLKIT_MINIMAL_ZIMAGE=1`. The wrapper honors an
+  overlay through `PYTHONPATH`; it does not install or mutate the shared inference environment.
+- Added `trainers/loom_zimage_lora.py`, a thin ai-toolkit wrapper that writes a trainer manifest and
+  performs **real checkpoint/artifact discovery** before launch (`optimizer.pt`, sqlite, existing
+  `.safetensors`, latest artifact hash). This makes queue recovery auditable instead of relying only
+  on the queue's `resumable=true` marker.
+- Added API endpoints:
+  - `GET /training/staged`
+  - `POST /assets/{asset_id}/lora/zimage/stage`
+  - `POST /training/staged/{staged_id}/queue`
+  - `DELETE /training/staged/{staged_id}`
+- Added no-GPU regression coverage in `orchestrator/tests/test_p2_training.py`: stage writes captions
+  + context + staged record, staged→queued creates a resumable `zimage_trainer` job, adapter manifest
+  parsing works, and wrapper resume discovery records real files.
+
+**Verification:** Python compile clean for the new/changed orchestrator + trainer files. Focused
+pytest for `test_p2_training.py`: **4 passed**. RTK full orchestrator suite: **299 passed**.
+
+**Caveat / push note:** the worktree already contained unrelated Flux2/M0e edits in
+`orchestrator/main.py`, `orchestrator/tests/test_flux2_adapter.py`, and
+`pipelines/multistack/src/pipeline/flux2/run_pipeline.py` before this P2 slice started. This pass
+preserved them. Because `orchestrator/main.py` now contains both the pre-existing Flux2 hunk and the
+new P2 API hunk, pushing a clean P2-only commit needs careful partial staging or the Flux2 fixes need
+to be intentionally included.
+
+⏭ Next: promote-on-success + `lora.manifest.json` writeback and the Train panel UI, then a real queued
+short-run resume smoke once the isolated PEFT overlay path is declared on the target machine.
+
+---
+
 ## P2-era fixes (non-milestone)
+
+### flux.2-dev Stage-B size + silent batch failure (2026-06-22, user-found in `loom/stubz001`)
+
+Two issues from a real `npc_lite` flux2-dev ref-mode Stage-B run. 295 backend tests; build clean.
+
+- **The 512² default didn't reach Stage-B (✅ PUSHED `b56a6fd`).** M0e Part A wired the model-aware
+  size default into `/generate` only; Stage-B has its own endpoint and `StageBRequest.width/height`
+  default to **1024**, so a `flux.2-dev` sweep ran at 1024² (~4k latent tokens — the slow regime). The
+  `stage_b` endpoint now resolves the per-cell size model-awarely (mirrors `/generate`): UNSET →
+  `model_size_default` (dev → 512²); non-dev keeps 1024²; explicit dims (top-level or params channel)
+  win. The drawer's model-aware placeholder is now honest for Stage-B too. +1 `test_flux2_adapter` test.
+- **The batch worker failed silently (✅ PUSHED `4fb76bc`).** A pre-loop bail (text-encode / model-load /
+  reference-encode) printed only `[batch-done] 0 ok / 0 failed / 17 skipped` and wrote the exception
+  ONLY into the batch manifest (pruned with the job). New `_fail_preload()` in the flux2 batch
+  `run_jobs` prints `[batch-error] <reason>: <exc>` + a full traceback to stderr (→ job log + console)
+  and folds the reason into the manifest error. Vendored byte-identical (R162; md5 match). ⚠ The root
+  cause of the user's dev-batch skip-all is still unknown (the manifest/log were pruned) — the next run
+  will now surface it. Guidance: for a many-cell coverage sweep use the **Balanced** (klein-base) preset
+  (fits 16 GB); reserve **Dev/JSON** for a few t2i hero shots → then upscale (dev's 60 GB flow model
+  paged across 17 cells × 50 steps is impractical on the 16 GB rig).
 
 ### Styles add-to-top · individual image deletion · remove-from-curation (2026-06-21, user-found)
 

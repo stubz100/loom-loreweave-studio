@@ -1448,6 +1448,17 @@ def create_app() -> FastAPI:
         # (review 2026-06-11: the pre-flight checked only the explicit/default model, so
         # params={model_name:…} could slip an uncached model past the gate).
         model_name = extra.pop("model_name", None) or req.model_name
+        # M0e Part A, extended to Stage-B: the per-cell output size is now MODEL-aware. An UNSET
+        # size resolves to the effective model's default — `flux.2-dev` → 512² (it runs far faster
+        # at low res on 16 GB ROCm; the 1024² StageBRequest default was a ~4k-token job, tens of
+        # minutes for dev) — instead of the 1024² request default. Explicit dims still win (the
+        # FE sends width/height top-level only when typed; a params-channel dim rides `**extra`).
+        # Mirrors /generate so the drawer's model-aware placeholder is honest for Stage-B too.
+        md_w, md_h = model_catalog.model_size_default(req.pipeline, model_name)
+        size_unset_w = "width" not in req.model_fields_set and "width" not in (req.params or {})
+        size_unset_h = "height" not in req.model_fields_set and "height" not in (req.params or {})
+        eff_width = md_w if (size_unset_w and md_w is not None) else req.width
+        eff_height = md_h if (size_unset_h and md_h is not None) else req.height
         # Clean/polish post-passes chain over the finished dataset too (2026-06-11) —
         # e.g. polish every kept-worthy cell right after the sweep, cells stay curatable
         # (their coverage_cell rides along into the pass outputs).
@@ -1559,12 +1570,12 @@ def create_app() -> FastAPI:
             cell0 = built["cells"][0]
             if is_flux2:
                 p0 = {"prompt": cell0["prompt"], "ref_images": [str(hero_path)],
-                      "width": req.width, "height": req.height, "seed": cell0["seed"],
+                      "width": eff_width, "height": eff_height, "seed": cell0["seed"],
                       "model_name": model_name, **extra}
                 spec = JobSpec(pipeline="flux2", mode="ref", params=p0, output_dir=ws.out_dir)
             else:
                 p0 = {"prompt": cell0["prompt"], "init_image": str(hero_path),
-                      "strength": req.strength, "width": req.width, "height": req.height,
+                      "strength": req.strength, "width": eff_width, "height": eff_height,
                       "seed": cell0["seed"], "model_name": model_name, **extra}
                 spec = JobSpec(pipeline=req.pipeline, mode="img2img", params=p0, output_dir=ws.out_dir)
             return {"dry_run": True, "preset": req.preset, "pipeline": req.pipeline,
@@ -1610,7 +1621,7 @@ def create_app() -> FastAPI:
                                "method": "ref" if gmode == "ref" else c["method"]}}
                      for c in gcells]
             params = {"prompt": f"[dataset {req.preset} · {len(gcells)} {gmode} cells] {clause}",
-                      "width": req.width, "height": req.height,
+                      "width": eff_width, "height": eff_height,
                       "batch_items": items, **extra}
             if gmode == "ref":
                 # flux2 (§11): the hero rides as an in-context reference for every cell

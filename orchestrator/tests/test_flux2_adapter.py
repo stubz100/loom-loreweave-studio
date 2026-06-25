@@ -163,6 +163,27 @@ def test_stage_b_flux2_dev_advanced_prompt_emits_json_cells(client):
     assert not body2["first_cell"]["prompt"].lstrip().startswith("{")
 
 
+def test_stage_b_flux2_dev_defaults_to_512(client):
+    """User 2026-06-21: a flux.2-dev Stage-B expansion ran at the 1024² StageBRequest default
+    (~4k tokens → tens of minutes). M0e Part A now reaches Stage-B too — an UNSET size resolves
+    to dev's 512² (far faster); non-dev keeps the 1024² request default; explicit dims win;
+    a params-channel model_name resolves it too."""
+    from orchestrator.runner import RUNNER
+    a = _asset_with_hero(client, RUNNER.workspace, name="DevSize")
+
+    def argv_dims(payload):
+        argv = client.post(f"/assets/{a['id']}/stage-b",
+                           json={"pipeline": "flux2", "preset": "npc_lite", "dry_run": True,
+                                 **payload}).json()["first_argv"]
+        return (argv[argv.index("--width") + 1], argv[argv.index("--height") + 1])
+
+    assert argv_dims({"model_name": "flux.2-dev"}) == ("512", "512")             # dev → 512²
+    assert argv_dims({"model_name": "flux.2-klein-4b"}) == ("1024", "1024")      # non-dev → request default
+    assert argv_dims({"model_name": "flux.2-dev",
+                      "width": 768, "height": 768}) == ("768", "768")            # explicit wins
+    assert argv_dims({"params": {"model_name": "flux.2-dev"}}) == ("512", "512")  # params-channel model
+
+
 def test_stage_b_flux2_rejects_mixed(client):
     from orchestrator.runner import RUNNER
     a = _asset_with_hero(client, RUNNER.workspace, name="Ref2")

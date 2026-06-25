@@ -55,6 +55,7 @@ try:
     from . import coverage
     from . import model_catalog
     from . import recipe
+    from . import training
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from adapters import JobSpec  # type: ignore
@@ -79,6 +80,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     import coverage  # type: ignore
     import model_catalog  # type: ignore
     import recipe  # type: ignore
+    import training  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
 
@@ -235,6 +237,25 @@ class StyleSampleRequest(BaseModel):
     output: str
     prompt: str | None = None
     model: str | None = None
+
+
+class StageZImageLoraRequest(BaseModel):
+    """P2/M2 — prepare a Z-Image LoRA trainer job as a STAGED record.
+
+    This writes captions/context/dataset/config and `jobs/staged.json`, but does
+    not add anything to queue.json. The explicit queue transition is
+    POST /training/staged/{id}/queue.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    version_id: str | None = None
+    trigger_token: str | None = None
+    runtime_overlay: str | None = None
+    steps: int = Field(default=500, ge=1, le=10000)
+    resolution: int = Field(default=512, ge=256, le=2048, multiple_of=16)
+    rank: int = Field(default=16, ge=1, le=256)
+    alpha: int = Field(default=16, ge=1, le=256)
+    learning_rate: float = Field(default=0.0001, gt=0, le=1.0)
 
 
 class WorldRequest(BaseModel):
@@ -1293,6 +1314,62 @@ def create_app() -> FastAPI:
         except ws_mod.WorkspaceError as e:
             raise HTTPException(404, str(e))
         return FileResponse(path, media_type="application/zip", filename=path.name)
+
+    @app.get("/training/staged")
+    def get_staged_training() -> dict:
+        """P2/M2 staged trainer records. Unauthenticated read for the future Train panel."""
+        try:
+            return training.list_staged(_require_ws())
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/assets/{asset_id}/lora/zimage/stage")
+    def stage_zimage_lora(asset_id: str, req: StageZImageLoraRequest,
+                          _auth: None = Depends(require_token)) -> dict:
+        """P2/M2 — materialize a Z-Image LoRA trainer job as a staged record.
+
+        This prepares deterministic captions, caption policy, training context,
+        temp dataset, ai-toolkit config, and `jobs/staged.json`; it deliberately
+        does NOT enqueue. The user must explicitly queue the staged id.
+        """
+        settings = {
+            "steps": req.steps,
+            "resolution": req.resolution,
+            "rank": req.rank,
+            "alpha": req.alpha,
+            "learning_rate": req.learning_rate,
+        }
+        try:
+            record = training.stage_zimage_lora(
+                _require_ws(), asset_id,
+                version_id=req.version_id,
+                trigger_token=req.trigger_token,
+                runtime_overlay=req.runtime_overlay,
+                settings=settings,
+            )
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        LOG.info("staged zimage LoRA: %s asset=%s version=%s",
+                 record["id"], asset_id, record["version_id"])
+        return record
+
+    @app.post("/training/staged/{staged_id}/queue")
+    def queue_staged_training(staged_id: str, _auth: None = Depends(require_token)) -> dict:
+        """P2/M2 staged → queued transition. This is the first moment GPU work may start."""
+        try:
+            res = training.queue_staged(_require_ws(), staged_id, RUNNER)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+        LOG.info("queued staged training %s -> %s", staged_id, res["job_id"])
+        return res
+
+    @app.delete("/training/staged/{staged_id}")
+    def delete_staged_training(staged_id: str, _auth: None = Depends(require_token)) -> dict:
+        """Delete a staged trainer record without touching any queued/running job."""
+        try:
+            return training.delete_staged(_require_ws(), staged_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
 
     @app.post("/assets/{asset_id}/casting/star")
     def star_casting(asset_id: str, req: StarRequest,

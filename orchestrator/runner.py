@@ -47,6 +47,7 @@ try:
     from .adapters import face_restore as face_restore_adapter
     from .adapters import ltxv as ltxv_adapter
     from .adapters import frame_harvest as frame_harvest_adapter
+    from .adapters import zimage_trainer as zimage_trainer_adapter
     from .config import CONFIG
     from . import lineage
     from . import workspace as ws_mod
@@ -64,6 +65,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import face_restore as face_restore_adapter  # type: ignore
     from adapters import ltxv as ltxv_adapter  # type: ignore
     from adapters import frame_harvest as frame_harvest_adapter  # type: ignore
+    from adapters import zimage_trainer as zimage_trainer_adapter  # type: ignore
     from config import CONFIG  # type: ignore
     import lineage  # type: ignore
     import workspace as ws_mod  # type: ignore
@@ -74,7 +76,8 @@ ADAPTERS = {"zimage": zimage_adapter, "multi": multi_adapter, "sd35": sd35_adapt
             "flux2": flux2_adapter,
             "birefnet": birefnet_adapter, "identity": identity_adapter,
             "face_restore": face_restore_adapter, "ltxv": ltxv_adapter,
-            "frame_harvest": frame_harvest_adapter}
+            "frame_harvest": frame_harvest_adapter,
+            "zimage_trainer": zimage_trainer_adapter}
 SCHEMA_VERSION = 1
 LOG = get_logger()
 
@@ -253,7 +256,8 @@ VRAM_ESTIMATES = {"zimage": 11.0, "multi": 14.0, "sd35": 13.0, "birefnet": 4.0,
                                                           # freed before the flow loads (§11)
                   "identity": 1.0, "face_restore": 1.0,   # onnx CPU — effectively no VRAM
                   "ltxv": 12.0,                           # 2B + T5-XXL w/ model offload
-                  "frame_harvest": 1.0}                   # OpenCV CPU
+                  "frame_harvest": 1.0,                   # OpenCV CPU
+                  "zimage_trainer": 15.0}                 # P2 Z-Image LoRA train, qfloat8/low_vram
 DEFAULT_VRAM_GB = 8.0
 MAX_OOM_RETRIES = 1
 _OOM_MARKERS = (
@@ -531,7 +535,8 @@ class JobRunner:
                profile_version_id: str | None = None, stage: str | None = None,
                coverage_cell: dict | None = None,
                post_passes: list | None = None,
-               chained_from: str | None = None, pass_name: str | None = None) -> str:
+               chained_from: str | None = None, pass_name: str | None = None,
+               resumable: bool = False) -> str:
         job_id = new_id("job", 8)
         with self._cv:
             self.jobs[job_id] = {
@@ -548,7 +553,7 @@ class JobRunner:
                 "chained_from": chained_from,               # parent job when THIS is a pass
                 "pass": pass_name,                          # "clean" | "polish" | None
                 "vram_estimate_gb": VRAM_ESTIMATES.get(pipeline, DEFAULT_VRAM_GB),
-                "resumable": False,                # P0 jobs don't checkpoint (R159)
+                "resumable": bool(resumable),      # P2 trainer jobs checkpoint/resume (R159)
                 "retry_count": 0,
                 "status": "queued",
                 "progress": 0.0,

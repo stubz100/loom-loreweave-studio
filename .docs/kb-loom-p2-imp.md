@@ -653,12 +653,9 @@ trainer path without spending GPU automatically:
 **Verification:** Python compile clean for the new/changed orchestrator + trainer files. Focused
 pytest for `test_p2_training.py`: **4 passed**. RTK full orchestrator suite: **299 passed**.
 
-**Caveat / push note:** the worktree already contained unrelated Flux2/M0e edits in
-`orchestrator/main.py`, `orchestrator/tests/test_flux2_adapter.py`, and
-`pipelines/multistack/src/pipeline/flux2/run_pipeline.py` before this P2 slice started. This pass
-preserved them. Because `orchestrator/main.py` now contains both the pre-existing Flux2 hunk and the
-new P2 API hunk, pushing a clean P2-only commit needs careful partial staging or the Flux2 fixes need
-to be intentionally included.
+**Push note:** the worktree was cleaned back to the P2 trainer files before push, so the M2 commit is
+scoped to staged trainer records, the `zimage_trainer` queue adapter, the ai-toolkit wrapper, tests,
+and this journal update.
 
 ⏭ Next: promote-on-success + `lora.manifest.json` writeback and the Train panel UI, then a real queued
 short-run resume smoke once the isolated PEFT overlay path is declared on the target machine.

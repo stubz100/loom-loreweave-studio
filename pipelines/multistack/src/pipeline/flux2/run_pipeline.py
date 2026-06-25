@@ -305,6 +305,16 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
         print(f"  BatchManifest: {summary_path}")
         return 0 if n_ok > 0 else 2
 
+    def _fail_preload(reason: str, exc: Exception, load_s: float) -> int:
+        # A pre-loop bail (encode/model-load/ref-encode) skips EVERY item — surface the real
+        # cause to stderr + the manifest error, so it isn't a silent "[batch-done] N skipped"
+        # with no WHY (the batch manifest can be pruned with the job). User 2026-06-22.
+        import traceback
+        print(f"[batch-error] {reason}: {exc}", flush=True)
+        traceback.print_exc()
+        _skip_rest(0, reason)
+        return _finish("failed", load_s, error=f"{reason}: {exc}")
+
     # --- Phase 1: encode ALL prompts, then free the text encoder ---
     try:
         enc = stage1_load_models._load_text_encoder_safe(model_name, torch_device)
@@ -321,8 +331,7 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
         del enc
         torch.cuda.empty_cache()
     except Exception as e:  # noqa: BLE001
-        _skip_rest(0, "text encode failed")
-        return _finish("failed", round(time.time() - t0, 2), error=str(e))
+        return _fail_preload("text encode failed", e, round(time.time() - t0, 2))
     load_s = round(time.time() - t0, 2)
     print(f"[stage1] text encoded for {len(items)} item(s); encoder freed ({load_s}s)")
 
@@ -333,8 +342,7 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
         ae = load_ae(model_name, device=torch_device)
         ae.eval()
     except Exception as e:  # noqa: BLE001
-        _skip_rest(0, "model load failed")
-        return _finish("failed", load_s, error=str(e))
+        return _fail_preload("model load failed", e, load_s)
 
     ref_tokens = ref_ids = None
     if ref_paths:
@@ -347,8 +355,7 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
             n_tok = int(ref_tokens.shape[1]) if ref_tokens is not None else 0
             print(f"[stage1] encoded {len(refs)} reference image(s) -> {n_tok} ref tokens")
         except Exception as e:  # noqa: BLE001
-            _skip_rest(0, "reference encode failed")
-            return _finish("failed", load_s, error=str(e))
+            return _fail_preload("reference encode failed", e, load_s)
 
     status = "completed"
     stop_file = out_dir / "STOP"

@@ -664,6 +664,38 @@ short-run resume smoke once the isolated PEFT overlay path is declared on the ta
 
 ## P2-era fixes (non-milestone)
 
+### Krea2 Turbo vendored as a Loom T2I generator (2026-06-25, user-requested)
+
+Author direction: keep **Krea 2 Turbo** as the practical target after the local smoke produced a
+768² image in under 5 minutes, and do not chase Raw/full-fp16 fit. The prior `src/pipeline/krea2/`
+spike followed `.github/copilot/kb-krea2.md`'s Proposed Pipeline layout; this pass vendors the Turbo
+path into Loom.
+
+- **Vendored worker:** copied the Krea2 source pipeline into `pipelines/krea2/` (R162 vendoring) and
+  narrowed the Loom vendored model registry to **`krea2-turbo` only**. Defaults are **768×768 / 8
+  steps / guidance_scale 0.0 / CPU offload** for the 16 GB ROCm target. Raw remains intentionally
+  absent from Loom.
+- **Adapter + backend wiring:** added `orchestrator/adapters/krea2.py` (file-path invocation, same
+  manifest-as-truth parse shape as zimage/sd35), registered it in the runner adapter table,
+  `/capabilities`, and `/generate`, with a **16 GB VRAM estimate**. `model_catalog.CATALOG_VERSION`
+  bumped to 2 and now serves `krea2-turbo` with advanced optional Quanto knobs
+  (`quant_backend`, `quant_dtype`, `quant_skip_modules`) left **unset by default** after the fp8 color
+  smoke showed artifacts.
+- **Mode contract:** local Diffusers exposes **`Krea2Pipeline` only** (`diffusers/pipelines/__init__`
+  imports `["Krea2Pipeline"]`), not a `Krea2Img2ImgPipeline`; Loom therefore advertises **T2I only**
+  (`modes=["t2i"]`). Stage-B/hero expansion stays on zimage/sd35/flux2.
+- **Frontend:** Stage-A/Sandbox pipeline selector now includes **`krea2 turbo`** and the existing
+  catalog-driven parameter drawer exposes Krea2's tunables. No Stage-B or postprocess backend option
+  was added because those are image-conditioned paths.
+- **Tests / verification:** Krea worker `--help` imports clean and shows `--model-name {krea2-turbo}`;
+  focused no-GPU tests `pytest -p no:cacheprovider orchestrator/tests/test_krea2_adapter.py
+  orchestrator/tests/test_model_catalog.py` = **28 passed**; `npm run build` clean. ⚠ The existing
+  `.pytest_cache` directory under the Loom repo has an ACL that denies traversal/removal; pytest was
+  rerun with the cache provider disabled so it did not affect verification.
+
+**Push note:** initial vendoring commit hash is recorded in the follow-up journal-only commit after
+Git assigns it.
+
 ### flux.2-dev Stage-B size + silent batch failure (2026-06-22, user-found in `loom/stubz001`)
 
 Two issues from a real `npc_lite` flux2-dev ref-mode Stage-B run. 295 backend tests; build clean.

@@ -1,5 +1,5 @@
-"""Model catalog — every variant + every adjustable parameter for the three image
-pipelines loom drives (flux2 · sd35 · zimage), P1/M3.
+"""Model catalog — every variant + every adjustable parameter for the image
+pipelines loom drives (flux2 · sd35 · zimage · krea2), P1/M3.
 
 A prototyping tool needs the **full** surface, not just our defaults (user request): all
 model variants (with repo + gated flag + per-model defaults/capabilities) and every tunable
@@ -7,8 +7,8 @@ generation parameter each worker CLI accepts — including ones earlier adapters
 This module is the single source the UI's model picker + parameter controls read, and that
 `/generate` validates a request's `params` against (M3 step 4b).
 
-**Mirrors the pipeline source** (`FLUX2_MODEL_INFO`, `SD35_MODEL_INFO`, `ZIMAGE_MODEL_INFO`
-+ each `run_pipeline.py` argparser). A drift-guard test extracts the variant ids from the
+**Mirrors the pipeline source** (`FLUX2_MODEL_INFO`, `SD35_MODEL_INFO`, `ZIMAGE_MODEL_INFO`,
+`KREA2_MODEL_INFO` + each `run_pipeline.py` argparser). A drift-guard test extracts the variant ids from the
 vendored source and asserts this catalog stays in lockstep — treat a mismatch as "update the
 catalog". Param specs are curated (type/default/range/applies-to) for validation + UI hints.
 
@@ -25,7 +25,7 @@ try:
 except ImportError:  # pragma: no cover - direct-run convenience
     import flux2_prompt  # type: ignore
 
-CATALOG_VERSION = 1
+CATALOG_VERSION = 2
 
 # --- parameter specs ------------------------------------------------------------
 # A param spec: name (loom key) -> {flag, type, default, ...constraints, modes, note}.
@@ -208,6 +208,54 @@ def _catalog() -> dict:
                 {"name": "no_cpu_offload", "flag": "--no-cpu-offload", "type": "flag", "default": False},
             ],
             "modes": ["t2i", "img2img", "inpaint"],
+        },
+        # -- krea2 ---------------------------------------------------------------
+        "krea2": {
+            "loom_access": "standalone Krea 2 Turbo text-to-image generator. Native Diffusers "
+                           "support currently exposes Krea2Pipeline only, so Loom wires t2i "
+                           "and does not advertise img2img/inpaint.",
+            "variants": [
+                {"id": "krea2-turbo", "repo_id": "krea/Krea-2-Turbo",
+                 "gated": False, "supports_negative_prompt": False, "distilled": True,
+                 "defaults": {"num_steps": 8, "guidance_scale": 0.0, "width": 768, "height": 768},
+                 "note": "Turbo distilled Krea 2; 8 steps, CFG 0; 768² default for the 16 GB ROCm rig"},
+            ],
+            "params": [
+                {"name": "model_name", "flag": "--model-name", "type": "enum", "default": "krea2-turbo"},
+                {"name": "width", "flag": "--width", "type": "int", "default": 768,
+                 "min": 256, "max": 2048, "step": 16, "note": "divisible by 16"},
+                {"name": "height", "flag": "--height", "type": "int", "default": 768,
+                 "min": 256, "max": 2048, "step": 16, "note": "divisible by 16"},
+                {"name": "seed", "flag": "--seed", "type": "int", "default": None,
+                 "note": "random if unset"},
+                {"name": "num_steps", "flag": "--num-steps", "type": "int", "default": None,
+                 "min": 1, "max": 80, "note": "defaults to the Turbo preset"},
+                {"name": "guidance_scale", "flag": "--guidance-scale", "type": "float",
+                 "default": None, "min": 0.0, "max": 30.0,
+                 "note": "Turbo default is 0.0 (CFG off)"},
+                {"name": "negative_prompt", "flag": "--negative-prompt", "type": "str",
+                 "default": None, "note": "ignored by Turbo at guidance 0"},
+                {"name": "max_sequence_length", "flag": "--max-sequence-length", "type": "int",
+                 "default": 512, "min": 64, "max": 1024},
+                {"name": "dtype", "flag": "--dtype", "type": "enum", "default": "bfloat16",
+                 "choices": ["bfloat16", "float16", "float32"]},
+                {"name": "no_cpu_offload", "flag": "--no-cpu-offload", "type": "flag",
+                 "default": False},
+                {"name": "lora_path", "flag": "--lora-path", "type": "str", "default": None,
+                 "note": "local Diffusers-compatible Krea 2 LoRA file or directory"},
+                {"name": "lora_weight", "flag": "--lora-weight", "type": "float", "default": None,
+                 "min": 0.0, "max": 4.0},
+                {"name": "quant_backend", "flag": "--quant-backend", "type": "enum",
+                 "default": None, "choices": ["quanto"], "advanced": True,
+                 "note": "experimental; leave unset for normal Turbo runs"},
+                {"name": "quant_dtype", "flag": "--quant-dtype", "type": "enum",
+                 "default": "float8", "choices": ["float8", "int8", "int4", "int2"],
+                 "advanced": True},
+                {"name": "quant_skip_modules", "flag": "--quant-skip-modules", "type": "str",
+                 "default": None, "advanced": True,
+                 "note": "comma-separated local module names to keep unquantized"},
+            ],
+            "modes": ["t2i"],
         },
         # ── ltxv (video sketch — P1/M7: i2v from the hero → chained frame harvest) ──
         "ltxv": {

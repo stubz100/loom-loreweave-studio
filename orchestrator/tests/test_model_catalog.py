@@ -21,6 +21,7 @@ _SOURCES = {
     "flux2": (_MULTISTACK / "flux2" / "src" / "flux2" / "util.py", r'"(flux\.2-[a-z0-9-]+)"\s*:\s*\{'),
     "sd35": (_MULTISTACK / "src" / "pipeline" / "sd35" / "stage1_load_pipeline.py", r'"(sd3\.5-[a-z0-9-]+)"\s*:\s*\{'),
     "zimage": (_MULTISTACK / "src" / "pipeline" / "zimage" / "stage1_load_pipeline.py", r'"(zimage-[a-z0-9]+)"\s*:\s*\{'),
+    "krea2": (CONFIG.app_repo_root / "pipelines" / "krea2" / "stage1_load_pipeline.py", r'"(krea2-[a-z0-9]+)"\s*:\s*\{'),
     "birefnet": (_MULTISTACK / "src" / "pipeline" / "postproc" / "birefnet" / "run_pipeline.py",
                  r'"(birefnet(?:-[a-z0-9]+)?)"\s*:\s*\{'),
     "ltxv": (_MULTISTACK / "src" / "pipeline" / "ltxv" / "stage1_load_pipeline.py",
@@ -28,9 +29,9 @@ _SOURCES = {
 }
 
 
-def test_catalog_has_five_pipelines():
-    # birefnet joined at M3.5 (postproc-class); ltxv at M7 (video sketch)
-    assert set(mc.pipelines()) == {"flux2", "sd35", "zimage", "birefnet", "ltxv"}
+def test_catalog_has_six_pipelines():
+    # birefnet joined at M3.5 (postproc-class); ltxv at M7 (video sketch); krea2 is T2I only.
+    assert set(mc.pipelines()) == {"flux2", "sd35", "zimage", "krea2", "birefnet", "ltxv"}
 
 
 def test_variants_well_formed():
@@ -59,6 +60,12 @@ def test_sd35_medium_present_and_ungated():
 
 def test_zimage_variants_ungated():
     assert all(v["gated"] is False for v in mc.variants("zimage"))
+
+
+def test_krea2_turbo_only_and_t2i_only():
+    assert mc.variant_ids("krea2") == ["krea2-turbo"]
+    assert mc.find_variant("krea2", "krea2-turbo")["repo_id"] == "krea/Krea-2-Turbo"
+    assert mc.CATALOG["krea2"]["modes"] == ["t2i"]
 
 
 def test_validate_params_accepts_and_drops_none():
@@ -161,6 +168,7 @@ def test_model_size_default_dev_is_512_others_none():
     assert mc.model_size_default("flux2", "flux.2-klein-base-9b") == (None, None)
     assert mc.model_size_default("sd35", "sd3.5-medium") == (None, None)
     assert mc.model_size_default("zimage", "zimage-turbo") == (None, None)
+    assert mc.model_size_default("krea2", "krea2-turbo") == (768, 768)
     assert mc.model_size_default("flux2", None) == (None, None)
     assert mc.model_size_default("flux2", "bogus") == (None, None)
     # served on the catalog variant so the UI drawer can advertise it
@@ -177,7 +185,7 @@ def test_flux2_angle_directives_served_for_json_tree():
     assert set(served) == set(coverage.ANGLES)   # frozen vocab coverage
 
 
-@pytest.mark.parametrize("pipeline", ["flux2", "sd35", "zimage", "birefnet", "ltxv"])
+@pytest.mark.parametrize("pipeline", ["flux2", "sd35", "zimage", "krea2", "birefnet", "ltxv"])
 def test_catalog_variants_match_vendored_source(pipeline):
     """Drift guard: the catalog's variant ids == the *_MODEL_INFO keys in the vendored worker
     source. If a pipeline adds/renames a model, this fails until the catalog is updated."""

@@ -42,6 +42,7 @@ try:
     from .adapters import multi as multi_adapter
     from .adapters import sd35 as sd35_adapter
     from .adapters import flux2 as flux2_adapter
+    from .adapters import krea2 as krea2_adapter
     from .adapters import birefnet as birefnet_adapter
     from .adapters import identity as identity_adapter
     from .adapters import face_restore as face_restore_adapter
@@ -60,6 +61,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import multi as multi_adapter  # type: ignore
     from adapters import sd35 as sd35_adapter  # type: ignore
     from adapters import flux2 as flux2_adapter  # type: ignore
+    from adapters import krea2 as krea2_adapter  # type: ignore
     from adapters import birefnet as birefnet_adapter  # type: ignore
     from adapters import identity as identity_adapter  # type: ignore
     from adapters import face_restore as face_restore_adapter  # type: ignore
@@ -73,7 +75,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from logsetup import get_logger  # type: ignore
 
 ADAPTERS = {"zimage": zimage_adapter, "multi": multi_adapter, "sd35": sd35_adapter,
-            "flux2": flux2_adapter,
+            "flux2": flux2_adapter, "krea2": krea2_adapter,
             "birefnet": birefnet_adapter, "identity": identity_adapter,
             "face_restore": face_restore_adapter, "ltxv": ltxv_adapter,
             "frame_harvest": frame_harvest_adapter,
@@ -254,6 +256,7 @@ def _close_job(job) -> None:
 VRAM_ESTIMATES = {"zimage": 11.0, "multi": 14.0, "sd35": 13.0, "birefnet": 4.0,
                   "flux2": 13.0,                          # klein-4b flow+AE peak; Qwen3 encoder
                                                           # freed before the flow loads (§11)
+                  "krea2": 16.0,                          # Turbo @768 with CPU offload on 16 GB ROCm
                   "identity": 1.0, "face_restore": 1.0,   # onnx CPU — effectively no VRAM
                   "ltxv": 12.0,                           # 2B + T5-XXL w/ model offload
                   "frame_harvest": 1.0,                   # OpenCV CPU

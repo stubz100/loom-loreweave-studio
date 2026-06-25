@@ -38,6 +38,7 @@ try:
     from .adapters import multi as multi_adapter
     from .adapters import sd35 as sd35_adapter
     from .adapters import flux2 as flux2_adapter
+    from .adapters import krea2 as krea2_adapter
     from .adapters import birefnet as birefnet_adapter
     from .adapters import identity as identity_adapter
     from .adapters import face_restore as face_restore_adapter
@@ -63,6 +64,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import multi as multi_adapter  # type: ignore
     from adapters import sd35 as sd35_adapter  # type: ignore
     from adapters import flux2 as flux2_adapter  # type: ignore
+    from adapters import krea2 as krea2_adapter  # type: ignore
     from adapters import birefnet as birefnet_adapter  # type: ignore
     from adapters import identity as identity_adapter  # type: ignore
     from adapters import face_restore as face_restore_adapter  # type: ignore
@@ -110,7 +112,7 @@ class GenerateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    pipeline: Literal["zimage", "multi", "sd35", "flux2"] = "zimage"
+    pipeline: Literal["zimage", "multi", "sd35", "flux2", "krea2"] = "zimage"
     mode: Literal["t2i", "ideate", "img2img", "inpaint", "ref"] = "t2i"
     prompt: str
     count: int = Field(default=3, ge=1, le=MAX_BATCH)
@@ -2558,6 +2560,7 @@ def create_app() -> FastAPI:
             "multi": multi_adapter.capabilities(CONFIG.pipeline_roots),
             "sd35": sd35_adapter.capabilities(CONFIG.pipeline_roots),
             "flux2": flux2_adapter.capabilities(CONFIG.pipeline_roots),
+            "krea2": krea2_adapter.capabilities(CONFIG.pipeline_roots),
             "birefnet": birefnet_adapter.capabilities(CONFIG.pipeline_roots),
             "identity": identity_adapter.capabilities(CONFIG.pipeline_roots),
             "face_restore": face_restore_adapter.capabilities(CONFIG.pipeline_roots),

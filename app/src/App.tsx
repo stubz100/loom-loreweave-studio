@@ -127,8 +127,8 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [count, setCount] = useState(3);
   // Generation pipeline — selectable everywhere since 2026-06-10 #3 (the sandbox is the
-  // experimentation surface: multi casting + zimage/sd35 t2i all work unscoped).
-  const [castPipeline, setCastPipeline] = useState<"multi" | "zimage" | "sd35" | "flux2">("multi");
+  // experimentation surface: multi casting + standalone t2i generators all work unscoped).
+  const [castPipeline, setCastPipeline] = useState<"multi" | "zimage" | "sd35" | "flux2" | "krea2">("multi");
   const [numCandidates, setNumCandidates] = useState(2);
   const [ideationMode, setIdeationMode] = useState<"fast" | "refined">("fast");
   const [batchIds, setBatchIds] = useState<string[]>([]);
@@ -1568,7 +1568,7 @@ export default function App() {
               <select
                 value={castPipeline}
                 onChange={(e) => {
-                  setCastPipeline(e.target.value as "multi" | "zimage" | "sd35" | "flux2");
+                  setCastPipeline(e.target.value as "multi" | "zimage" | "sd35" | "flux2" | "krea2");
                   setAdvParamsA({});   // tunables are per-pipeline
                   setCastSampling(""); // M0d: preset is flux2-only
                 }}
@@ -1577,6 +1577,7 @@ export default function App() {
                 <option value="zimage">zimage</option>
                 <option value="sd35">sd35</option>
                 <option value="flux2">flux2 🔒</option>
+                <option value="krea2">krea2 turbo</option>
               </select>
             </label>
             <label>
@@ -3082,7 +3083,7 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
   // M0e Part B/C — shared output-size row (scale quick pick + explicit W×H), rendered on every
   // `sizeable` preset (zimage/sd35 i2i + the tile-CN Upscale).
   const sizeRow = sizeable && (
-    <div className="pp-size" title="output size (creative upscale): a scale factor over the source, or an explicit W×H (both required, ÷16). Blank = keep the source size.">
+    <div className="pp-size" title="output size (scale up or down): a scale factor over the source, or an explicit W×H (both required, ÷16). Blank = keep the source size.">
       <select value={scale} onChange={(e) => setScale(e.target.value)}
               disabled={outW.trim() !== "" || outH.trim() !== ""}>
         <option value="0.5">×0.5 (reduce)</option>
@@ -3156,7 +3157,7 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
                     onChange={(e) => setPreset(e.target.value as PostprocStep["preset"])}>
               <option value="clean">Clean (i2i 0.5)</option>
               <option value="refine">Refine (i2i 0.25)</option>
-              <option value="upscale">Upscale ✨ (tile)</option>
+              <option value="upscale">Scale ✨ (tile)</option>
               <option value="restore">Restore (GFPGAN)</option>
             </select>
             {isI2i && (
@@ -3201,7 +3202,7 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
             </>
           ) : isUpscale ? (
             <>
-              <span className="muted" title="SD3.5 Tile ControlNet creative upscale — single-run sd35 cn-inpaint on the sd3.5-medium base. Re-renders detail at the target size; structure-preserving.">
+              <span className="muted" title="SD3.5 Tile ControlNet scale — single-run sd35 cn-inpaint on the sd3.5-medium base. Re-renders detail at the target size (scale up or down); structure-preserving.">
                 ✨ SD3.5 Tile ControlNet · sd3.5-medium
               </span>
               <input className="prompt" type="number" step="0.05" min="0" max="2"
@@ -3242,9 +3243,18 @@ function Inspector({ job, output }: { job: Job; output?: string }) {
   const cell = ometa?.coverage_cell ?? cov;
   const file = output ?? r?.output_name;
   const showPreview = !!file && (r?.ok === true || job.status === "running");
+  // Image SIZE: prefer the LOADED image's natural dimensions (ground truth — postproc/scale
+  // changes the output), fall back to the job's requested width/height.
+  const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => { setDims(null); }, [file]);
+  const pw = typeof p.width === "number" ? p.width : undefined;
+  const ph = typeof p.height === "number" ? p.height : undefined;
+  const sizeText = dims ? `${dims.w} × ${dims.h}` : (pw && ph ? `${pw} × ${ph}` : "—");
   return (
     <div className="insp">
-      {showPreview && <img className="preview" src={outputUrl(file!)} alt={job.id} />}
+      {showPreview && <img className="preview" src={outputUrl(file!)} alt={job.id}
+                           onLoad={(e) => setDims({ w: e.currentTarget.naturalWidth,
+                                                    h: e.currentTarget.naturalHeight })} />}
       <dl>
         <dt>job</dt><dd>{job.id}</dd>
         <dt>status</dt>
@@ -3257,6 +3267,7 @@ function Inspector({ job, output }: { job: Job; output?: string }) {
           {job.stage ? ` · stage ${job.stage}` : ""}
         </dd>
         <dt>model</dt><dd>{String(p.model_name ?? "default")}</dd>
+        <dt>size</dt><dd>{sizeText}</dd>
         <dt>seed</dt><dd>{candSeed ?? ometa?.seed ?? r?.seed ?? (p.seed as number | undefined) ?? "—"}</dd>
         <dt>wall</dt><dd>{job.wall_s != null ? `${job.wall_s}s` : "—"}</dd>
         <dt>duration</dt><dd>{r?.duration_s != null ? `${r.duration_s}s` : "—"}</dd>

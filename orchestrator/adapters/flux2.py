@@ -49,6 +49,9 @@ WIRED_MODES = ("ref", "t2i", "img2img")
 WIRED_PARAMS = (
     "prompt", "mode", "width", "height", "seed", "model_name",
     "num_steps", "guidance", "ref_images", "init_image", "strength",
+    # M2.5 dev-only (quantized Comfy `flux.2-dev`): emitted via the catalog params channel only
+    # when present (UI gates them to dev); the worker ignores them for Klein.
+    "text_encoder", "fp8_matmul",
 )
 # Reference caps (kb-flux2.md §6): klein ≤4, dev ≤6.
 MAX_REFS = {"flux.2-dev": 6}

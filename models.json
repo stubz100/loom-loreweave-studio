@@ -44,14 +44,14 @@
   "multi_presets": {
     "fast": [
       {"id": "flux2-klein-4b", "repo_id": "black-forest-labs/FLUX.2-klein-4B", "probe": "flux-2-klein-4b.safetensors", "gated": true, "pipeline": "flux2"},
-      {"id": "flux2-dev-ae", "repo_id": "black-forest-labs/FLUX.2-dev", "probe": "ae.safetensors", "gated": true, "pipeline": "flux2"},
+      {"id": "flux2-dev-ae", "repo_id": "Comfy-Org/flux2-dev", "probe": "split_files/vae/flux2-vae.safetensors", "gated": false, "pipeline": "flux2", "note": "M2.5: the shared Flux2 VAE from the PUBLIC Comfy mirror (weights identical to the gated BFL ae.safetensors, verified) — Klein loads it via load_ae's Comfy-key remap; no FLUX.2-dev repo needed"},
       {"id": "qwen3-4b-text-encoder", "repo_id": "Qwen/Qwen3-4B", "fp8_repo_id": "Qwen/Qwen3-4B-FP8", "probe": "config.json", "gated": false, "pipeline": "flux2"},
       {"id": "sd35-large-turbo", "repo_id": "stabilityai/stable-diffusion-3.5-large-turbo", "probe": "model_index.json", "gated": true, "pipeline": "sd35"},
       {"id": "zimage-turbo", "repo_id": "Tongyi-MAI/Z-Image-Turbo", "probe": "model_index.json", "gated": false, "pipeline": "zimage"}
     ],
     "refined": [
       {"id": "flux2-klein-9b", "repo_id": "black-forest-labs/FLUX.2-klein-9B", "probe": "flux-2-klein-9b.safetensors", "gated": true, "pipeline": "flux2"},
-      {"id": "flux2-dev-ae", "repo_id": "black-forest-labs/FLUX.2-dev", "probe": "ae.safetensors", "gated": true, "pipeline": "flux2"},
+      {"id": "flux2-dev-ae", "repo_id": "Comfy-Org/flux2-dev", "probe": "split_files/vae/flux2-vae.safetensors", "gated": false, "pipeline": "flux2", "note": "M2.5: the shared Flux2 VAE from the PUBLIC Comfy mirror (weights identical to the gated BFL ae.safetensors, verified) — Klein loads it via load_ae's Comfy-key remap; no FLUX.2-dev repo needed"},
       {"id": "qwen3-8b-text-encoder", "repo_id": "Qwen/Qwen3-8B-FP8", "fp8_repo_id": "Qwen/Qwen3-8B-FP8", "probe": "config.json", "gated": false, "pipeline": "flux2"},
       {"id": "sd35-large", "repo_id": "stabilityai/stable-diffusion-3.5-large", "probe": "model_index.json", "gated": true, "pipeline": "sd35"},
       {"id": "zimage-base", "repo_id": "Tongyi-MAI/Z-Image", "probe": "model_index.json", "gated": false, "pipeline": "zimage"}

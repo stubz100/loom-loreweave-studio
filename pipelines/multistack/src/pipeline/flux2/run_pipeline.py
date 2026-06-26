@@ -20,7 +20,7 @@ if _FLUX2_LIB_SRC.is_dir() and str(_FLUX2_LIB_SRC) not in sys.path:
 from flux2.util import FLUX2_MODEL_INFO
 
 from .. import _artifact_id
-from . import stage1_load_models, stage2_text_encode, stage3_denoise, stage4_decode
+from . import scaled_fp8, stage1_load_models, stage2_text_encode, stage3_denoise, stage4_decode
 from .manifest import PipelineManifest
 
 
@@ -39,6 +39,10 @@ def run(
     init_image: str | None = None,
     strength: float = 0.25,
     ref_images: list[str] | None = None,
+    fp8_matmul: str = "auto",
+    text_encoder_variant: str | None = None,
+    dtype: str = "bfloat16",
+    local_files_only: bool = True,
 ) -> PipelineManifest:
     """Run the full Flux2 image generation pipeline.
 
@@ -99,7 +103,12 @@ def run(
     # --- Stage 1: Load models ---
     rec = manifest.begin_stage("load_models", stage1_load_models.get_manifest_inputs(model_name, device, cpu_offload))
     try:
-        s1 = stage1_load_models.run(model_name=model_name, device=device, cpu_offload=cpu_offload)
+        s1 = stage1_load_models.run(
+            model_name=model_name, device=device, cpu_offload=cpu_offload,
+            dtype=dtype, local_files_only=local_files_only,
+            fp8_matmul=fp8_matmul, text_encoder_variant=text_encoder_variant,
+        )
+        manifest.quantized = s1.get("quantized", {})  # M2.5: comfy-q8 lineage for dev, {} for Klein
         manifest.end_stage(rec, stage1_load_models.get_manifest_outputs(s1), stage1_load_models.get_manifest_debug(s1))
         print(f"[stage1] Models loaded in {rec.duration_s}s" + (" (cpu_offload)" if cpu_offload else ""))
     except Exception as e:
@@ -258,6 +267,12 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
     model_name = shared.get("model_name", "flux.2-klein-4b")
     if model_name not in FLUX2_MODEL_INFO:
         print(f"[batch-error] unknown model_name {model_name!r}")
+        return 2
+    # M2.5: the quantized `flux.2-dev` is single-run only (the spike has no batch loop). The batch
+    # `ref` coverage sweep stays Klein-only — refuse dev here so it can never fall through to the
+    # full-weight load_flow_model("flux.2-dev") path that won't fit the 16 GB rig.
+    if model_name == "flux.2-dev":
+        print("[batch-error] flux.2-dev is single-run only (M2.5); the batch ref sweep is Klein-only")
         return 2
     info = FLUX2_MODEL_INFO[model_name]
     distilled = info.get("guidance_distilled", True)
@@ -433,6 +448,14 @@ def main():
                         help="Reference image path (repeatable, <=4 Klein/<=6 dev) for --mode ref.")
     parser.add_argument("--jobs-file", default=None,
                         help="Batch mode: a JSON {shared, items} file — one load, N images.")
+    # M2.5 dev-only knobs (ignored for Klein): the quantized `flux.2-dev` text-encoder precision
+    # and the scaled-FP8 matmul backend.
+    parser.add_argument("--text-encoder", dest="text_encoder", default=None,
+                        choices=list(scaled_fp8.TEXT_ENCODER_CLI_CHOICES),
+                        help="flux.2-dev only: Mistral TE precision (fp8 default / bf16; fp16 aliases bf16).")
+    parser.add_argument("--fp8-matmul", dest="fp8_matmul", default="auto",
+                        choices=list(scaled_fp8.FP8_MATMUL_MODES),
+                        help="flux.2-dev only: scaled-FP8 Linear backend (auto/native use torch._scaled_mm).")
     args = parser.parse_args()
 
     if args.jobs_file:
@@ -455,6 +478,8 @@ def main():
         init_image=args.init_image,
         strength=args.strength,
         ref_images=args.ref_image,
+        fp8_matmul=args.fp8_matmul,
+        text_encoder_variant=args.text_encoder,
     )
 
 

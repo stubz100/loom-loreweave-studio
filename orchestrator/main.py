@@ -774,7 +774,7 @@ def create_app() -> FastAPI:
             if not dry_run:
                 resolved = model or model_catalog.default_model(backend)
                 variant = model_catalog.find_variant(backend, resolved)
-                if variant and not components.image_model_present(variant["repo_id"]):
+                if variant and not components.variant_weights_present(variant):
                     raise HTTPException(412, {
                         "error": f"{name} backend model {variant['id']!r} not in cache",
                         "repo_id": variant["repo_id"], "gated": variant["gated"],
@@ -944,7 +944,7 @@ def create_app() -> FastAPI:
             if not req.dry_run:
                 chosen = base.get("model_name") or model_catalog.default_model(req.pipeline)
                 variant = model_catalog.find_variant(req.pipeline, chosen)
-                if variant and not components.image_model_present(variant["repo_id"]):
+                if variant and not components.variant_weights_present(variant):
                     raise HTTPException(412, {
                         "error": f"{req.pipeline} model {variant['id']!r} not in cache",
                         "repo_id": variant["repo_id"], "gated": variant["gated"],
@@ -1670,7 +1670,7 @@ def create_app() -> FastAPI:
         # Pre-flight: the EFFECTIVE (or default) img2img model must be cached (fail fast, not mid-run).
         variant = model_catalog.find_variant(
             req.pipeline, model_name or model_catalog.default_model(req.pipeline))
-        if variant and not components.image_model_present(variant["repo_id"]):
+        if variant and not components.variant_weights_present(variant):
             raise HTTPException(412, {"error": f"{req.pipeline} model {variant['id']!r} not in cache",
                                       "repo_id": variant["repo_id"], "gated": variant["gated"],
                                       "hint": "fetch it first (gated repos need a HF license + token)"})
@@ -1889,7 +1889,7 @@ def create_app() -> FastAPI:
                     "argv": ADAPTERS["ltxv"].build_argv(spec, CONFIG.venv_python, script)}
         chosen = model_name or model_catalog.default_model("ltxv")
         variant = model_catalog.find_variant("ltxv", chosen)
-        if variant and not components.image_model_present(variant["repo_id"]):
+        if variant and not components.variant_weights_present(variant):
             raise HTTPException(412, {
                 "error": f"ltxv model {variant['id']!r} not in cache",
                 "repo_id": variant["repo_id"], "gated": variant["gated"],
@@ -2281,7 +2281,7 @@ def create_app() -> FastAPI:
             else:
                 resolved = params_in.get("model_name") or model_catalog.default_model(backend)
                 variant = model_catalog.find_variant(backend, resolved)
-                if variant and not components.image_model_present(variant["repo_id"]):
+                if variant and not components.variant_weights_present(variant):
                     raise HTTPException(412, {
                         "error": f"{backend} model {variant['id']!r} not in cache",
                         "repo_id": variant["repo_id"], "gated": variant["gated"],

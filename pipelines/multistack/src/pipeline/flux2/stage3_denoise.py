@@ -21,6 +21,42 @@ from flux2.sampling import (
 )
 
 
+def _latent_stats(x: torch.Tensor) -> dict:
+    x_float = x.detach().float()
+    finite = torch.isfinite(x_float)
+    total = x_float.numel()
+    finite_count = int(finite.sum().item())
+    stats = {
+        "x_dtype": str(x.dtype),
+        "x_device": str(x.device),
+        "x_finite": finite_count == total,
+        "x_finite_count": finite_count,
+        "x_total_count": total,
+        "x_finite_ratio": round(finite_count / total, 8) if total else 1.0,
+    }
+    if finite_count:
+        finite_x = x_float[finite]
+        stats.update({
+            "x_min": float(finite_x.min()),
+            "x_max": float(finite_x.max()),
+            "x_mean": float(finite_x.mean()),
+        })
+    else:
+        stats.update({"x_min": None, "x_max": None, "x_mean": None})
+    return stats
+
+
+def _ensure_finite_latents(x: torch.Tensor, context: str) -> None:
+    stats = _latent_stats(x)
+    if stats["x_finite"]:
+        return
+    raise FloatingPointError(
+        f"{context} produced non-finite latents "
+        f"({stats['x_finite_count']}/{stats['x_total_count']} finite, "
+        f"ratio={stats['x_finite_ratio']}); refusing to decode a likely black image"
+    )
+
+
 def run(
     model: Flux2,
     ctx: torch.Tensor,
@@ -87,6 +123,8 @@ def run(
                 img_cond_seq=img_cond,
                 img_cond_seq_ids=img_cond_ids,
             )
+
+        _ensure_finite_latents(x, "denoise")
 
     return {
         "x": x,
@@ -190,6 +228,8 @@ def run_img2img(
                 timesteps=timesteps, guidance=guidance,
             )
 
+        _ensure_finite_latents(x, "img2img denoise")
+
     return {
         "x": x,
         "x_ids": x_ids,
@@ -230,14 +270,9 @@ def get_manifest_outputs(result: dict) -> dict:
 
 def get_manifest_debug(result: dict) -> dict:
     x = result["x"]
-    return {
-        "x_dtype": str(x.dtype),
-        "x_device": str(x.device),
-        "x_min": float(x.float().min()),
-        "x_max": float(x.float().max()),
-        "x_mean": float(x.float().mean()),
-        "timesteps": result["timesteps"],
-    }
+    debug = _latent_stats(x)
+    debug["timesteps"] = result["timesteps"]
+    return debug
 
 
 def main():

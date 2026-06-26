@@ -241,7 +241,8 @@ base sampling — M0d is orchestrator + frontend surface only).
 **Part B — Sampling preset pull-down (finished 2026-06-20 15:28).** ⚙ Backend: `FLUX2_SAMPLING_PRESETS`
 in `model_catalog.py` (4 rows — **Fast** klein-4b 4/1.0 ★default, **Balanced** klein-base-4b 24/4.0
 ⭐recommended = the one-click pose fix, **Quality** klein-base-9b 40/4.5, **Dev/JSON** flux.2-dev
-50/4.5) attached to `CATALOG["flux2"]["sampling_presets"]` so `GET /models` serves it; `flux2_sampling_presets()`
+50/4.5 at original M0d time; M2.5 supersedes dev to quantized-safe 8/4.0) attached to
+`CATALOG["flux2"]["sampling_presets"]` so `GET /models` serves it; `flux2_sampling_presets()`
 helper. Each preset's `model_name` is a real variant (asserted). Frontend: `Flux2SamplingPreset` type +
 `sampling_presets?` on `PipelineModels`; a reusable **`Flux2SamplingSelect`** dropdown on the **Stage-B
 bar** (flux2 family) and the **t2i cast bar** (castPipeline=flux2). Picking a preset sets the model +
@@ -659,6 +660,158 @@ and this journal update.
 
 ⏭ Next: promote-on-success + `lora.manifest.json` writeback and the Train panel UI, then a real queued
 short-run resume smoke once the isolated PEFT overlay path is declared on the target machine.
+
+---
+
+## M2.5 — quantized `flux.2-dev` swap + gated-repo elimination (spec §12 "M2.5"; WBS P2-2.5)
+
+**Status (2026-06-26 09:51): backend implementation COMPLETE — no-GPU close criteria met; on-rig dev
+smoke + FE advanced-foldout owed (visual sign-off, M0e pattern).** Author added M2.5 as an interim
+runtime/model-fit migration: the full BFL `flux.2-dev` stack never fit the 16 GB ROCm rig, so route
+the logical `flux.2-dev` id to the Comfy-Org quantized split files proven in the old-project spike
+`src/pipeline/flux2_q8`. Reviewed the spec against the live code + spike; resolved three scope
+questions and a dependency-elimination opportunity with the author, then built it.
+
+**Decisions (now written into [`kb-loom-p2.md`](kb-loom-p2.md) §12 "M2.5 solution design"):**
+
+- **Scope = single-run dev only.** Quantized dev serves **t2i** (JSON authoring) + **i2i** (M0c/M0d
+  postproc, M0e upscale). The **batch `ref` Stage-B sweep stays Klein-only** — loom's
+  `pipeline.flux2.run_pipeline.run_jobs` (which calls full-weight `flux2.util.load_flow_model`) is
+  **not** rerouted; the spike has no batch loop. Klein remains the §11/R147 identity-preserving
+  workhorse. ⚠ Guard so dev can't be silently submitted to a coverage sweep (would hit the OOM path).
+- **Integration = fold, not port.** Branch on `model_name == "flux.2-dev"` inside the **existing**
+  vendored `run_pipeline.run()` (+ `stage1_load_models` dev branch), reusing the spike's `scaled_fp8`
+  loaders and the existing `stage2/3/4`. Keeps one CLI/adapter contract; ⚙ loom's `--cpu-offload` is
+  opt-in (default off) — keep it, don't adopt the spike's `--no-cpu-offload` default-on. Dev-only
+  knobs `--text-encoder` (`fp8` default / `bf16`) + `--fp8-matmul` (`auto`/`native`/`dequant`), gated
+  to dev.
+- **Acceptance bar.** Closes on wiring + dry-run argv + no-GPU tests green; the real **on-rig dev
+  smoke is owed** (visual sign-off, M0e pattern) — full dev never ran here, so there's no baseline.
+
+**Gated-repo elimination (author confirmed — cut the large repos entirely).** Cache audit
+(`F:\HF_HOME`, 2026-06-26):
+
+- The quantized dev path reads only **~17 MB** from the **166 GB** `black-forest-labs/FLUX.2-dev`
+  repo: `text_encoder/config.json` (4 KB) + `tokenizer/` (~17 MB) — used by the spike's
+  `load_comfy_mistral_text_encoder` (`AutoConfig`/`AutoProcessor.from_pretrained(subfolder=…)`). The
+  168 GB of safetensors are unused. → **Vendor** the config+tokenizer into the pipeline tree
+  (suggested `pipelines/multistack/flux2/assets/mistral_te/`), load via local path.
+- The **90 GB** `mistralai/Mistral-Small-3.2-24B` repo is referenced **nowhere** by the quantized
+  path (weights come from Comfy's `mistral_3_small_flux2_fp8`) → free to drop.
+- Klein's only remaining BFL file is the VAE (`ae.safetensors`, 321 MB) → **re-point to Comfy's
+  identical `flux2-vae.safetensors`** (weight-source change only; Klein runtime/Stage-B unchanged).
+- ⚙ Needed Comfy footprint ≈ **51 GB**, public/ungated: `flux2_dev_fp8mixed.safetensors` (34 GB,
+  transformer) + `mistral_3_small_flux2_fp8.safetensors` (17 GB, TE) + `flux2-vae.safetensors`
+  (321 MB). Skip the fp4 TE (NVFP4 — research), the bf16 TE (34 GB, only for a quality-compare), and
+  the Turbo LoRAs. ⇒ after M2.5 **neither gated repo is referenced by any runtime path / `models.json`
+  entry** (incl. the `flux2-dev-ae` `multi_presets` rows → Comfy VAE).
+
+**VAE value spot-check (✅ PASS — done 2026-06-26 09:14, gates the Klein re-point).** Compared the two
+321 MB files tensor-by-tensor with the spike's `map_comfy_vae_key` remap applied (numpy+safetensors,
+no torch; script in session scratchpad):
+
+- Remap is a clean **251 → 251 bijection** (0 missing, 0 shape mismatch, 0 dtype mismatch, 0 uncovered
+  BFL keys). The Diffusers→BFL key renames + the q/k/v/proj **2D→4D `maybe_unsqueeze`** all resolve.
+- **250/251 tensors bit-identical.** The sole difference is `bn.num_batches_tracked` (BFL=`400000`,
+  Comfy=`0`) — a BatchNorm *training* counter never read at inference. The operative BN stats
+  `bn.running_mean` / `bn.running_var` are **exact-equal**, as is every conv/attention weight. ⇒
+  decode output is identical; Klein VAE re-point is safe.
+
+⚠ **R162 vendoring (build constraint for the fold):** the quantized loader code must land in the
+monorepo `src/pipeline/` first, then be copied byte-identically into
+`loom/loom-loreweave-studio/pipelines/multistack/src/pipeline/flux2/` (MD5 drift-guard). The spike
+already lives at `src/pipeline/flux2_q8`; the fold consolidates its `scaled_fp8` + dev loader branch
+into `pipeline.flux2` on both sides.
+
+**Implementation (built 2026-06-26 09:14–09:51, monorepo-first then synced to loom; 319 orchestrator
+tests green incl. 12 new).**
+
+- **Vendored Mistral config+tokenizer** → `src/pipeline/flux2/assets/mistral_te/` (`text_encoder/
+  config.json` + `tokenizer/*`, ~17 MB + `PROVENANCE.md`). Verified `AutoConfig`→`Mistral3Config`,
+  `AutoProcessor`→`PixtralProcessor`, and `apply_chat_template` all load from the **local path** (no
+  BFL repo). ⚙ transformers 5.4.0.
+- **Folded the quantized dev loader** into `pipeline.flux2` (NOT a separate module): new
+  `scaled_fp8.py` (ported from the spike; `config_repo`/`processor_repo` default to the vendored
+  dir), a `model_name=="flux.2-dev"` branch in `stage1_load_models.run()` (`_load_dev_quantized` +
+  `ComfyMistralEmbedder`, reusing the existing `stage2/3/4`), and `run_pipeline.run()` threading
+  `fp8_matmul`/`text_encoder_variant`/`dtype`/`local_files_only` (+ `--text-encoder`/`--fp8-matmul`
+  CLI, dev-only). ⚙ Kept loom's opt-in `--cpu-offload` (NOT the spike's default-on). The batch
+  `run_jobs` is **guarded to refuse `flux.2-dev`** (single-run only; never reaches the full-weight
+  `load_flow_model`).
+- **Manifest** gained a `quantized` dict (`backend_variant:"comfy-q8"`, hf_repo, transformer/TE/VAE
+  files, te variant, fp8_matmul, dtype, cpu_offload); `{}` for Klein. Set in `run_pipeline` from the
+  stage-1 result.
+- **Catalog + adapter:** dev variant `repo_id`/`ae_repo_id`→`Comfy-Org/flux2-dev`, `gated:False`,
+  `text_encoder` de-mistral'd; two dev-only advanced params (`text_encoder` fp8/bf16, `fp8_matmul`)
+  with a `models:["flux.2-dev"]` gate; the M0e **512² default preserved**. `emit_argv` now honors a
+  param `models` gate so Klein never emits the dev knobs even with a stale params dict. Adapter
+  `WIRED_PARAMS` advertises them.
+- **Dropped BOTH gated repos.** Klein's VAE re-points to the public Comfy `flux2-vae.safetensors`:
+  `flux2.util.load_ae` now detects the Comfy/Diffusers layout and remaps onto the BFL AutoEncoder
+  (`map_comfy_vae_key`, canonical copy in `flux2.util`; `scaled_fp8` keeps a copy, equivalence
+  asserted in tests). FLUX2_MODEL_INFO klein/dev `ae_repo_id`/`filename_ae`→Comfy; `load_flow_model`
+  + `load_text_encoder` **guard `flux.2-dev`** (raise → the quantized path). `models.json`
+  `flux2-dev-ae` rows → Comfy VAE (id kept, `gated:false`). After M2.5 **no active data structure
+  (models.json / catalog / FLUX2_MODEL_INFO) references `black-forest-labs/FLUX.2-dev` or
+  `mistralai/Mistral-Small`** (only doc/comment strings + dead BFL-lib `text_encoder.py` default
+  remain; no download path reaches them).
+- **VAE re-point validated no-GPU:** the real Comfy VAE remaps key-for-key onto the BFL AutoEncoder
+  (251/251) and `load_state_dict(strict=True)` succeeds — the durable test
+  `test_comfy_vae_remaps_onto_bfl_autoencoder_strict` (skips if the file isn't cached). Value
+  equivalence was the one-time spot-check above.
+- **Tests:** `orchestrator/tests/test_flux2_dev_quantized.py` (12) — dev argv/size, structured
+  elimination invariant (models.json + catalog + FLUX2_MODEL_INFO), dev loader guards, manifest
+  field, batch-guard, key-map equivalence, Comfy-VAE strict-load. Full suite **319 passed**. Dev
+  single-run `build_argv` emits `… --model-name flux.2-dev --text-encoder fp8 --fp8-matmul auto
+  --cpu-offload`.
+
+⚙ Disk win realised: dev's runtime download drops from ~150 GB gated dev weights + 90 GB Mistral to
+~51 GB public Comfy split files (fp8 transformer 34 + fp8 TE 17 + VAE 0.3); Klein keeps its klein
+flow/Qwen3 repos + the 321 MB Comfy VAE.
+
+**Fix (2026-06-26, user-reported false-negative gate).** The standalone `/generate` + img2img-cast +
+postproc weight pre-flights probe presence via `components.image_model_present(repo_id)` =
+`model_index.json` — which Klein/sd35/zimage/ltxv repos HAVE but the Comfy split-files repo does NOT,
+so a fully-cached dev run was wrongly 412'd ("flux2 model 'flux.2-dev' not in cache"). Added
+`components.variant_weights_present(variant)`: a variant may declare `probe_files`, then ALL must be
+cached; else falls back to `model_index.json`. The dev catalog variant now carries `probe_files`
+(the 3 `split_files/…` paths); the 5 gate call sites (`main.py` 777/947/1673/1892/2284) use the new
+helper. Klein/sd35/zimage/ltxv unchanged (no `probe_files` → same model_index.json probe). +3 tests
+(15 M2.5 / 322 suite green). These are loom-orchestrator files (not vendored) → no R162 sync.
+⚠ Targeted fetch of the 3 dev split files on a fresh rig (vs a whole-repo snapshot that would also
+pull the 34 GB bf16 TE / fp4 / Turbo LoRAs) is still owed.
+
+**Fix (2026-06-26, user-reported black t2i output on rig).** Test project `loom/stubz001`,
+`job_5ed46dc6/flux2_20260626_082100_s1444149108.png`, was not a prompt/color failure: the PNG was
+all black because stage 3 produced **NaN latents** (`x_min/x_max/x_mean = NaN`) and stage 4 decoded
+them without complaint. The queue payload had explicitly sent `flux.2-dev` with **50 steps** and
+guidance `4.0` from the pre-quantized Dev/JSON/full-dev profile. That is outside the locally proven
+Comfy q8 operating point (8 steps with native scaled-FP8 matmul); the run took ~686 s and still
+ended non-finite.
+
+Fixes:
+
+- M2.5 `flux.2-dev` defaults now use the quantized-safe profile: **8 steps / guidance 4.0 / 512²**
+  in both the live catalog variant and the Dev/JSON sampling preset. The vendored worker registry
+  (`FLUX2_MODEL_INFO["flux.2-dev"].defaults`) matches, so unset CLI runs also fall back to 8 steps.
+- `stage3_denoise` now computes finite-aware latent stats and raises `FloatingPointError` if denoise
+  returns NaN/Inf, refusing to decode a likely-black image. The manifest debug path now reports
+  `x_finite`, finite counts, finite ratio, and finite-only min/max/mean.
+- Klein base defaults stayed at 50 steps; only `flux.2-dev` moved to 8. Added no-GPU regression
+  coverage for the dev default and the non-finite guard.
+
+Verification: `test_flux2_dev_quantized.py` **17 passed**, `test_model_catalog.py` **22 passed**,
+targeted `test_flux2_adapter` **2 passed**, direct `/generate` dev-size regression **1 passed**.
+⚠ Restart/reload Loom so the frontend/server sees the updated `/models` catalog before rerunning the
+rig smoke; rerun t2i JSON at the 8-step default, then i2i/postproc.
+
+⚠ **Owed (not gating the no-GPU close):** (1) on-rig dev smoke — real quantized t2i JSON + i2i
+postproc generate on the RX 9070 XT using the **8-step q8 default**, manifest shows `comfy-q8`; (2) a
+Klein `ref` sweep still decodes correctly on the Comfy VAE; (3) FE advanced foldout to surface the
+`text_encoder`/`fp8_matmul` dev knobs (catalog already serves them). (4) confirm
+`Comfy-Org/flux2-dev` is ungated at fetch.
+
+⏭ Push at milestone close (carried convention) once the author signs off the on-rig smoke.
 
 ---
 

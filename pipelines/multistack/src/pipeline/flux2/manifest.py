@@ -43,6 +43,13 @@ class PipelineManifest:
     # session manifest at src/state/sessions/.
     run_id: str = ""
     artifacts: list[dict] = field(default_factory=list)
+    # --- quantized-backend lineage (M2.5) ---
+    # Populated only for the `flux.2-dev` quantized (Comfy-Org split-file) path:
+    #   {backend_variant: "comfy-q8", hf_repo, transformer_file, text_encoder_file,
+    #    text_encoder_variant, vae_file, fp8_matmul, dtype, cpu_offload}.
+    # Empty {} for Klein / full-precision runs — distinguishes quantized-dev outputs in lineage
+    # even though the user-facing model id stays `flux.2-dev`.
+    quantized: dict = field(default_factory=dict)
 
     def begin_stage(self, name: str, inputs: dict) -> StageRecord:
         rec = StageRecord(name=name, status="running", start_time=time.time(), inputs=inputs)

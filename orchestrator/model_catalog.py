@@ -60,27 +60,27 @@ def _catalog() -> dict:
                            "casting member (preset-driven).",
             "variants": [
                 {"id": "flux.2-klein-4b", "repo_id": "black-forest-labs/FLUX.2-klein-4B",
-                 "ae_repo_id": "black-forest-labs/FLUX.2-dev", "text_encoder": "Qwen/Qwen3-4B",
+                 "ae_repo_id": "Comfy-Org/flux2-dev", "text_encoder": "Qwen/Qwen3-4B",
                  "gated": True, "distilled": True, "guidance_fixed": True,
                  "defaults": {"num_steps": 4, "guidance": 1.0},
                  "note": "fast preset flow model; guidance+steps distilled (fixed)"},
                 {"id": "flux.2-klein-9b", "repo_id": "black-forest-labs/FLUX.2-klein-9B",
-                 "ae_repo_id": "black-forest-labs/FLUX.2-dev", "text_encoder": "Qwen/Qwen3-8B",
+                 "ae_repo_id": "Comfy-Org/flux2-dev", "text_encoder": "Qwen/Qwen3-8B",
                  "gated": True, "distilled": True, "guidance_fixed": True,
                  "defaults": {"num_steps": 4, "guidance": 1.0},
                  "note": "refined preset flow model"},
                 {"id": "flux.2-klein-9b-kv", "repo_id": "black-forest-labs/FLUX.2-klein-9B-kv",
-                 "ae_repo_id": "black-forest-labs/FLUX.2-dev", "text_encoder": "Qwen/Qwen3-8B",
+                 "ae_repo_id": "Comfy-Org/flux2-dev", "text_encoder": "Qwen/Qwen3-8B",
                  "gated": True, "distilled": True, "guidance_fixed": True,
                  "defaults": {"num_steps": 4, "guidance": 1.0},
                  "note": "9B with kv-cache"},
                 {"id": "flux.2-klein-base-4b", "repo_id": "black-forest-labs/FLUX.2-klein-base-4B",
-                 "ae_repo_id": "black-forest-labs/FLUX.2-dev", "text_encoder": "Qwen/Qwen3-4B",
+                 "ae_repo_id": "Comfy-Org/flux2-dev", "text_encoder": "Qwen/Qwen3-4B",
                  "gated": True, "distilled": False, "guidance_fixed": False,
                  "defaults": {"num_steps": 50, "guidance": 4.0},
                  "note": "non-distilled base; guidance+steps adjustable"},
                 {"id": "flux.2-klein-base-9b", "repo_id": "black-forest-labs/FLUX.2-klein-base-9B",
-                 "ae_repo_id": "black-forest-labs/FLUX.2-dev", "text_encoder": "Qwen/Qwen3-8B",
+                 "ae_repo_id": "Comfy-Org/flux2-dev", "text_encoder": "Qwen/Qwen3-8B",
                  "gated": True, "distilled": False, "guidance_fixed": False,
                  "defaults": {"num_steps": 50, "guidance": 4.0},
                  "note": "non-distilled base 9B"},
@@ -92,12 +92,22 @@ def _catalog() -> dict:
                 # (resolution), so the efficient workflow is author-small-then-upscale. The size
                 # default only moves the UNSET default (explicit dims still win); model_size_default()
                 # reads it and the /generate resolution + UI placeholder consult it.
-                {"id": "flux.2-dev", "repo_id": "black-forest-labs/FLUX.2-dev",
-                 "ae_repo_id": "black-forest-labs/FLUX.2-dev", "text_encoder": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
-                 "gated": True, "distilled": True, "guidance_fixed": False,
-                 "defaults": {"num_steps": 50, "guidance": 4.0, "width": 512, "height": 512},
-                 "note": "full dev model; Mistral-24B VLM encoder (gated); parses structured JSON "
-                         "prompts; defaults to 512² (far faster at low res — upscale after)"},
+                # M2.5: quantized Comfy split-file backend (public/ungated). Weights are the
+                # Comfy-Org flux2-dev fp8mixed transformer + Mistral fp8/bf16 TE + Flux2 VAE — NOT
+                # the gated black-forest-labs/FLUX.2-dev or mistralai/Mistral repos. The Mistral
+                # config+tokenizer are vendored (pipeline/flux2/assets/mistral_te).
+                {"id": "flux.2-dev", "repo_id": "Comfy-Org/flux2-dev",
+                 "ae_repo_id": "Comfy-Org/flux2-dev", "text_encoder": "Mistral-Small (Comfy fp8/bf16 split, quantized)",
+                 "gated": False, "distilled": True, "guidance_fixed": False,
+                 "defaults": {"num_steps": 8, "guidance": 4.0, "width": 512, "height": 512},
+                 # M2.5: Comfy split-files repo has no model_index.json — gate on the actual files
+                 # (the worker resolves these exact paths). fp8 TE is the default-path probe; the
+                 # optional bf16 TE is a runtime-resolved advanced opt-in.
+                 "probe_files": ["split_files/diffusion_models/flux2_dev_fp8mixed.safetensors",
+                                 "split_files/text_encoders/mistral_3_small_flux2_fp8.safetensors",
+                                 "split_files/vae/flux2-vae.safetensors"],
+                 "note": "quantized Comfy dev (M2.5); Mistral-Small VLM encoder; parses structured "
+                         "JSON prompts; defaults to 8 steps at 512² (upscale after)"},
             ],
             "params": [
                 {"name": "model_name", "flag": "--model-name", "type": "enum", "default": "flux.2-klein-4b"},
@@ -112,6 +122,16 @@ def _catalog() -> dict:
                 {"name": "strength", "flag": "--strength", "type": "float", "default": 0.25, "min": 0.0, "max": 1.0,
                  "modes": ["img2img"], "note": "0.20–0.25 polish, higher to re-roll"},
                 {"name": "cpu_offload", "flag": "--cpu-offload", "type": "flag", "default": False},
+                # M2.5 dev-only advanced knobs (quantized Comfy backend). `emit_argv` only emits a
+                # param present in the job's params, and the UI shows these only for `flux.2-dev`
+                # (`models` gate) in an advanced foldout — Klein never carries them, and the worker
+                # ignores them for Klein regardless. Not the main creative path.
+                {"name": "text_encoder", "flag": "--text-encoder", "type": "enum", "default": None,
+                 "choices": ["fp8", "bf16"], "advanced": True, "models": ["flux.2-dev"],
+                 "note": "flux.2-dev only: Mistral text-encoder precision (fp8 default = fastest/fits)"},
+                {"name": "fp8_matmul", "flag": "--fp8-matmul", "type": "enum", "default": "auto",
+                 "choices": ["auto", "native", "dequant"], "advanced": True, "models": ["flux.2-dev"],
+                 "note": "flux.2-dev only: scaled-FP8 Linear backend (auto/native = torch._scaled_mm)"},
             ],
             # `ref` (§11): t2i conditioned on the hero as a reference image (identity-preserving
             # Stage-B expansion). `ref_images` rides the batch jobs-file shared block (the worker
@@ -424,8 +444,8 @@ FLUX2_SAMPLING_PRESETS: list[dict] = [
      "num_steps": 40, "guidance": 4.5,
      "note": "strongest adherence; slower + needs cpu-offload on 16 GB"},
     {"id": "dev", "label": "Dev / JSON", "model_name": "flux.2-dev",
-     "num_steps": 50, "guidance": 4.5,
-     "note": "Mistral-VLM; best true-JSON prompting (gated weights, heaviest)"},
+     "num_steps": 8, "guidance": 4.0,
+     "note": "quantized Comfy dev; Mistral-VLM true-JSON prompting; 512² then upscale"},
 ]
 # Attach to the flux2 catalog entry so GET /models serves it alongside variants/params.
 CATALOG["flux2"]["sampling_presets"] = FLUX2_SAMPLING_PRESETS
@@ -619,6 +639,11 @@ def emit_argv(pipeline: str, params_dict: dict, mode: str) -> list[str]:
         name, flag, t = s["name"], s["flag"], s["type"]
         modes = s.get("modes")
         if modes and mode not in modes:
+            continue
+        # model-scoped params (e.g. the M2.5 `flux.2-dev` quantized knobs) emit only for their
+        # model — so Klein never carries them even if a stale params dict includes them.
+        models = s.get("models")
+        if models and params_dict.get("model_name") not in models:
             continue
         if name not in params_dict:
             continue

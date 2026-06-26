@@ -313,6 +313,19 @@ def image_model_present(repo_id: str) -> bool:
     return _hf_cache_probe(repo_id, "model_index.json")
 
 
+def variant_weights_present(variant: dict) -> bool:
+    """Presence check for a catalog image variant. Most variants are diffusers repos probed by
+    `model_index.json` (image_model_present). A variant may instead declare `probe_files` — then
+    ALL listed files must be cached under its repo. M2.5: the quantized `flux.2-dev` is a Comfy
+    split-files repo (`Comfy-Org/flux2-dev`) with NO `model_index.json`, so it gates on its actual
+    `split_files/…` transformer + text-encoder + VAE files."""
+    probe_files = variant.get("probe_files")
+    if probe_files:
+        repo = variant["repo_id"]
+        return all(_hf_cache_probe(repo, f) for f in probe_files)
+    return image_model_present(variant["repo_id"])
+
+
 def multi_preset_weights(preset: str) -> list[dict]:
     """The HF weight entries the `multi` pipeline needs for an ideation preset, read
     from models.json's `multi_presets` block (separate from the phase `models` list).

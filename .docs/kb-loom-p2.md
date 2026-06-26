@@ -27,7 +27,13 @@ and a **proxy-based readiness meter** (no VLM). The VLM (Qwen3-VL) and a project
 > M1 trainer gate): **flux.2 low-res-first + creative upscale** — default `flux.2-dev` to 512² (it runs
 > far faster at low res on 16 GB ROCm), add an **output size** to the M0c i2i postproc steps (i2i
 > upscale), and a dedicated **`Upscale ✨`** preset on the already-registered **SD3.5 Tile ControlNet**
-> — design in §12 "M0e solution design".
+> — design in §12 "M0e solution design". **M2.5 added 2026-06-26:** replace Loom's `flux.2-dev`
+> runtime with the Comfy-Org quantized Flux2-dev split checkpoint proven in the old
+> `src/pipeline/flux2_q8` spike; this is **dev-only and single-run** (t2i/i2i — the batch `ref`
+> Stage-B sweep stays Klein-only). It also **deletes both gated heavyweight repos** (`black-forest-labs/FLUX.2-dev`
+> 166 GB + `mistralai/Mistral-Small-3.2-24B` 90 GB): the ~17 MB dev config+tokenizer are vendored and
+> Klein's VAE re-points to the identical Comfy `flux2-vae`. Klein keeps its Qwen3/Klein loader path
+> (only its VAE weight source moves).
 
 ---
 
@@ -65,6 +71,15 @@ If a P1-curated character can be trained and then re-generated recognizably via 
   low-res-first + creative upscale — `flux.2-dev` defaults to 512², an output size (scale + explicit
   W×H) on the M0c i2i postproc steps, and a dedicated `Upscale ✨` SD3.5 Tile-ControlNet preset** (§12
   "M0e solution design").
+- **M2.5 `flux.2-dev` quantized replacement + gated-repo elimination:** route Loom's dev-only Flux2
+  runtime/model-gating path to the Comfy-Org quantized Flux2-dev split files (`flux2_dev_fp8mixed`,
+  Mistral fp8/bf16 text encoders, Flux2 VAE) by **folding** the quantized branch into the existing
+  flux2 runner, preserving the **single-run** dev JSON/t2i/i2i authoring surfaces (the batch `ref`
+  Stage-B sweep stays Klein-only — see §12 "M2.5 solution design" Scope). **Eliminate both gated
+  heavyweight repos** (`black-forest-labs/FLUX.2-dev` 166 GB + `mistralai/Mistral-Small-3.2-24B`
+  90 GB): vendor the ~17 MB dev config+tokenizer locally, and re-point **Klein's VAE** to Comfy's
+  identical `flux2-vae.safetensors`. Klein's runtime path / Stage-B behavior is otherwise unchanged
+  (only its VAE *weight source* moves; Qwen3 flow/TE gates stay).
 - **Template captioning** of the curated `ref_set` (v1: deterministic from P1 coverage-cell metadata
   + trigger token; **no VLM**) — *not* auto-tagging (research). VLM enrichment → P4 (R116).
 - **Readiness meter via cheap proxies** (v1: coverage from metadata, perceptual-hash dupes,
@@ -463,11 +478,12 @@ prompt **structure with leading-token priority**, **JSON/labeled structured prom
   | **Fast (draft)** | klein-4b/9b *distilled* | 4 | 1.0 | quick exploration; loose adherence — **today's default** |
   | **Balanced** ⭐ | klein-**base**-4b/9b | 24 | 4.0 | good pose/prompt adherence, moderate cost — the pose fix |
   | **Quality** | klein-**base**-9b | 40 | 4.5 | strongest adherence; slow + needs cpu-offload |
-  | **Dev / JSON** *(opt)* | flux.2-dev | 50 | 4.5 | Mistral-VLM; best true-JSON prompting (gated weights) |
+  | **Dev / JSON** *(opt)* | flux.2-dev | 8 | 4.0 | quantized Comfy dev; Mistral-VLM true-JSON prompting; 512² then upscale |
   | **Custom** | — | *(field)* | *(field)* | the individual guidance/steps fields drive it |
 
   *(Researched values: distilled klein = 4 steps / CFG ≈1; **base** klein = 20–24 steps / CFG 3.5–5.0;
-  dev & general FLUX.2 = 30–50 steps / guidance ≈4.5.)*
+  full dev & general FLUX.2 = 30–50 steps / guidance ≈4.5; M2.5's quantized Comfy dev path uses the
+  proven 8-step/q8 profile.)*
 - **Guard:** distilled variants ignore CFG (guidance pinned ≈1), so a high guidance only bites on
   `-base`/dev. The pull-down enforces sane model↔guidance pairings; the Custom fields warn when
   guidance > ~1.5 on a distilled model (no effect). **Fast stays the default** (speed); **Balanced**
@@ -505,12 +521,13 @@ cell), because `flux.2-dev`'s Mistral VLM interprets true JSON precisely.
   Keeps Part A (auto) and Part C (manual) as two views of the same schema rather than parallel code.
 
 **Constraints / risks.** klein uses the Qwen3 *text* encoder (JSON less precise than dev's Mistral
-VLM) → default to the labeled semi-structured form, reserve true-JSON for dev. base/dev are heavier
-(24–50 steps, cpu-offload) on the 16 GB ROCm target → keep Fast default; presets, not forced. M0d
+VLM) → default to the labeled semi-structured form, reserve true-JSON for dev. base is heavier
+(24–50 steps, cpu-offload) on the 16 GB ROCm target; M2.5 dev uses an 8-step quantized profile →
+keep Fast default; presets, not forced. M0d
 improves adherence but is **not** ControlNet-precise pose control. **Part C depends on `flux.2-dev`
-being runnable on the rig** — it is the heaviest variant (gated weights, Mistral VLM, ~50 steps +
-cpu-offload at 16 GB); if dev proves impractical on ROCm, Part C ships **disabled-until-available**
-(the tree is dev-gated anyway, so klein/base users see no regression). The JSON tree is **authoring
+being runnable on the rig** — after M2.5 this means the quantized Comfy dev path, not the old gated
+full-dev stack; if dev proves impractical on ROCm, Part C ships **disabled-until-available** (the tree
+is dev-gated anyway, so klein/base users see no regression). The JSON tree is **authoring
 UI, not validation of model output** — a well-formed tree doesn't guarantee the VLM honors every node.
 
 **Out of scope (later).** ControlNet/OpenPose/depth pose conditioning → P3 keyframes (R128) / P6 3D;
@@ -606,6 +623,153 @@ conditioning and multi-CN inpaint stay `advanced`/unwired (P3 keyframes R128 / P
 resolution cost, 512² recommendation) · [InstantX SD3 ControlNet Tile](https://huggingface.co/InstantX/SD3-Controlnet-Tile)
 · [diffusers SD3 ControlNet pipeline](https://huggingface.co/docs/diffusers/en/api/pipelines/controlnet_sd3).
 
+#### M2.5 solution design — quantized `flux.2-dev` replacement
+
+*Status: **planned 2026-06-26** — informed by the old-project spike in `src/pipeline/flux2_q8`.
+The spike proved Comfy-Org's quantized Flux2-dev split files can run on the RX 9070 XT / ROCm rig,
+including advanced JSON prompts, and that native scaled-FP8 matmul roughly halves the denoise time
+versus the compatibility dequant path. This is a **dev-only migration**. Klein models remain as-is.*
+
+**Goal.** Loom should stop trying to run the full BFL `flux.2-dev` stack and instead route the
+**single-run** dev-tier operations through the quantized Comfy-Org Flux2-dev implementation:
+
+- transformer: `Comfy-Org/flux2-dev` `split_files/diffusion_models/flux2_dev_fp8mixed.safetensors`
+- text encoder: selectable Mistral `fp8` / `bf16` split file for quality comparison; `fp8` default
+- VAE: `split_files/vae/flux2-vae.safetensors`
+- execution: scaled-FP8 Linear wrappers with `fp8_matmul=auto` defaulting to native `_scaled_mm` on
+  this ROCm build; `dequant` remains a diagnostic fallback
+
+**Dependency elimination (the point of the swap, decided 2026-06-26).** A cache audit (`F:\HF_HOME`)
+showed the gated heavyweight repos are almost entirely dead weight for the quantized path: the dev
+path reads **~17 MB** from the 166 GB `black-forest-labs/FLUX.2-dev` repo (`text_encoder/config.json`
++ `tokenizer/`) and **nothing** from the 90 GB `mistralai/Mistral-Small-3.2-24B` repo. M2.5 therefore
+**deletes both gated repos from every runtime path**: (1) **vendor** the ~17 MB Mistral config +
+tokenizer into the pipeline tree and load via a local path; (2) **re-point Klein's VAE** (its one
+remaining BFL file, `ae.safetensors` 321 MB) to Comfy's identical `flux2-vae.safetensors`. The result:
+the only large dev download becomes the **~51 GB** of public Comfy split files (fp8 transformer 34 GB +
+fp8 Mistral TE 17 GB + VAE 321 MB), replacing ~150 GB of gated dev weights + 90 GB Mistral. The Klein
+re-point is a **weight-source change only** — it does **not** alter Klein's runtime path or its
+Stage-B `ref` behavior (§11/R147).
+
+**Scope (decided 2026-06-26).** M2.5 makes quantized dev runnable for the **single-run** dev surfaces
+only: **t2i** (JSON authoring / casting) and **i2i** (the M0c/M0d postprocess + M0e upscale steps).
+The **batch `ref` Stage-B coverage sweep stays Klein-only** — the spike has no batch loop, so loom's
+`run_pipeline.run_jobs` is **not** rerouted to the quantized loaders in M2.5 (it would still call the
+full-weight `flux2.util.load_flow_model("flux.2-dev")`). Klein remains the identity-preserving
+Stage-B `ref` workhorse (§11/R147); if a quantized dev `ref` sweep is ever wanted, it's a follow-on
+that ports the quantized loaders into `run_jobs`. Until then, dev should not be *offered* as the model
+for a coverage sweep (guard or document, so a dev sweep can't silently fall through to the OOM path).
+
+**Naming stance.** Keep `flux.2-dev` as the **logical Loom model id** for now so existing projects,
+postprocess steps, JSON-tree gating, and tests do not need a user-facing migration. Internally it
+resolves to the quantized Comfy implementation. If we later expose both, add an explicit
+`flux.2-dev-q8` variant, but P2/M2.5's intent is replacement, not a parallel model zoo.
+
+**Surfaces to replace.** Search/replace alone is not enough; the migration must update the runtime
+contract behind each existing dev touchpoint:
+
+- **Vendored pipeline (decided: fold, not port).** Fold the quantized dev branch into the existing
+  `pipeline.flux2.run_pipeline` behind `model_name == "flux.2-dev"`, reusing the spike's scaled-FP8
+  loaders (`scaled_fp8` + the `stage1` Comfy loader branch) and the **existing** `stage2/3/4`. Only
+  the **single-run `run()`** path (and the `stage1_load_models` dev branch) is touched — **`run_jobs`
+  is left as-is** (batch ref stays Klein-only, per Scope). Folding (vs porting `flux2_q8` as a
+  separate module) keeps **one** CLI/adapter contract — notably loom's `--cpu-offload` is opt-in
+  (default off), whereas the spike runner defaults offload **on** via `--no-cpu-offload`; the fold
+  keeps loom's flag so the adapter's appended `--cpu-offload` ([adapters/flux2.py]) still applies.
+  Dev-only knobs (`--text-encoder`, `--fp8-matmul`) are added and **gated to dev** (hidden from Klein).
+  The folded loader points `AutoConfig`/`AutoProcessor` at the **vendored** Mistral config+tokenizer
+  directory (local path), not the gated `black-forest-labs/FLUX.2-dev` repo id — so no dev run needs
+  that repo. Suggested home: `pipelines/multistack/flux2/assets/mistral_te/` (config.json + the
+  tokenizer files), tiny enough to live beside the vendored `flux2` lib.
+- **Adapter/orchestrator:** keep the `flux2` adapter public contract stable, but route `flux.2-dev`
+  jobs to the quantized runner/module. Preserve dev max-ref caps and JSON prompt passthrough.
+  Klein variants continue to invoke the existing Klein runner.
+- **Model catalog:** update the `flux.2-dev` variant metadata so defaults, size override, guidance
+  editability, JSON-tree gating, and sampling presets point to the quantized backend. Klein entries
+  and Klein sampling presets remain unchanged. ⭐ **The catalog stays the size source of truth:** the
+  M0e per-variant **512²** default (`CATALOG["flux2"].variants[flux.2-dev].defaults`) must be
+  preserved — `emit_argv` keeps emitting it, overriding the spike runner's internal 1024² default, so
+  the M0e "display==reality" discipline doesn't regress.
+- **Weight gates (`models.json` + probes) — drop both gated heavyweight repos.** (There is no
+  standalone heavyweight dev gate today to "replace" — dev was only ever gated via the `multi`
+  presets.) Per the dependency-elimination decision above:
+  - **Dev** gates only the **3 Comfy split files** (`flux2_dev_fp8mixed` 34 GB + `mistral_…fp8`
+    17 GB + `flux2-vae` 321 MB ≈ 51 GB, `Comfy-Org/flux2-dev`, public/ungated). The Mistral
+    config+tokenizer are **vendored** (not gated, no probe). Skip the fp4 TE, the bf16 TE (unless
+    a quality-compare fetch is wanted), and the Turbo LoRAs.
+  - **Klein** gates Comfy's `flux2-vae.safetensors` instead of `black-forest-labs/FLUX.2-dev`
+    `ae.safetensors`; its flow/TE (Qwen3) gates are unchanged. A one-time **VAE value spot-check**
+    (load both, compare a remapped tensor) confirms equivalence before flipping `ae_repo_id`.
+  - Net invariant: after M2.5 **neither `black-forest-labs/FLUX.2-dev` nor `mistralai/…` is
+    referenced by any runtime path or `models.json` entry** — both are removed (incl. the
+    `flux2-dev-ae` `multi_presets` rows, re-pointed to the Comfy VAE).
+- **Prompting UI:** the structured JSON tree remains dev-gated, but the gate means "logical
+  `flux.2-dev` backed by quantized Comfy files." Add optional advanced controls only where useful:
+  text encoder (`fp8`/`bf16`) and FP8 matmul (`auto`/`native`/`dequant`) should live in an advanced
+  params foldout, not in the main creative path.
+- **Manifests + lineage:** record `backend_variant:"comfy-q8"`, Comfy repo snapshot/path, transformer
+  file, text-encoder variant/file, VAE file, `fp8_matmul`, and quantized loader stats. This is
+  important because a future image comparison must distinguish "full dev" from "Comfy quantized
+  dev" even if the UI id stayed `flux.2-dev`.
+- **Tests:** update no-GPU tests around catalog variants, weight gates, adapter argv, postprocess
+  flux2 i2i, and model-size defaults. Add explicit invariants that `flux.2-klein-*` paths do not
+  reference the quantized dev runner and that `flux.2-dev` does.
+
+**Acceptance for M2.5.** *(Bar decided 2026-06-26: the milestone CLOSES on wiring + dry-run +
+no-GPU tests green; the real on-rig dev generation is **owed** as a separate visual sign-off — the
+M0e pattern — because full dev never actually ran on the rig, so there is no working baseline to
+regress against.)*
+
+**Closes the milestone (no-GPU):**
+
+- A dry-run `/generate` for `pipeline:"flux2", model_name:"flux.2-dev"` emits the quantized runner
+  command (single-run path) and records quantized dev metadata.
+- A postprocess `flux2` img2img/refine step with `model_name:"flux.2-dev"` still accepts the JSON
+  prompt body and routes (dry-run) to the quantized runner.
+- No-GPU tests: catalog variant metadata, the dev Comfy split-file gates + the Klein Comfy-VAE gate,
+  the vendored config+tokenizer load (local path resolves), adapter argv, the dev-only
+  `--text-encoder`/`--fp8-matmul` knobs, postprocess flux2 i2i, and model-size defaults (dev 512²).
+- Existing Klein smoke/dry-run tests pass unchanged; no Klein catalog entry, weight gate, or adapter
+  path depends on the Comfy Mistral/transformer split files, **and the batch `run_jobs` ref path is
+  unchanged** (still Klein-only).
+- Invariant: dev cannot be silently submitted as the model for a batch coverage sweep (guarded or
+  documented), so the unported `run_jobs` full-weight path is never reached for dev.
+- **Elimination invariant (grep/test):** no runtime path or `models.json` entry references
+  `black-forest-labs/FLUX.2-dev` or `mistralai/Mistral-Small-3.2-24B` — the dev config/tokenizer load
+  from the vendored local dir and Klein's VAE from `Comfy-Org/flux2-dev`.
+
+**Owed (on-rig visual sign-off, does NOT gate close):**
+
+- A real local smoke: quantized dev **t2i JSON** (and a dev **i2i** postproc step) generates on the
+  RX 9070 XT using `--fp8-matmul auto` and produces a manifest with `backend_variant:"comfy-q8"`,
+  `text_encoder_variant`, and the Comfy split-file paths.
+- **Klein VAE value spot-check:** load `ae.safetensors` (BFL) and `flux2-vae.safetensors` (Comfy,
+  remapped), confirm tensors match within tolerance, and a Klein `ref` smoke still decodes correctly
+  — then the BFL `ae.safetensors` reference is removed for good.
+
+**Risks / open edges.**
+
+- **FP4 text encoder remains research.** Comfy also ships an fp4-mixed Mistral file, but it uses
+  packed NVFP4 (`comfy_quant`/`weight_scale_2`), not the scaled-FP8 wrapper. Do not make fp4 a Loom
+  default until an `NVFP4Linear` path exists and image quality is checked.
+- **Native FP8 matmul is platform-sensitive.** `auto` should prefer `_scaled_mm` on the RX 9070 XT
+  ROCm stack and fall back to dequant elsewhere; `native` should be a diagnostic force-fail mode.
+- **Quality validation is empirical.** The quantized dev path is expected to preserve JSON adherence
+  better than Klein while fitting the rig, but fp8 vs bf16 text encoder quality should be tested with
+  same-prompt/same-seed grids before freezing defaults beyond "fp8 for speed/fit".
+- **Name compatibility can hide implementation drift.** Because `flux.2-dev` remains the user-facing
+  id, manifests must be explicit enough that old full-dev outputs and new quantized-dev outputs are
+  never confused in lineage.
+- **Klein VAE equivalence is assumed until the value spot-check.** The header audit (same 251
+  tensors/dtypes; naming + 2D→4D diffs the existing remap handles; spike loads `strict=True` and
+  decodes) strongly implies identical weights, but the flip of Klein's `ae_repo_id` is gated on the
+  one-time value compare. If they ever diverged, Klein output would shift subtly — so don't remove
+  the BFL `ae.safetensors` reference until that check passes.
+- **Vendoring gated config/tokenizer.** The ~17 MB Mistral config+tokenizer come from the gated BFL
+  repo. Committing them redistributes gated-repo files — acceptable for this private project
+  ([[project-posture]]: licensing deferred), but if the repo ever goes public, move them to the
+  companion weights repo (fetch as small `file` entries) rather than ship them in git.
+
 ### Phase A — Training skeleton (prove a LoRA can be made + used on this rig)
 
 1. **M1 — training spike (no UI).** Vendor **ai-toolkit**; train **one** `zimage` LoRA from a fixed
@@ -617,24 +781,32 @@ resolution cost, 512² recommendation) · [InstantX SD3 ControlNet Tile](https:/
    *(**Skeleton only — NOT the P2 done-line, R169:** trains from a manual/fixed ref set + default
    preset. The done-line (template-caption → readiness "good to train" → train, §1) is reached after
    **M3 captions + M4 readiness**.)*
+3. **M2.5 — quantized `flux.2-dev` replacement + gated-repo elimination.** Fold the Comfy quantized
+   Flux2-dev path into the existing flux2 runner behind the `flux.2-dev` logical id; preserve the
+   **single-run** dev JSON/t2i/i2i surfaces (batch `ref` Stage-B sweep stays Klein-only); add precise
+   Comfy split-file gates + manifest fields. **Delete both gated heavyweight repos** (BFL dev 166 GB
+   + Mistral 90 GB): vendor the ~17 MB dev config+tokenizer; re-point Klein's VAE to the identical
+   Comfy `flux2-vae.safetensors` (Klein runtime/Stage-B otherwise unchanged). Closes on wiring +
+   dry-run + no-GPU tests; on-rig dev smoke + Klein-VAE value spot-check owed. *(Runtime/model-fit
+   migration, not trainer work.)*
 
 ### Phase B — Thicken (all VLM-free)
 
-3. **M3 — template captioning.** Generate `captions.jsonl` deterministically from coverage-cell
+4. **M3 — template captioning.** Generate `captions.jsonl` deterministically from coverage-cell
    metadata + trigger token; write `caption_policy.json`; review/edit UI. **(No VLM.)**
-4. **M4 — proxy readiness.** Coverage (from metadata) + perceptual-hash dupes + face-embedding
+5. **M4 — proxy readiness.** Coverage (from metadata) + perceptual-hash dupes + face-embedding
    on-model → `readiness.json` → advisory readiness meter. **(No VLM.)** ***P2 done-line now
    reachable*** (M2 trainer + M3 captions + M4 readiness, R169).
-5. **M5 — train options + sd35 + PEFT backend.** Expose train-from-base / seed-from-parent (R68) and
+6. **M5 — train options + sd35 + PEFT backend.** Expose train-from-base / seed-from-parent (R68) and
    the per-model preset + advanced knobs; add the **diffusers-PEFT** advanced backend; onboard the
    **sd35** trainer; record full training manifests.
-6. **M6 — promote + manual cleanup + LoRA management.** Promote into the version; one-click temp
+7. **M6 — promote + manual cleanup + LoRA management.** Promote into the version; one-click temp
    cleanup; version selector shows LoRA presence. **(No style-LoRA path — declared only, 0 effort in
    P2 per R122; built in P5 with multi-LoRA stacking, R147.)**
 
 ### Done-line
 
-7. **M7 — acceptance.** A P1 character → template-captioned → proxy-readiness ✓ → **staged → added to
+8. **M7 — acceptance.** A P1 character → template-captioned → proxy-readiness ✓ → **staged → added to
    queue → trained → promoted → test-gen reproduces it on-model**, all recorded in the training
    manifest (§1), with `caption_policy_hash` + `context_digest` present.
 
@@ -683,6 +855,7 @@ flagged — noted for `kb-loom-p4.md`.)
 | P2-0 | **ai-toolkit ROCm *can-it-run-at-all* gate** — prove ai-toolkit trains on **RX 9070 XT / ROCm** before the rest of P2 is built; **hard go/no-go** (if no-go, the whole training approach changes) | M1 | M | 🔴 **make-or-break front-gate** |
 | P2-1 | **Training spike (no UI)** — vendor **ai-toolkit**, train one `zimage` LoRA from a fixed dataset, load-test it | M1 | M | 🔴 **no trainer exists** |
 | P2-2 | Trainer as a **staged queued job** (wrap in P0 queue + manifest; `jobs/staged.json`; auto-generate, don't auto-start) | M2 | M | 🟡 |
+| P2-2.5 | **Quantized `flux.2-dev` replacement + gated-repo elimination** — fold the quantized Comfy Flux2-dev split-file branch into the existing flux2 runner behind the logical dev id (single-run t2i/i2i; batch `ref` stays Klein); vendor the ~17 MB dev config+tokenizer + re-point Klein's VAE to the Comfy `flux2-vae` so **both gated repos (BFL dev 166 GB + Mistral 90 GB) are deleted**; add precise split-file weight gates, manifest fields, advanced `text_encoder`/`fp8_matmul` params, and no-GPU adapter/catalog tests; **Klein runtime unchanged (VAE source only)** | M2.5 | M | 🟡 runtime migration |
 | P2-3 | Template captioning (`captions.jsonl` + `caption_policy.json` deterministically from coverage-cell metadata; no VLM) | M3 | S | 🟢 |
 | P2-4 | Proxy readiness meter (coverage + perceptual-hash dupes + face-embedding centroid; **no-anchor fallback**) | M4 | M | 🟡 |
 | P2-5 | Train options + **`sd35` base** + **PEFT backend** (train-from-base / seed-from-parent; second base model; diffusers-PEFT advanced path) | M5 | L | 🟡 two trainers, two bases |
@@ -695,7 +868,8 @@ flagged — noted for `kb-loom-p4.md`.)
 | P2-13 | **Graph-ready training facts** — write `training_context.json`, `caption_policy_hash`, and `context_digest` into the promoted LoRA manifest; no retrieval index | M3/M6 | S | 🟢 |
 | — | Style-LoRA: **declared only, not built** (R122) — 0 effort in P2; lands with multi-LoRA stacking (**P5**, R147) | §2 | — | — |
 
-**Rollup:** ~18 WP including the M0 UI reset (now M0a–M0e); **P2-0/P2-1 remain the phase's make-or-break training
+**Rollup:** ~19 WP including the M0 UI reset (now M0a–M0e) and the M2.5 dev-runtime replacement;
+**P2-0/P2-1 remain the phase's make-or-break training
 risk** — whether **ai-toolkit even trains on RX 9070 XT / ROCm**. **P2-0 is still the hard trainer
 front-gate**: if it's no-go, P2-9–P2-12 and the rest of the trainer path don't get built as-is.
 M0 is deliberately separate: it should land before that gate so later trainer controls have a
@@ -720,3 +894,13 @@ checkpoint" column instead of the default "discard + re-queue/fail" path.
   GraphRAG/index/query is deferred.
 - UI preflight: author feedback 2026-06-18 — P1 MVP usable, but shell navigation, L1 density, and
   L2 postprocess workflow need correction before P2/P3 functionality piles onto them.
+- Quantized dev replacement: old-project spike `src/pipeline/flux2_q8` (2026-06-26) proving
+  Comfy-Org `flux2_dev_fp8mixed` + Mistral fp8/bf16 text encoders + Flux2 VAE with native scaled-FP8
+  matmul on RX 9070 XT / ROCm; Loom M2.5 keeps Klein's runtime/Stage-B path unchanged (only its VAE
+  weight source moves to Comfy).
+- Gated-repo elimination: `F:\HF_HOME` cache audit (2026-06-26) — quantized dev reads ~17 MB
+  (`text_encoder/config.json` + `tokenizer/`) from the 166 GB `black-forest-labs/FLUX.2-dev` repo and
+  nothing from the 90 GB `mistralai/Mistral-Small-3.2-24B`; Comfy VAE vs BFL `ae.safetensors`
+  safetensors-header compare (251 tensors, matching dtypes; naming + 2D→4D diffs handled by
+  `map_comfy_vae_key`) → vendor the dev config+tokenizer + re-point Klein's VAE to Comfy, deleting
+  both gated repos. Needed Comfy footprint ≈ 51 GB (fp8 transformer + fp8 TE + VAE), public/ungated.

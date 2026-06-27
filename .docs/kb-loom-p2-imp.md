@@ -1033,6 +1033,25 @@ Net: cell 0 ≈ load + one denoise (~the cold t2i ~185 s + ref encode); cells 1.
 re-run on the fixed worker — the running process still has Fix #1's code.** On-rig confirmation that
 cells 1..N hold steady (no per-cell creep) still owed.
 
+**Fix #3 (2026-06-27, sweep seed + inspector pose hint — user, after the dev warm path ran clean).**
+Two UX gaps the first good dev sweep surfaced:
+- **Seed was incremental** (`base_seed + index` → 0,1,2,…), and an unset seed defaulted to a fixed 0.
+  The user wants ONE seed for the whole sweep (random, or entered in the params section) so pose/angle
+  /expression are the only per-cell variation (and the flux2 ref path keeps identity steady). Fix:
+  `recipe.build_recipe` gains `shared_seed` (every cell gets `base_seed`); `stage_b` resolves the seed
+  **once** — `req.base_seed` if given, else a fresh `random.randrange(2**31)` — and passes
+  `shared_seed=True`. The UI already had the seed control (catalog `seed` → `base_seed`), so this is
+  backend-only. Default `shared_seed=False` preserves the legacy per-cell draw for the recipe API.
+- **No readable pose hint in the inspector.** The full per-cell prompt (incl. the pose) lives in a
+  collapsed `<details>`; the only always-visible cell line showed raw frozen keys (`three_quarter_left`)
+  in muted text. Fix: the inspector's coverage line now leads with `🎭 pose: <angle>` (un-muted,
+  humanized — `three_quarter_left` → "three quarter left"), shown for queued AND completed cells from
+  `job.coverage_cell` / `output_meta[…].coverage_cell`. (The `¾`/`°` in the dev JSON pose directive
+  were a false alarm — stored correctly as `¾`; only my cp1252 console mangled them.)
+
+Tests: `test_shared_seed_gives_every_cell_the_same_seed` (recipe) + a one-seed assertion on
+`test_stage_b_flux2_cells_are_individual_warm_jobs`. 338 backend green; frontend `tsc --noEmit` clean.
+
 ---
 
 ## P2-era fixes (non-milestone)

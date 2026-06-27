@@ -3227,6 +3227,10 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
   );
 }
 
+// Humanize a frozen coverage key for display (three_quarter_left → "three quarter left",
+// face_closeup → "face closeup"). The stored key is unchanged — this is presentation only.
+const humanizeCov = (s?: string) => (s ?? "").replace(/_/g, " ").trim();
+
 function Inspector({ job, output }: { job: Job; output?: string }) {
   const r = job.result;
   const p = job.params ?? {};
@@ -3292,9 +3296,14 @@ function Inspector({ job, output }: { job: Job; output?: string }) {
       </dl>
       {job.note && <div className="banner insp-note">{job.note}</div>}
       {cell && (
-        <div className="muted insp-cov">
-          cell: {cell.shot_size} · {cell.angle} · {cell.expression}
-          {cell.background ? ` · ${cell.background}` : ""}
+        <div className="insp-cov">
+          {/* The pose/coverage hint — readable at a glance for a queued OR completed cell, so you
+              know which pose each tile targets without expanding the full prompt below. The frozen
+              coverage keys are humanized (three_quarter_left → "three quarter left"). */}
+          🎭 pose: <b>{humanizeCov(cell.angle)}</b>
+          {" · "}{humanizeCov(cell.shot_size)}
+          {" · "}{humanizeCov(cell.expression)}
+          {cell.background ? ` · ${humanizeCov(cell.background)}` : ""}
         </div>
       )}
       {ometa && (ometa.identity || ometa.restore || ometa.anchor_cos != null) && (

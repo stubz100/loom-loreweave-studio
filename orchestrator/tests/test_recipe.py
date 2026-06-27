@@ -34,6 +34,16 @@ def test_build_recipe_cells_are_valid_and_structured():
         assert cell["method"] in ("img2img", "inpaint")
 
 
+def test_shared_seed_gives_every_cell_the_same_seed():
+    """user 2026-06-27: with shared_seed the whole sweep draws on ONE seed (pose/angle/expression
+    are the only per-cell variation), vs the default per-cell base_seed+index."""
+    shared = recipe.build_recipe("full_coverage", character_clause="x", base_seed=777,
+                                 shared_seed=True)
+    assert {c["seed"] for c in shared["cells"]} == {777}      # all identical
+    distinct = recipe.build_recipe("full_coverage", character_clause="x", base_seed=777)
+    assert [c["seed"] for c in distinct["cells"]] == [777 + i for i in range(len(distinct["cells"]))]
+
+
 def test_method_autopick_matches_shot_size():
     r = recipe.build_recipe("comprehensive", character_clause="x")
     for cell in r["cells"]:

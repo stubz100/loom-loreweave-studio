@@ -217,6 +217,9 @@ def test_stage_b_flux2_cells_are_individual_warm_jobs(client, monkeypatch):
         assert job["coverage_cell"] is not None            # cell metadata on the job (curation)
         groups.add(job["warm_group"])
     assert len(groups) == 1 and next(iter(groups))         # all cells share ONE warm worker
+    # user 2026-06-27: ONE seed for the whole sweep (not 0,1,2…); unset → a single random draw.
+    seeds = {RUNNER.jobs[jid]["params"]["seed"] for jid in job_ids}
+    assert len(seeds) == 1                                 # every cell shares the sweep's seed
 
 
 def test_flux2_t2i_casting_dry_run(client):

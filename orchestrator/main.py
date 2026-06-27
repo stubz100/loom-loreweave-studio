@@ -16,6 +16,7 @@ PNG-master footprint to suggest a size cap.
 from __future__ import annotations
 
 import os
+import random
 import re
 import sys
 import time
@@ -1463,9 +1464,14 @@ def create_app() -> FastAPI:
         adv_prompt = req.advanced_prompt and is_flux2
         eff_model = (req.params or {}).get("model_name") or req.model_name
         json_prompt = adv_prompt and eff_model == "flux.2-dev"
+        # Seed (user 2026-06-27): ONE seed for the whole sweep — the value from the params section
+        # if given, else a freshly-drawn random seed (so an unset seed isn't a fixed 0,1,2…). Every
+        # cell shares it; pose/angle/expression are the only things that vary across the dataset.
+        eff_seed = req.base_seed if req.base_seed is not None else random.randrange(2**31)
         try:
             built = recipe.build_recipe(req.preset, character_clause=clause,
-                                        style_fragment=style_fragment, base_seed=req.base_seed or 0,
+                                        style_fragment=style_fragment, base_seed=eff_seed,
+                                        shared_seed=True,
                                         realize=req.realize, advanced_prompt=adv_prompt,
                                         json_prompt=json_prompt)
         except recipe.RecipeError as e:

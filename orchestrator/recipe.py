@@ -133,14 +133,20 @@ def _matrix(preset: str) -> list[tuple[str, str, str]]:
 
 
 def build_recipe(preset: str, *, character_clause: str, style_fragment: str = "",
-                 base_seed: int = 0, backgrounds: tuple[str, ...] | None = None,
+                 base_seed: int = 0, shared_seed: bool = False,
+                 backgrounds: tuple[str, ...] | None = None,
                  realize: str = "img2img", advanced_prompt: bool = False,
                  json_prompt: bool = False) -> dict:
     """Expand a preset into the concrete Stage-B work list (P1-4). **Deterministic**: the same
     (preset, clause, style, base_seed, backgrounds, realize) yields the same cells/prompts/seeds,
     in a fixed order. Each cell carries a validated `coverage_cell` (the frozen contract), the
-    auto-generated `prompt`, an auto-picked `method` (overridable), and a per-cell `seed`
-    (base_seed + index for reproducibility).
+    auto-generated `prompt`, an auto-picked `method` (overridable), and a `seed`.
+
+    `shared_seed` (user 2026-06-27): the seed is the **same across the whole sweep** (every cell
+    gets `base_seed`) so the only thing that varies across cells is the pose/angle/expression —
+    the natural expectation when you set a seed, and identity-friendly for the flux2 ref path.
+    Off (the default) keeps the legacy per-cell `base_seed + index` for back-compat / reproducible
+    distinct draws.
 
     **Prompt order (user decision 2026-06-10): `<cell fragment>, <clause>, <style>`** — the
     coverage terms lead so they keep weight against a long character clause (tokens at the front
@@ -190,7 +196,7 @@ def build_recipe(preset: str, *, character_clause: str, style_fragment: str = ""
             "coverage_cell": cov,
             "prompt": prompt,
             "method": method,
-            "seed": base_seed + i,
+            "seed": base_seed if shared_seed else base_seed + i,
         })
 
     return {

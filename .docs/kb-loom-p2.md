@@ -830,6 +830,73 @@ Linear, dry-run argv carries `--turbo`, and the `turbo` toggle is dev-gated end-
 (on-rig):** a dev image at 4–6 steps with Turbo looks good vs the under-denoised no-Turbo 8-step, and a
 sweep is meaningfully faster.
 
+#### M2.7 solution design — warm-worker batch queue (individual cell-jobs + a persistent worker)
+
+*Status: **planned 2026-06-27** (author-approved). A core-queue change, built in phases (each
+journalled + pushed).* **Problem.** Today a batch (multi **Cast** + Stage-B **Expansion**) is ONE
+queue job whose worker loops the cells internally. On **pause** the runner discards the partial
+(`runner._discard_partial` for non-resumable jobs) and re-queues from scratch — every finished image
+disappears (user-reported). And the batch is a single opaque queue entry, so individual images can't be
+seen/managed. **Goal:** each image is an **individual queue entry** that persists as a tile the moment
+it finishes (pause keeps it; resume continues with the rest), while a **persistent "warm" worker**
+keeps the model resident across the group so we don't pay the per-image model reload. *(Chosen over the
+simpler "resumable batch" — which kills the pause pain at zero cost but keeps one opaque queue entry —
+because the author wants per-image queue entries AND amortized load.)*
+
+**Architecture.**
+- **Submission → N cell-jobs.** The `/assets/{id}/stage-b` + `/generate?pipeline=multi` endpoints stop
+  emitting one `batch_items` job and instead `submit()` **one job per cell/candidate** — each a
+  single-image spec (its prompt/seed/`coverage_cell`) tagged with the existing `batch_id` + a new
+  **`warm_group`** key = hash(pipeline, model_name, mode, ref-set, size, sampling). The load-bound
+  shared params (model, `ref_images`, size, `turbo`/TE/matmul) ride each cell-job (or a per-group
+  record the worker reads once).
+- **Persistent worker (`--serve`).** A new worker mode: load the model from the FIRST job, then read
+  job specs as JSON lines on **stdin**, generate one image each, emit a `{result}` line on **stdout**,
+  loop until EOF/idle/stop. The existing `run_jobs` (load-once-then-loop) is the template — just
+  stdin-driven instead of a fixed `--jobs-file`. Flux2 `ref` keeps the hero encoded once for the group.
+- **Runner warm dispatch.** `_execute` gains a warm path: if a pending job's `warm_group` matches the
+  **resident** warm worker, **feed it** (write the spec to its stdin, read the result) instead of
+  `Popen`-ing a fresh process; else spawn a new warm worker (after killing any other — still **one
+  model at a time** on 16 GB, R-§7). Track `{worker, group, idle_timer}`; **evict** (close stdin →
+  worker frees VRAM + exits) on group change, idle timeout, pause, or cancel-of-last. Per-cell result
+  → that cell-job goes `done` with its image (a durable tile + a lineage edge) immediately.
+- **FE — mostly free.** The grid/queue already key on jobs, so N one-image jobs render + persist
+  individually; `batch_id` groups them visually (a "sweep" header + per-cell tiles). The inspector's
+  per-image time (just shipped) is now the job's own `duration_s`.
+
+**⚠ The dev-TE wrinkle.** The current dev *batch* worker encodes ALL prompts up front, frees the 17 GB
+Mistral TE, then loads the 34 GB transformer and loops denoise — amortizing the TE load. Individual
+jobs arrive one at a time, so the warm worker can't pre-encode; with the transformer resident it must
+load/free the TE per image (17 + 34 GB won't co-reside on 16 GB). So **dev** individual-jobs pay a
+per-image TE cost the batch avoided (still far better than cold per-image jobs; Klein's smaller TE is
+fine). The queue-UX win (persist-on-pause) is identical. *(A later optimization: a small "encode-ahead"
+buffer in the warm worker that pre-encodes the next K queued prompts while denoising — recovers most of
+the amortization. Out of the initial phases.)*
+
+**Phasing (each = its own journal entry + push).**
+- **Phase 1 — flux2 Expansion** (the actual pain): `--serve` mode on the flux2 worker; the runner
+  warm-worker dispatch + lifecycle (one resident worker, group match, evict); the Stage-B endpoint
+  emits N cell-jobs. Prove a klein/dev sweep streams individual persistent tiles + survives pause.
+- **Phase 2 — multi (Cast) + sd35/zimage** `--serve` modes through the same runner path.
+- **Phase 3 — cross-batch warmth + idle-eviction tuning** (the worker survives between unrelated
+  same-group jobs) + the dev encode-ahead buffer if wanted.
+
+**Risks / guardrails.** (1) **VRAM** — the warm worker holds the GPU between jobs; idle-evict + the
+one-model rule must free it for other pipelines (the existing VRAM-admission still gates). (2) **Cancel
+semantics** — cancel ONE cell-job (skip/kill current item, worker lives) vs cancel the sweep (evict the
+worker); the per-job kill-Job-Object is per `Popen`, so the warm path needs a soft "abandon current
+item" signal. (3) **Crash recovery** — a warm-worker crash fails the in-flight cell-job; the rest stay
+`queued` and the runner respawns (no `_discard_partial` of the done tiles). (4) **Protocol robustness**
+— stdin/stdout JSON-line framing must survive a worker print mid-stream (reuse the utf-8/replace pipe
+discipline). (5) **Determinism** — per-cell seeds already ride each item, unchanged.
+
+**Acceptance (per phase; on-rig owed).** Phase 1 no-GPU close: the Stage-B endpoint emits N cell-jobs
+with the right `warm_group`/`batch_id`/`coverage_cell`; the flux2 `--serve` argv + stdin protocol parse
++ round-trip a job→result on a stub; the runner feeds same-group jobs to one worker and evicts on group
+change (unit-tested with a fake worker); pause leaves done cell-jobs `done` and the rest `queued`.
+**Owed (on-rig):** a real klein sweep streams individual tiles that persist across a pause, with the
+model loaded once.
+
 ### Phase A — Training skeleton (prove a LoRA can be made + used on this rig)
 
 1. **M1 — training spike (no UI).** Vendor **ai-toolkit**; train **one** `zimage` LoRA from a fixed
@@ -854,6 +921,11 @@ sweep is meaningfully faster.
    forward hooks on the quantized transformer) behind an optional dev-gated **`turbo`** param. JSON
    prompting unaffected (TE untouched). Backend + no-GPU tests done; on-rig quality/speed sign-off
    owed (+2.6 GB LoRA paging vs the 8→4 step cut). Design: §12 "M2.6 solution design".
+3c. **M2.7 — warm-worker batch queue.** Make batch (Cast + Expansion) generation submit **N
+   individual cell-jobs** (each a persistent tile that survives pause/resume) serviced by a
+   **persistent warm worker** that keeps the model resident across the group (no per-image reload).
+   Core-queue change, built in phases (Phase 1 = flux2 Expansion), each journalled + pushed. Design:
+   §12 "M2.7 solution design".
 
 ### Phase B — Thicken (all VLM-free)
 

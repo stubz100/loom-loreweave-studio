@@ -1010,6 +1010,29 @@ Fix — make `_ServeGenerator` **offload-aware**, gated on the model:
 copies (loom mirror + monorepo) updated byte-identical; 7/7 warm-worker tests green (the offload swap
 is GPU-path code → **on-rig dev Expansion sweep still owed**, alongside the klein pause/resume sweep).
 
+**Fix #2 (2026-06-27, first on-rig dev warm sweep — per-cell flow thrash).** The OOM was gone and the
+dev sweep produced correct images, but each cell was **wildly slow and getting slower**. Hard numbers
+from `loom/stubz001` (17-cell dev/ref sweep, 8 steps, 512², turbo): cold dev **t2i** single-run =
+**~185 s** (load + denoise + decode); warm dev **ref** cell 0 = **676 s**; cell 1 ran **>22 min with
+no image** — and cell 1 bears **no model load**. A no-load cell slower than the load-bearing cell 0 is
+the tell: Fix #1's per-cell swap moved the **34 GB flow model CPU<->GPU on every cell**, and ROCm's
+HMM managed memory accumulated/thrashed so each round-trip got worse than the last.
+
+The cold **batch** path (`run_jobs` Phase-1) never had this — it loads the flow model to the GPU
+**once** and denoises all cells with it resident (~87 s/cell; HMM pages only *during* denoise). Fix #2
+makes the warm worker do the same:
+- `_load` (offload): load flow on CPU, encode refs, free the TE, then **`flow.to(GPU)` ONCE** — the
+  flow model is now resident for the whole group.
+- `generate` (offload): only the **small TE** is shuttled GPU<->CPU for the text encode; the flow
+  model is **never migrated per cell**. (The TE is fp8 → can't encode on CPU via `_scaled_mm`, so it
+  rides onto the GPU briefly; HMM absorbs the transient flow+TE pressure for the seconds-long encode.)
+
+Net: cell 0 ≈ load + one denoise (~the cold t2i ~185 s + ref encode); cells 1..N ≈ TE encode + denoise
++ decode (≈ cold-batch ~87–185 s/cell), with no per-cell 34 GB migration. 7/7 warm tests green; both
+`run_pipeline.py` copies synced byte-identical. **The stuck in-flight sweep must be cancelled and
+re-run on the fixed worker — the running process still has Fix #1's code.** On-rig confirmation that
+cells 1..N hold steady (no per-cell creep) still owed.
+
 ---
 
 ## P2-era fixes (non-milestone)

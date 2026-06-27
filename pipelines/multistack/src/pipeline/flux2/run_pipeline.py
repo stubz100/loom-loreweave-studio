@@ -465,19 +465,22 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
 #   stdout (worker -> runner): free-text progress (the runner streams it to the job log) + ONE
 #           result line per job, framed `SERVE_RESULT_PREFIX + <json>`:
 #           {job_id, status:"ok"|"failed", output_path, seed, width, height, duration_s, meta, error}.
-# The flow model + AE + TE are loaded ONCE (from the first job) and kept resident across the group
-# so the expensive disk read / fp8 dequant happens once per sweep, not per cell. Klein fits in 16 GB
-# fully resident. Dev's 34 GB transformer + Mistral TE do NOT co-reside, so the dev worker keeps both
-# in CPU RAM and shuttles them onto the GPU one at a time per image (TE for the text encode, then the
-# flow model for the denoise) — the cold run() offload swap, paid per warm cell but with no re-read.
+# The flow model + AE (+ ref) are loaded ONCE (from the first job) and kept GPU-resident across the
+# whole group, so the expensive disk read / fp8 dequant happens once per sweep, not per cell. Klein
+# fits in 16 GB fully resident. Dev's 34 GB transformer + Mistral TE do NOT co-reside *at load*, so
+# the dev worker loads the flow model on CPU, frees the TE, then moves the flow model onto the GPU
+# ONCE (ROCm HMM pages it during denoise). Only the small TE is shuttled GPU<->CPU per cell for the
+# text encode — the flow model is never the per-cell 34 GB migration (that thrashed HMM and slowed
+# every successive cell). This keeps warm dev cells near the cold batch's ~87 s/cell.
 SERVE_RESULT_PREFIX = "[serve-result] "
 
 
 class _ServeGenerator:
-    """Lazy-loads the flow model + AE (+ ref) + TE from the FIRST job and keeps them resident; each
-    `generate(job)` produces one image. For the dev (`cpu_offload`) model the flow + TE live in CPU
-    RAM between cells and are paged onto the GPU per image so they never co-reside. GPU code —
-    exercised on-rig; the stdin/stdout protocol (`run_serve`) is what the no-GPU tests cover."""
+    """Lazy-loads the flow model + AE (+ ref) + TE from the FIRST job and keeps the flow model + AE
+    GPU-resident; each `generate(job)` produces one image. For the dev (`cpu_offload`) model only the
+    (small) TE is shuttled GPU<->CPU per cell for the text encode — the flow model stays resident, so
+    it is loaded/migrated once, not per image. GPU code — exercised on-rig; the stdin/stdout protocol
+    (`run_serve`) is what the no-GPU tests cover."""
 
     def __init__(self, output_dir: str, device: str) -> None:
         self.output_dir = output_dir
@@ -491,9 +494,12 @@ class _ServeGenerator:
 
         model_name = job.get("model_name", "flux.2-klein-4b")
         torch_device = torch.device(self.device)
-        # dev's 34 GB fp8 transformer can't co-reside with the Mistral TE on 16 GB — load the flow
-        # model on CPU and page it onto the GPU per image (TE freed first), exactly like the cold
-        # run() path. Klein fits resident, so it stays resident (the fast warm path the user runs).
+        # dev's 34 GB fp8 transformer can't co-reside with the Mistral TE *at load* on 16 GB, so
+        # load the flow model on CPU (TE on GPU), encode the refs, then free the TE and move the flow
+        # model onto the GPU ONCE — resident for the whole group, like the cold batch path (~87 s/cell
+        # while ROCm HMM pages it during denoise). The TE is shuttled GPU<->CPU per cell for the cheap
+        # text encode; the flow model is NEVER migrated per cell (that 34 GB round-trip thrashed HMM
+        # and made each cell progressively slower than the last). Klein fits resident, stays resident.
         self.cpu_offload = bool(job.get("cpu_offload")) or (model_name == stage1_load_models.QUANTIZED_DEV_MODEL)
         s1 = stage1_load_models.run(
             model_name=model_name, device=self.device, cpu_offload=self.cpu_offload,
@@ -514,10 +520,12 @@ class _ServeGenerator:
                 if ref_tokens is not None:
                     ref_tokens, ref_ids = ref_tokens.to(torch_device), ref_ids.to(torch_device)
         if self.cpu_offload:
-            # park the TE on CPU so the idle worker holds only the AE (+ refs) on the GPU; each
-            # generate() shuttles TE->GPU for the text encode and flow->GPU for the denoise.
+            # free the TE, then move the flow model onto the GPU ONCE and keep it resident for the
+            # whole group. generate() only shuttles the (small) TE per cell; the flow model is not
+            # migrated again — that's what keeps warm dev cells near the cold-batch ~87 s/cell.
             enc.cpu()
             torch.cuda.empty_cache()
+            s1["model"].to(torch_device)
         self.state = {
             "model": s1["model"], "ae": s1["ae"], "enc": enc,
             "distilled": info.get("guidance_distilled", True), "defaults": info.get("defaults", {}),
@@ -552,8 +560,9 @@ class _ServeGenerator:
         out_path = self._resolve_out_dir(job) / f"flux2_{ts}_s{seed}.png"
         t0 = time.time()
         with torch.no_grad():
-            # --- text encode --- under offload the TE rides onto the GPU here, then is freed before
-            # the 34 GB flow model is paged in (the cold run() swap, applied per warm image).
+            # --- text encode --- under offload the TE rides onto the GPU for the (cheap) encode, then
+            # is freed; the flow model stays GPU-resident (HMM pages it), so it is never the per-cell
+            # 34 GB migration that used to thrash the sweep.
             if self.cpu_offload:
                 s["enc"].to(torch_device)
             c = s["enc"]([job["prompt"]]).to(torch.bfloat16)
@@ -562,9 +571,8 @@ class _ServeGenerator:
             ctx, ctx_ids = batched_prc_txt(c)
             if self.cpu_offload:
                 s["enc"].cpu()
-                torch.cuda.empty_cache()
-                s["model"].to(torch_device)  # flow -> GPU (ROCm pages it through host memory)
-            # --- denoise ---
+                torch.cuda.empty_cache()     # reclaim the TE's room; the flow model stays on the GPU
+            # --- denoise (flow model already resident on the GPU) ---
             g = torch.Generator(device=self.device).manual_seed(int(seed))
             noise = torch.randn((1, 128, height // 16, width // 16), generator=g,
                                 dtype=torch.bfloat16, device=torch_device)
@@ -573,10 +581,7 @@ class _ServeGenerator:
             dn = denoise if s["distilled"] else denoise_cfg
             x = dn(s["model"], x, x_ids, ctx, ctx_ids, timesteps=timesteps, guidance=guidance,
                    img_cond_seq=s["ref_tokens"], img_cond_seq_ids=s["ref_ids"])
-            if self.cpu_offload:
-                s["model"].cpu()             # flow -> CPU (kept in RAM for the next cell, not re-read)
-                torch.cuda.empty_cache()
-            # --- decode (AE stayed GPU-resident; flow is off the GPU now under offload) ---
+            # --- decode (AE + flow both stay GPU-resident across the group) ---
             s4 = stage4_decode.run(ae=s["ae"], x=x, x_ids=x_ids, output_path=out_path)
         return {"job_id": job.get("job_id"), "status": "ok", "output_path": str(out_path),
                 "seed": seed, "width": s4["width"], "height": s4["height"],

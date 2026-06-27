@@ -156,15 +156,54 @@ def test_generate_multi_accepts_params_dry_run(client):
         "dry_run": True})
     assert r.status_code == 200, r.text
     body = r.json()
-    # the cast itself stays a plain ideate run — no worker clean/polish flags
+    # Phase 2c: a cast fans out into INDIVIDUAL t2i candidate jobs (not one `multi`/`ideate` run) —
+    # the dry-run previews the FIRST candidate's argv (fast lineup → flux2 t2i). No clean/polish flags
+    # on the candidate; they chain as separate post-pass jobs.
+    assert body["cast"] is True and body["count"] == 3        # 1 candidate × 3 pipelines
+    assert [m["pipeline"] for m in body["lineup"]] == ["flux2", "sd35", "zimage"]
     argv = body["argv"]
-    assert "ideate" in argv
+    assert "--mode" in argv and argv[argv.index("--mode") + 1] == "t2i"
     assert "--clean" not in argv and "--polish" not in argv
     # the passes chain as separate jobs, planned + previewable
     passes = body["post_passes"]
     assert [p["pass"] for p in passes] == ["clean", "polish"]
     assert passes[0]["backend"] == "zimage" and passes[0]["strength"] == 0.4
     assert passes[1]["backend"] == "sd35" and passes[1]["strength"] == 0.22
+
+
+def test_ideation_lineup_models_are_valid():
+    """Phase 2c: every (pipeline, model) a cast fans out across must be a real catalog variant — the
+    lineup mirrors the vendored worker's IDEATION_PRESETS, this guards drift."""
+    for preset in ("fast", "refined"):
+        lineup = mc.ideation_lineup(preset)
+        assert [p for p, _ in lineup] == ["flux2", "sd35", "zimage"]
+        for pl, model in lineup:
+            assert mc.find_variant(pl, model) is not None, f"{preset}: {pl}/{model} not in catalog"
+
+
+def test_cast_fans_out_into_individual_warm_t2i_candidates(client, monkeypatch):
+    """Phase 2c: a Cast submits num_candidates × |lineup| INDIVIDUAL t2i jobs (not one opaque `multi`
+    job), each its own pause-safe queue entry; same-(pipeline,model) candidates share a warm_group,
+    and the candidate seed is shared across the 3 pipelines."""
+    from collections import Counter
+    from orchestrator import components
+    from orchestrator.runner import RUNNER
+    monkeypatch.setattr(components, "multi_weights_status", lambda preset: (True, []))
+    RUNNER.pause()    # queue them; never dispatch to the GPU
+    r = client.post("/generate", json={"pipeline": "multi", "prompt": "a hero",
+                                       "num_candidates": 2, "ideation_mode": "fast", "seed": 42})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 6 and len(body["job_ids"]) == 6       # 2 candidates × 3 pipelines
+    jobs = [RUNNER.get(j) for j in body["job_ids"]]
+    assert all(j["pipeline"] in ("flux2", "sd35", "zimage") and j["mode"] == "t2i" for j in jobs)
+    assert all("batch_items" not in j["params"] for j in jobs)    # individual, not a batch
+    groups = Counter(j["warm_group"] for j in jobs)               # one per (pipeline, model)
+    assert len(groups) == 3 and set(groups.values()) == {2}       # 3 groups × 2 candidates each
+    by_pl: dict[str, list[int]] = {}
+    for j in jobs:
+        by_pl.setdefault(j["pipeline"], []).append(j["params"]["seed"])
+    assert all(sorted(seeds) == [42, 43] for seeds in by_pl.values())   # seed shared across pipelines
 
 
 def test_multi_unset_size_uses_catalog_default_not_project_default(client):

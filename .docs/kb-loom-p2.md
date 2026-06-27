@@ -890,9 +890,15 @@ the amortization. Out of the initial phases.)*
     pass tile per cell, each its own pause-safe job). Because the pass jobs are created as cells finish
     (later `created_at`), FIFO runs all warm cells first (worker resident, no thrash), passes after.
     `realize="mixed"` is the only remaining cold-batch Expansion case (its two-group bg-mask path).
-  - **2c — multi (Cast) individual queue jobs**: orchestrator-driven candidate fan-out so each Cast
-    candidate is its own pause-surviving queue entry. NOT a warm worker (Cast spans 3 models); the win
-    is pause-persistence, not warmth.
+  - **2c — multi (Cast) individual queue jobs** (DONE): the Cast endpoint fans out into
+    `num_candidates × |lineup|` INDIVIDUAL t2i candidate jobs (one per pipeline×seed) instead of one
+    opaque `multi` job — the ideate stage was already independent t2i per pipeline+seed, and
+    clean/polish already chain as post-passes, so this bypasses nothing in use. Each candidate is its
+    own pause-safe queue entry; same-(pipeline,model) candidates DO share a warm_group (per-pipeline
+    warmth — the model loads once for its seeds; the 3 pipelines run back-to-back, one resident at a
+    time), so Cast gets warmth too, not just pause-persistence. The lineup (`model_catalog.
+    IDEATION_LINEUP`) mirrors the worker's `IDEATION_PRESETS` (guarded by a validity test). Frontend
+    needs no change — the grid renders per-job, so N candidate jobs are N tiles.
 - **Phase 3 — cross-batch warmth + idle-eviction tuning** (the worker survives between unrelated
   same-group jobs) + the dev encode-ahead buffer if wanted.
 

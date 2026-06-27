@@ -992,11 +992,29 @@ def create_app() -> FastAPI:
             base["negative_prompt"] = bible.join_negative(base.get("negative_prompt"), global_neg)
 
         if req.dry_run:
+            if is_multi:
+                # Phase 2c: a Cast fans out into num_candidates × |lineup| INDIVIDUAL t2i jobs —
+                # preview the FIRST candidate's argv (its real pipeline/model, not `multi`).
+                lineup = model_catalog.ideation_lineup(req.ideation_mode)
+                pl0, model0 = lineup[0]
+                cand0 = {k: v for k, v in base.items() if k not in ("num_candidates", "ideation_mode")}
+                cand0["model_name"] = model0
+                cand0["seed"] = req.seed if req.seed is not None else 0
+                a0 = ADAPTERS[pl0]
+                s0 = a0.resolve_script(CONFIG.pipeline_roots)
+                spec = JobSpec(pipeline=pl0, mode="t2i", params=cand0, output_dir=ws.out_dir)
+                return {"dry_run": True, "pipeline": "multi", "cast": True,
+                        "count": len(lineup) * req.num_candidates,
+                        "num_candidates": req.num_candidates,
+                        "lineup": [{"pipeline": p, "model_name": m} for p, m in lineup],
+                        "argv": a0.build_argv(spec, CONFIG.venv_python, s0),
+                        "prompt": base["prompt"], "post_passes": post_passes,
+                        "requester_id": requester_id, "profile_version_id": profile_version_id,
+                        "cwd": str(s0.parents[2]), "output_dir": str(ws.out_dir)}
             spec = JobSpec(pipeline=req.pipeline, mode=mode, params=base, output_dir=ws.out_dir)
             argv = adapter.build_argv(spec, CONFIG.venv_python, script)
             return {"dry_run": True, "pipeline": req.pipeline,
-                    "count": 1 if is_multi else req.count,
-                    "num_candidates": req.num_candidates if is_multi else None,
+                    "count": req.count, "num_candidates": None,
                     "argv": argv, "prompt": base["prompt"],
                     "post_passes": post_passes,
                     "requester_id": requester_id, "profile_version_id": profile_version_id,
@@ -1018,23 +1036,45 @@ def create_app() -> FastAPI:
 
         batch_id = "bat_" + uuid.uuid4().hex[:8]
         job_ids: list[str] = []
-        # multi = one casting job (it fans out internally to N candidates); zimage = N jobs.
-        n_jobs = 1 if is_multi else req.count
-        for i in range(n_jobs):
-            params = dict(base)
-            if req.seed is not None and not is_multi:
-                params["seed"] = req.seed + i      # distinct but reproducible per image
-            elif req.seed is not None:
-                params["seed"] = req.seed          # multi derives its own per-candidate seeds
-            jid = RUNNER.submit(pipeline=req.pipeline, mode=mode, params=params,
-                                batch_id=batch_id, index=i, batch_size=n_jobs,
-                                requester_id=requester_id,          # project or asset version (R98)
-                                profile_version_id=profile_version_id, stage=req.stage,
-                                post_passes=post_passes)
-            job_ids.append(jid)
+        if is_multi:
+            # M2.7 Phase 2c: a Cast fans out into INDIVIDUAL t2i candidate jobs — one per
+            # (pipeline, model) × candidate seed — instead of ONE opaque `multi` job, so each
+            # candidate is its own queue entry that streams in + persists across pause/cancel (the
+            # ideate stage WAS independent t2i per pipeline+seed; clean/polish already chain as
+            # post-passes). Same-(pipeline,model) candidates share a `warm_group`, so the model loads
+            # ONCE for its seeds; the lineup's 3 pipelines run back-to-back (one resident at a time).
+            base_seed = req.seed if req.seed is not None else random.randrange(2**31)
+            lineup = model_catalog.ideation_lineup(req.ideation_mode)
+            total = len(lineup) * req.num_candidates
+            cand = {k: v for k, v in base.items() if k not in ("num_candidates", "ideation_mode")}
+            for pl, model_name in lineup:
+                wg = "|".join(["cast", pl, model_name,
+                               f"{cand.get('width')}x{cand.get('height')}", str(base_seed)])
+                for c in range(req.num_candidates):
+                    p = dict(cand)
+                    p["model_name"] = model_name
+                    p["seed"] = base_seed + c          # seed c shared across the 3 pipelines
+                    job_ids.append(RUNNER.submit(
+                        pipeline=pl, mode="t2i", params=p,
+                        batch_id=batch_id, index=len(job_ids), batch_size=total,
+                        requester_id=requester_id, profile_version_id=profile_version_id,
+                        stage=req.stage, post_passes=post_passes, warm_group=wg))
+        else:
+            for i in range(req.count):
+                params = dict(base)
+                if req.seed is not None:
+                    params["seed"] = req.seed + i      # distinct but reproducible per image
+                job_ids.append(RUNNER.submit(
+                    pipeline=req.pipeline, mode=mode, params=params,
+                    batch_id=batch_id, index=i, batch_size=req.count,
+                    requester_id=requester_id,          # project or asset version (R98)
+                    profile_version_id=profile_version_id, stage=req.stage,
+                    post_passes=post_passes))
         LOG.info("generate: %s %s (%s%s) for %s%s",
-                 "cast" if is_multi else "batch", batch_id, req.pipeline,
-                 f" ×{req.num_candidates}" if is_multi else f" of {req.count}",
+                 "cast" if is_multi else "batch", batch_id,
+                 req.ideation_mode if is_multi else req.pipeline,
+                 f" ×{req.num_candidates}×{len(model_catalog.ideation_lineup(req.ideation_mode))}"
+                 if is_multi else f" of {req.count}",
                  requester_id, f" stage={req.stage}" if req.stage else "")
         return {"batch_id": batch_id, "count": len(job_ids), "job_ids": job_ids,
                 "num_candidates": req.num_candidates if is_multi else None}

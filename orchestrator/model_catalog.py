@@ -493,6 +493,22 @@ MULTI_ENTRY = {
     "modes": ["ideate"],
 }
 
+# M2.7 Phase 2c — the (pipeline, model) trio each casting preset fans out across. This MIRRORS the
+# vendored `multi` worker's `arch_compose_character.IDEATION_PRESETS` (R162: the worker can't be
+# imported here, so it's duplicated — `test_ideation_lineup_models_are_valid` guards that every entry
+# is a real catalog variant, and the vendored copy is the source of truth for the lineup itself). A
+# Cast now fans these out as INDIVIDUAL t2i candidate jobs (one per pipeline × candidate seed) instead
+# of one opaque `multi` job — the ideate stage was already independent t2i per pipeline+seed.
+IDEATION_LINEUP: dict[str, list[tuple[str, str]]] = {
+    "fast":    [("flux2", "flux.2-klein-4b"), ("sd35", "sd3.5-large-turbo"), ("zimage", "zimage-turbo")],
+    "refined": [("flux2", "flux.2-klein-9b"), ("sd35", "sd3.5-large"),       ("zimage", "zimage-base")],
+}
+
+
+def ideation_lineup(preset: str) -> list[tuple[str, str]]:
+    """The ordered (pipeline, model_name) candidates of a casting preset. Unknown preset → []."""
+    return list(IDEATION_LINEUP.get(preset, []))
+
 
 def catalog_for_api() -> dict:
     """What GET /models serves: the image-model catalog + the multi casting tunables."""

@@ -181,7 +181,11 @@ def test_done_line_uses_the_p1_adapter_path(client):
     cbody = cast.json()
     assert cbody["pipeline"] == "multi" and cbody["num_candidates"] == 1
     assert cbody["profile_version_id"] == vid          # scoped to the asset version
-    assert "ideate" in cbody["argv"] and any("multi" in tok for tok in cbody["argv"])
+    # M2.7 Phase 2c: casting fans out into per-pipeline t2i candidate jobs (the ideate stage was
+    # independent t2i per pipeline+seed) — the dry-run previews the first candidate's t2i argv.
+    assert cbody["cast"] is True and cbody["count"] == 3
+    assert [m["pipeline"] for m in cbody["lineup"]] == ["flux2", "sd35", "zimage"]
+    assert "--mode" in cbody["argv"] and "t2i" in cbody["argv"]
 
     # EXPAND via `sd35` img2img — the real Stage-B expansion adapter.
     sb = client.post(f"/assets/{a['id']}/stage-b",

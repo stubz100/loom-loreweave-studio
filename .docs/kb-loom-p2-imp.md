@@ -1156,6 +1156,41 @@ so a sweep with them no longer falls back to the cold batch.
 ⚠ Owed on-rig: a real Stage-B sweep with identity (anchor) confirms each cell streams + gets an
 identity-locked pass tile, all pause-safe. **Next:** 2c (multi/Cast individual jobs).
 
+### Phase 2c — multi (Cast) individual queue jobs (2026-06-27; on-rig owed) — Phase 2 COMPLETE
+
+The last batch-generation surface. A Cast no longer submits one opaque `multi` job that fans out
+*inside* a subprocess; the **orchestrator** fans it out into `num_candidates × |lineup|` INDIVIDUAL
+t2i candidate jobs (one per pipeline × candidate seed). This is sound because the casting **ideate**
+stage was already *independent t2i per pipeline+seed* (verified in `arch_compose_character`), and
+clean/polish already chain as post-passes — so bypassing the `multi` worker for casting loses nothing
+in use.
+
+- **`model_catalog`**: `IDEATION_LINEUP` + `ideation_lineup(preset)` — the (pipeline, model) trio per
+  preset (fast: klein-4b/sd3.5-large-turbo/zimage-turbo; refined: klein-9b/sd3.5-large/zimage-base),
+  mirroring the vendored worker's `IDEATION_PRESETS` (R162 — can't import the worker; a validity test
+  guards that every entry is a real catalog variant).
+- **`main.py` `/generate`**: the `is_multi` branch now loops the lineup × `num_candidates`, submitting
+  a `t2i` job per candidate with `model_name` + a per-candidate `seed` (`base+c`, the SAME seed across
+  the 3 pipelines, matching the worker). Each candidate carries the sweep's `post_passes` (so clean/
+  polish/identity chain per candidate, Phase 2b) and a **per-(pipeline,model) `warm_group`** — so the
+  3 pipelines run back-to-back with each model resident across ITS candidates (Cast gets warmth, not
+  just pause-persistence). The dry-run previews the first candidate's real t2i argv + the `lineup`.
+- **No warm thrash, by construction**: a cast submits all of pipeline-A's candidates, then B's, then
+  C's (contiguous), and FIFO + the same-group keep-warm logic services each pipeline's candidates on
+  one resident worker before evicting for the next.
+- **Frontend**: unchanged. The grid is derived per-job (a job's outputs → tiles) and the inspector
+  falls back to `job.pipeline`, so N 1-output candidate jobs render as N tiles with the right pipeline
+  label — no single-`multi`-job assumption anywhere. `tsc --noEmit` clean.
+- **Tests**: `test_ideation_lineup_models_are_valid`, `test_cast_fans_out_into_individual_warm_t2i_
+  candidates` (6 jobs for 2×3, 3 warm groups × 2, seed shared across pipelines); updated the two
+  done-line/dry-run assertions that pinned the old `multi`/`ideate` argv. **344 backend green;
+  frontend tsc clean.**
+
+⚠ Owed on-rig: a real Cast streams its candidates as individual tiles that persist across a
+pause/cancel, with each pipeline's model loaded once. **Phase 2 (warm-worker batch queue) COMPLETE** —
+flux2 + sd35/zimage Expansion warm cells (2a), post-passes on warm cells (2b), Cast fan-out (2c); the
+remaining cold-batch case is `realize="mixed"` Expansion (a later phase if wanted).
+
 ---
 
 ## P2-era fixes (non-milestone)

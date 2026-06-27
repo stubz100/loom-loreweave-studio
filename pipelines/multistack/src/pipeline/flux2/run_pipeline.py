@@ -454,6 +454,151 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
     return _finish(status, load_s)
 
 
+# --- Serve mode (--serve): a PERSISTENT warm worker (M2.7 Phase 1) -------------------
+#
+# The runner feeds same-`warm_group` cell-jobs (one image each) to ONE long-lived process so the
+# model loads ONCE for the whole sweep, while each image is its own queue entry that persists the
+# moment it's done. Protocol:
+#   stdin  (runner -> worker): one JSON job per line — {job_id, model_name, prompt, mode, width,
+#           height, seed, ref_images, num_steps, guidance, turbo, text_encoder, fp8_matmul, meta}.
+#           A `{"cmd":"shutdown"}` line (or EOF) exits cleanly.
+#   stdout (worker -> runner): free-text progress (the runner streams it to the job log) + ONE
+#           result line per job, framed `SERVE_RESULT_PREFIX + <json>`:
+#           {job_id, status:"ok"|"failed", output_path, seed, width, height, duration_s, meta, error}.
+# The model (flow + AE, encoded ref) stays resident across jobs; the text encoder is (re)loaded per
+# job by stage1 — the dev/klein TE can't co-reside with the flow model on 16 GB (the batch worker's
+# encode-all-then-free-TE avoids that; an encode-ahead buffer to recover it is a later phase).
+SERVE_RESULT_PREFIX = "[serve-result] "
+
+
+class _ServeGenerator:
+    """Lazy-loads the flow model + AE (+ ref) from the FIRST job and keeps them resident; each
+    `generate(job)` produces one image. The text encoder rides stage1's load. GPU code — exercised
+    on-rig; the stdin/stdout protocol (`run_serve`) is what the no-GPU tests cover."""
+
+    def __init__(self, output_dir: str, device: str) -> None:
+        self.output_dir = output_dir
+        self.device = device
+        self.state: dict | None = None
+
+    def _load(self, job: dict) -> None:
+        from flux2.sampling import encode_image_refs
+        from PIL import Image
+
+        model_name = job.get("model_name", "flux.2-klein-4b")
+        torch_device = torch.device(self.device)
+        s1 = stage1_load_models.run(
+            model_name=model_name, device=self.device, cpu_offload=False,
+            fp8_matmul=job.get("fp8_matmul", "auto"),
+            text_encoder_variant=job.get("text_encoder"),
+            turbo=bool(job.get("turbo")),
+        )
+        info = FLUX2_MODEL_INFO[model_name]
+        ref_tokens = ref_ids = None
+        ref_paths = list(job.get("ref_images") or [])
+        if job.get("mode") == "ref" and ref_paths:
+            with torch.no_grad():
+                refs = [Image.open(p).convert("RGB") for p in ref_paths]
+                ref_tokens, ref_ids = encode_image_refs(s1["ae"], refs)
+                if ref_tokens is not None:
+                    ref_tokens, ref_ids = ref_tokens.to(torch_device), ref_ids.to(torch_device)
+        out_dir = Path(self.output_dir)
+        if not out_dir.is_absolute():
+            out_dir = Path(__file__).resolve().parents[3] / out_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self.state = {
+            "model": s1["model"], "ae": s1["ae"], "enc": s1["text_encoder"],
+            "distilled": info.get("guidance_distilled", True), "defaults": info.get("defaults", {}),
+            "ref_tokens": ref_tokens, "ref_ids": ref_ids, "out_dir": out_dir,
+            "model_name": model_name,
+        }
+
+    def generate(self, job: dict) -> dict:
+        from flux2.sampling import batched_prc_img, batched_prc_txt, denoise, denoise_cfg, get_schedule
+
+        if self.state is None:
+            self._load(job)
+        s = self.state
+        seed = job.get("seed")
+        if seed is None:
+            seed = random.randrange(2**31)
+        width, height = int(job.get("width", 1360)), int(job.get("height", 768))
+        num_steps = int(job.get("num_steps") or s["defaults"].get("num_steps", 4))
+        guidance = job.get("guidance")
+        if guidance is None:
+            guidance = s["defaults"].get("guidance", 1.0)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        out_path = s["out_dir"] / f"flux2_{ts}_s{seed}.png"
+        t0 = time.time()
+        with torch.no_grad():
+            c = s["enc"]([job["prompt"]]).to(torch.bfloat16)
+            if not s["distilled"]:
+                c = torch.cat([s["enc"]([""]).to(torch.bfloat16), c], dim=0)
+            ctx, ctx_ids = batched_prc_txt(c)
+            g = torch.Generator(device="cuda").manual_seed(int(seed))
+            noise = torch.randn((1, 128, height // 16, width // 16), generator=g,
+                                dtype=torch.bfloat16, device="cuda")
+            x, x_ids = batched_prc_img(noise)
+            timesteps = get_schedule(num_steps, x.shape[1])
+            dn = denoise if s["distilled"] else denoise_cfg
+            x = dn(s["model"], x, x_ids, ctx, ctx_ids, timesteps=timesteps, guidance=guidance,
+                   img_cond_seq=s["ref_tokens"], img_cond_seq_ids=s["ref_ids"])
+            s4 = stage4_decode.run(ae=s["ae"], x=x, x_ids=x_ids, output_path=out_path)
+        return {"job_id": job.get("job_id"), "status": "ok", "output_path": str(out_path),
+                "seed": seed, "width": s4["width"], "height": s4["height"],
+                "duration_s": round(time.time() - t0, 3), "meta": job.get("meta"), "error": None}
+
+    def close(self) -> None:
+        self.state = None
+        try:
+            torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def run_serve(output_dir: str = "src/assets/pics", device: str = "cuda", *,
+              in_stream=None, emit=None, generator=None) -> int:
+    """Persistent warm-worker loop (M2.7): one image per stdin job line, model loaded once.
+    `in_stream`/`emit`/`generator` are injectable so the protocol is unit-testable without a GPU."""
+    import json as _json
+    import sys as _sys
+
+    in_stream = in_stream if in_stream is not None else _sys.stdin
+    emit = emit if emit is not None else (lambda line: print(line, flush=True))
+    gen = generator if generator is not None else _ServeGenerator(output_dir, device)
+    n_ok = n_fail = 0
+    print(f"[serve] ready (device={device})", flush=True)
+    try:
+        for raw in in_stream:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                job = _json.loads(line)
+            except _json.JSONDecodeError as exc:
+                emit(SERVE_RESULT_PREFIX + _json.dumps(
+                    {"job_id": None, "status": "failed", "error": f"bad job json: {exc}"}))
+                continue
+            if job.get("cmd") == "shutdown":
+                break
+            try:
+                result = gen.generate(job)
+            except Exception as exc:  # noqa: BLE001 — one image's failure never kills the worker
+                import traceback
+                traceback.print_exc()
+                result = {"job_id": job.get("job_id"), "status": "failed",
+                          "output_path": "", "error": str(exc), "meta": job.get("meta")}
+            if result.get("status") == "ok":
+                n_ok += 1
+            else:
+                n_fail += 1
+            emit(SERVE_RESULT_PREFIX + _json.dumps(result))
+    finally:
+        gen.close()
+    print(f"[serve] done ({n_ok} ok / {n_fail} failed)", flush=True)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Flux2 image generation pipeline")
     parser.add_argument("--prompt", default=None, help="Text prompt (required unless --jobs-file)")
@@ -477,6 +622,9 @@ def main():
                         help="Reference image path (repeatable, <=4 Klein/<=6 dev) for --mode ref.")
     parser.add_argument("--jobs-file", default=None,
                         help="Batch mode: a JSON {shared, items} file — one load, N images.")
+    parser.add_argument("--serve", action="store_true",
+                        help="Warm-worker mode (M2.7): read one JSON job per stdin line, load the "
+                             "model once, emit one image + a [serve-result] line per job.")
     # M2.5 dev-only knobs (ignored for Klein): the quantized `flux.2-dev` text-encoder precision
     # and the scaled-FP8 matmul backend.
     parser.add_argument("--text-encoder", dest="text_encoder", default=None,
@@ -490,6 +638,8 @@ def main():
                              "(~4-6) generation — JSON prompting unaffected (TE untouched).")
     args = parser.parse_args()
 
+    if args.serve:
+        raise SystemExit(run_serve(output_dir=args.output_dir, device=args.device))
     if args.jobs_file:
         raise SystemExit(run_jobs(args.jobs_file, output_dir=args.output_dir, device=args.device))
     if not args.prompt:

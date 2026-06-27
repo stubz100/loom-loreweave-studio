@@ -135,6 +135,7 @@ def test_parse_batch_result_outputs_and_meta(tmp_path):
     assert rec.outputs_meta[0]["coverage_cell"]["angle"] == "front"
     assert rec.outputs_meta[0]["seed"] == 100   # setdefault from the item record
     assert rec.outputs_meta[0]["manifest_path"]  # per-item sidecar rides along (lineage)
+    assert rec.outputs_meta[0]["duration_s"] == 9.0  # per-IMAGE gen time (inspector); job total below
     assert rec.duration_s == 120.0
     # honesty (review): counts surface so a partial run can't read as fully green
     assert rec.batch == {"count": 3, "ok": 2, "failed": 1, "skipped": 0,

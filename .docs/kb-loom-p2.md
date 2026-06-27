@@ -29,8 +29,9 @@ and a **proxy-based readiness meter** (no VLM). The VLM (Qwen3-VL) and a project
 > upscale), and a dedicated **`Upscale ✨`** preset on the already-registered **SD3.5 Tile ControlNet**
 > — design in §12 "M0e solution design". **M2.5 added 2026-06-26:** replace Loom's `flux.2-dev`
 > runtime with the Comfy-Org quantized Flux2-dev split checkpoint proven in the old
-> `src/pipeline/flux2_q8` spike; this is **dev-only and single-run** (t2i/i2i — the batch `ref`
-> Stage-B sweep stays Klein-only). It also **deletes both gated heavyweight repos** (`black-forest-labs/FLUX.2-dev`
+> `src/pipeline/flux2_q8` spike; this is **dev-only** and covers t2i/i2i **and** the batch `ref`
+> Stage-B coverage sweep (the expansion/curation screen — batch routing added same day, reversing the
+> initial Klein-only call). It also **deletes both gated heavyweight repos** (`black-forest-labs/FLUX.2-dev`
 > 166 GB + `mistralai/Mistral-Small-3.2-24B` 90 GB): the ~17 MB dev config+tokenizer are vendored and
 > Klein's VAE re-points to the identical Comfy `flux2-vae`. Klein keeps its Qwen3/Klein loader path
 > (only its VAE weight source moves).
@@ -651,14 +652,18 @@ fp8 Mistral TE 17 GB + VAE 321 MB), replacing ~150 GB of gated dev weights + 90 
 re-point is a **weight-source change only** — it does **not** alter Klein's runtime path or its
 Stage-B `ref` behavior (§11/R147).
 
-**Scope (decided 2026-06-26).** M2.5 makes quantized dev runnable for the **single-run** dev surfaces
-only: **t2i** (JSON authoring / casting) and **i2i** (the M0c/M0d postprocess + M0e upscale steps).
-The **batch `ref` Stage-B coverage sweep stays Klein-only** — the spike has no batch loop, so loom's
-`run_pipeline.run_jobs` is **not** rerouted to the quantized loaders in M2.5 (it would still call the
-full-weight `flux2.util.load_flow_model("flux.2-dev")`). Klein remains the identity-preserving
-Stage-B `ref` workhorse (§11/R147); if a quantized dev `ref` sweep is ever wanted, it's a follow-on
-that ports the quantized loaders into `run_jobs`. Until then, dev should not be *offered* as the model
-for a coverage sweep (guard or document, so a dev sweep can't silently fall through to the OOM path).
+**Scope (decided 2026-06-26; batch added 2026-06-26).** M2.5 first shipped quantized dev for the
+**single-run** surfaces — **t2i** (JSON authoring / casting) and **i2i** (the M0c/M0d postprocess +
+M0e upscale steps). **⭐ Amended same day:** the author's real driver for dev is its advanced
+(structured-JSON) prompting **in the expansion/curation screen**, so the **batch `ref` Stage-B
+coverage sweep is now ALSO routed to quantized dev** (the original "Klein-only batch" call is
+reversed). `run_pipeline.run_jobs` branches its loaders to the Comfy split files for `flux.2-dev`
+(TE encode-all → free → fp8 transformer + Comfy VAE — the existing batch memory structure already
+keeps the 17 GB TE and 34 GB transformer from co-residing on 16 GB). The Stage-B endpoint was already
+dev-aware (M0d JSON prompts per cell, M0e 512², the `variant_weights_present` gate). Klein remains a
+fully-valid Stage-B workhorse; dev is now an *option* for sweeps (slower without a step LoRA — see
+Risks). **Owed:** the Comfy **Flux2-Turbo LoRA** to make low-step (≈8) dev sweeps fast — a separate
+pass (LoRA-on-scaled-FP8 is R&D); until then dev sweeps want ~50 steps.
 
 **Naming stance.** Keep `flux.2-dev` as the **logical Loom model id** for now so existing projects,
 postprocess steps, JSON-tree gating, and tests do not need a user-facing migration. Internally it

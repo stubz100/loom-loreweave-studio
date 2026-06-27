@@ -64,7 +64,12 @@ def test_parse_result_collects_pool(tmp_path):
     assert rec.ok is True
     assert len(rec.outputs) == 3            # one job → the whole pool
     assert rec.manifest_status == "completed"
-    assert rec.duration_s == 12.3
+    assert rec.duration_s == 12.3          # job-level: the whole batch
+    # per-IMAGE meta (inspector): each candidate carries its own gen time + sub-pipeline,
+    # parallel to outputs so the runner can key it by output name.
+    assert rec.outputs_meta is not None and len(rec.outputs_meta) == 3
+    assert rec.outputs_meta[0]["duration_s"] == 1.0
+    assert rec.outputs_meta[0]["pipeline"] == "flux2"
 
 
 def test_parse_result_failed_ideate(tmp_path):

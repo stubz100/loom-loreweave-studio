@@ -56,6 +56,12 @@ export interface OutputMeta {
   /** restore pass (M6): "restored" | "no_face_passthrough" | "portrait_crop" + face count. */
   restore?: string;
   faces?: number;
+  /** per-IMAGE generation time (s) for batch jobs — Stage-B sweep cells (the worker's per-item
+   * duration) + multi (Cast) candidates. The job-level `duration_s` is the WHOLE batch. */
+  duration_s?: number | null;
+  /** multi (Cast) candidate's sub-pipeline (flux2/sd35/zimage); clean/polish pass name. */
+  pipeline?: string;
+  pass?: string;
 }
 
 export interface JobResult {
@@ -860,6 +866,9 @@ export interface ParamSpec {
   step?: number;
   choices?: string[];
   modes?: string[];
+  /** M2.5 — restrict a param to specific model ids (e.g. the `flux.2-dev` quantized knobs).
+   * The drawer shows it only when the selected model_name is in this list. */
+  models?: string[];
   note?: string;
   advanced?: boolean;
   /** clean/polish post-pass param — orchestrator-chained, never a worker flag. */

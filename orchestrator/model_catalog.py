@@ -122,16 +122,18 @@ def _catalog() -> dict:
                 {"name": "strength", "flag": "--strength", "type": "float", "default": 0.25, "min": 0.0, "max": 1.0,
                  "modes": ["img2img"], "note": "0.20–0.25 polish, higher to re-roll"},
                 {"name": "cpu_offload", "flag": "--cpu-offload", "type": "flag", "default": False},
-                # M2.5 dev-only advanced knobs (quantized Comfy backend). `emit_argv` only emits a
-                # param present in the job's params, and the UI shows these only for `flux.2-dev`
-                # (`models` gate) in an advanced foldout — Klein never carries them, and the worker
-                # ignores them for Klein regardless. Not the main creative path.
+                # M2.5 dev-only knobs (quantized Comfy backend), shown inline in the params panel
+                # when `flux.2-dev` is selected (the `models` gate). `emit_argv` only emits a param
+                # present in the job's params, so Klein never carries them, and the worker ignores
+                # them for Klein regardless.
                 {"name": "text_encoder", "flag": "--text-encoder", "type": "enum", "default": None,
-                 "choices": ["fp8", "bf16"], "advanced": True, "models": ["flux.2-dev"],
-                 "note": "flux.2-dev only: Mistral text-encoder precision (fp8 default = fastest/fits)"},
+                 "choices": ["fp8", "bf16"], "models": ["flux.2-dev"],
+                 "note": "flux.2-dev only: Mistral text-encoder precision (fp8 default = fastest/fits; "
+                         "bf16 = higher quality, +17 GB)"},
                 {"name": "fp8_matmul", "flag": "--fp8-matmul", "type": "enum", "default": "auto",
-                 "choices": ["auto", "native", "dequant"], "advanced": True, "models": ["flux.2-dev"],
-                 "note": "flux.2-dev only: scaled-FP8 Linear backend (auto/native = torch._scaled_mm)"},
+                 "choices": ["auto", "native", "dequant"], "models": ["flux.2-dev"],
+                 "note": "flux.2-dev only: scaled-FP8 Linear backend (auto/native = torch._scaled_mm; "
+                         "dequant = compatibility fallback)"},
             ],
             # `ref` (§11): t2i conditioned on the hero as a reference image (identity-preserving
             # Stage-B expansion). `ref_images` rides the batch jobs-file shared block (the worker

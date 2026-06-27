@@ -268,12 +268,12 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
     if model_name not in FLUX2_MODEL_INFO:
         print(f"[batch-error] unknown model_name {model_name!r}")
         return 2
-    # M2.5: the quantized `flux.2-dev` is single-run only (the spike has no batch loop). The batch
-    # `ref` coverage sweep stays Klein-only — refuse dev here so it can never fall through to the
-    # full-weight load_flow_model("flux.2-dev") path that won't fit the 16 GB rig.
-    if model_name == "flux.2-dev":
-        print("[batch-error] flux.2-dev is single-run only (M2.5); the batch ref sweep is Klein-only")
-        return 2
+    # M2.5: `flux.2-dev` routes the batch loaders to the quantized Comfy split files (the same
+    # components the single-run path uses). The encode-all → free-TE → load-flow structure below
+    # already keeps the ~17 GB Mistral TE and the ~34 GB fp8 transformer from co-residing on 16 GB,
+    # so a coverage sweep pays the (slow) model load ONCE then loops the cells — far better than N
+    # single-run dev casts. (Enabled for the expansion/curation screen's advanced prompting.)
+    is_dev = model_name == "flux.2-dev"
     info = FLUX2_MODEL_INFO[model_name]
     distilled = info.get("guidance_distilled", True)
     defaults = info.get("defaults", {})
@@ -286,6 +286,10 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
     device = shared.get("device", device)
     ref_paths = list(shared.get("ref_images") or [])
     torch_device = torch.device(device)
+    # dev-only quantized knobs (ignored for Klein) — ride the shared block (adapter _SHARED_KEYS).
+    fp8_matmul = shared.get("fp8_matmul", "auto")
+    text_encoder_variant = shared.get("text_encoder")
+    dtype = shared.get("dtype", "bfloat16")
 
     out_dir = Path(shared.get("output_dir") or output_dir)
     if not out_dir.is_absolute():
@@ -311,6 +315,7 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
             status = "failed"
         summary = {"kind": "jobs_batch", "schema_version": 1, "pipeline": "flux2",
                    "model_name": model_name, "mode": mode, "status": status, "error": error,
+                   "backend_variant": "comfy-q8" if is_dev else None,  # M2.5 quantized-dev lineage
                    "count": len(items), "ok": n_ok, "failed": n_fail, "skipped": n_skip,
                    "load_duration_s": load_s, "total_duration_s": round(time.time() - t0, 4),
                    "items": results}
@@ -332,7 +337,15 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
 
     # --- Phase 1: encode ALL prompts, then free the text encoder ---
     try:
-        enc = stage1_load_models._load_text_encoder_safe(model_name, torch_device)
+        if is_dev:
+            te_variant = scaled_fp8.normalize_text_encoder_variant(text_encoder_variant or "fp8")
+            te_path = scaled_fp8.resolve_hf_file(
+                scaled_fp8.COMFY_FLUX2_REPO, scaled_fp8.TEXT_ENCODER_FILES[te_variant])
+            te_model, processor, _ = scaled_fp8.load_comfy_mistral_text_encoder(
+                te_path, device=torch_device, dtype=scaled_fp8.resolve_dtype(dtype), fp8_matmul=fp8_matmul)
+            enc = stage1_load_models.ComfyMistralEmbedder(te_model, processor)
+        else:
+            enc = stage1_load_models._load_text_encoder_safe(model_name, torch_device)
         enc.eval()
         ctxs: list[tuple] = []
         with torch.no_grad():
@@ -352,9 +365,18 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
 
     # --- Phase 2: flow model + AE; encode the shared reference(s) ONCE ---
     try:
-        model = load_flow_model(model_name, device=torch_device)
+        if is_dev:
+            tr_path = scaled_fp8.resolve_hf_file(scaled_fp8.COMFY_FLUX2_REPO, scaled_fp8.TRANSFORMER_FILE)
+            model, _ = scaled_fp8.load_comfy_flux2_transformer(
+                tr_path, device=torch_device, dtype=scaled_fp8.resolve_dtype(dtype), fp8_matmul=fp8_matmul)
+            vae_path = scaled_fp8.resolve_hf_file(scaled_fp8.COMFY_FLUX2_REPO, scaled_fp8.VAE_FILE)
+            # VAE in float32 (matches Klein) — required for ref/i2i encode of a float32 image; the
+            # bf16 latent is promoted in the VAE's inv_normalize, so decode is fine too.
+            ae, _ = scaled_fp8.load_comfy_vae(vae_path, device=torch_device, dtype=torch.float32)
+        else:
+            model = load_flow_model(model_name, device=torch_device)
+            ae = load_ae(model_name, device=torch_device)
         model.eval()
-        ae = load_ae(model_name, device=torch_device)
         ae.eval()
     except Exception as e:  # noqa: BLE001
         return _fail_preload("model load failed", e, load_s)

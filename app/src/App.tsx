@@ -1947,6 +1947,7 @@ export default function App() {
                 specs={catalog?.[stageBPipeline]?.params ?? []}
                 mode="img2img"
                 values={advParamsB}
+                modelName={stageBModel || undefined}
                 sizeDefaults={modelSizeDefaults(stageBPipeline, stageBModel || undefined)}
                 onChange={(k, v) => {
                   // M0d: hand-editing steps/guidance falls the Sampling label back to Custom.
@@ -3241,6 +3242,10 @@ function Inspector({ job, output }: { job: Job; output?: string }) {
   // Batch jobs: per-output meta (cell + seed) echoed from the worker's batch manifest.
   const ometa = output ? r?.output_meta?.[output] : undefined;
   const cell = ometa?.coverage_cell ?? cov;
+  // Per-IMAGE generation time: a batch cell/candidate carries its own `duration_s`; for a
+  // single-output job the job `duration_s` IS the one image's time. (Job `duration` below is
+  // the WHOLE batch for multi/Stage-B.)
+  const imageDur = ometa?.duration_s ?? ((r?.outputs?.length ?? 0) === 1 ? r?.duration_s : null);
   const file = output ?? r?.output_name;
   const showPreview = !!file && (r?.ok === true || job.status === "running");
   // Image SIZE: prefer the LOADED image's natural dimensions (ground truth — postproc/scale
@@ -3270,7 +3275,19 @@ function Inspector({ job, output }: { job: Job; output?: string }) {
         <dt>size</dt><dd>{sizeText}</dd>
         <dt>seed</dt><dd>{candSeed ?? ometa?.seed ?? r?.seed ?? (p.seed as number | undefined) ?? "—"}</dd>
         <dt>wall</dt><dd>{job.wall_s != null ? `${job.wall_s}s` : "—"}</dd>
-        <dt>duration</dt><dd>{r?.duration_s != null ? `${r.duration_s}s` : "—"}</dd>
+        {(r?.outputs?.length ?? 0) > 1 ? (
+          <>
+            <dt title="total compute for the whole batch (all cells / candidates)">batch</dt>
+            <dd>{r?.duration_s != null ? `${r.duration_s}s` : "—"}</dd>
+            <dt title="generation time for THIS image">image</dt>
+            <dd>{imageDur != null ? `${imageDur}s` : "—"}</dd>
+          </>
+        ) : (
+          <>
+            <dt>duration</dt>
+            <dd>{r?.duration_s != null ? `${r.duration_s}s` : "—"}</dd>
+          </>
+        )}
         <dt>file</dt><dd className="mono">{file ?? "—"}</dd>
       </dl>
       {job.note && <div className="banner insp-note">{job.note}</div>}
@@ -3512,6 +3529,7 @@ function ParamControls({
   onChange,
   exclude = [],
   sizeDefaults,
+  modelName,
 }: {
   specs: ParamSpec[];
   mode: string;
@@ -3522,12 +3540,28 @@ function ParamControls({
    * unset-size field advertises the selected model's real default, e.g. flux.2-dev → 512²,
    * not the catalog's pipeline-wide 1360×768). Only the placeholder; values are unchanged. */
   sizeDefaults?: { width?: number; height?: number };
+  /** M2.5 — the effective selected model id for the model-scoped param gate (`s.models`). Some
+   * surfaces (Stage-B) hold the model OUTSIDE `values` (in `stageBModel`), so pass it explicitly;
+   * falls back to `values.model_name` (the cast bar holds it there). */
+  modelName?: string;
 }) {
+  // M2.5 — model-scoped params (e.g. the flux.2-dev quantized knobs) show only for their model.
+  const currentModel = modelName
+    ?? (typeof values["model_name"] === "string" ? (values["model_name"] as string) : undefined);
+  const modelOk = (s: ParamSpec) =>
+    !s.models || (currentModel != null && s.models.includes(currentModel));
   const visible = specs.filter(
     (s) => !s.advanced && s.type !== "image" && !exclude.includes(s.name)
-      && (!s.modes || s.modes.includes(mode)),
+      && (!s.modes || s.modes.includes(mode)) && modelOk(s),
   );
-  if (visible.length === 0) return <span className="muted">no tunables for this pipeline/mode</span>;
+  // Advanced params (e.g. flux.2-dev text_encoder / fp8_matmul) ride a collapsed foldout so the
+  // main creative path stays clean — surfaced only when their mode + model match.
+  const advanced = specs.filter(
+    (s) => s.advanced && s.type !== "image" && !exclude.includes(s.name)
+      && (!s.modes || s.modes.includes(mode)) && modelOk(s),
+  );
+  if (visible.length === 0 && advanced.length === 0)
+    return <span className="muted">no tunables for this pipeline/mode</span>;
   // Grouped blocks (user request 2026-06-11): base model/generation tunables first, then
   // one block per post-pass family (clean / polish / future postproc) — the flat mix made
   // the drawer unreadable once the post-pass params joined every pipeline.
@@ -3548,6 +3582,12 @@ function ParamControls({
           {g.map((s) => renderParamControl(s, values[s.name], onChange, sizeDefaults))}
         </div>
       ))}
+      {advanced.length > 0 && (
+        <details className="p-group p-advanced">
+          <summary className="p-group-label">advanced ({advanced.length})</summary>
+          {advanced.map((s) => renderParamControl(s, values[s.name], onChange, sizeDefaults))}
+        </details>
+      )}
     </>
   );
 }

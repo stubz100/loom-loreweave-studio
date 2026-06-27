@@ -531,6 +531,9 @@ a.ghost { text-decoration: none; display: inline-block; }
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--muted); min-width: 0; flex-basis: 100%;
 }
+/* M2.5 — collapsed advanced-param foldout (e.g. flux.2-dev text_encoder / fp8_matmul). */
+.p-advanced > summary { cursor: pointer; flex-basis: 100%; }
+.p-advanced[open] { row-gap: 8px; }
 
 .insp-note { margin: 8px 0 0; }
 .insp-cov { font-size: 11px; margin-top: 6px; }

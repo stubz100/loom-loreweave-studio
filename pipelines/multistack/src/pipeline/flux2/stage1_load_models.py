@@ -137,7 +137,11 @@ def _load_dev_quantized(
     timings["flow_model_load_s"] = round(time.time() - t0, 4)
 
     t0 = time.time()
-    ae, vae_stats = q.load_comfy_vae(vae_path, device=torch_device, dtype=torch_dtype)
+    # The VAE runs in float32 (matching Klein's load_ae) — NOT bf16 like the transformer/TE. The
+    # spike used bf16 here, which works for t2i (decode only) but breaks ref/i2i: encode_image_refs
+    # feeds a float32 image into conv_in, and decode's inv_normalize (float32 bn buffers) promotes
+    # the bf16 latent to float32 anyway. So float32 is the dtype the encode + decode both need.
+    ae, vae_stats = q.load_comfy_vae(vae_path, device=torch_device, dtype=torch.float32)
     timings["autoencoder_load_s"] = round(time.time() - t0, 4)
 
     return {

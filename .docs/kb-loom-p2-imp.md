@@ -781,6 +781,59 @@ helper. Klein/sd35/zimage/ltxv unchanged (no `probe_files` → same model_index.
 ⚠ Targeted fetch of the 3 dev split files on a fresh rig (vs a whole-repo snapshot that would also
 pull the 34 GB bf16 TE / fp4 / Turbo LoRAs) is still owed.
 
+**Follow-up (2026-06-26, user-requested): FE dev-knob exposure + defaults audit.**
+- **FE dev knobs.** `ParamControls` filtered out `advanced` params and ignored the new `models`
+  gate, so `text_encoder`/`fp8_matmul` never rendered. Added a `models?: string[]` field to the
+  `ParamSpec` TS type and a **model-scoped advanced foldout**: a `<details class="p-advanced">`
+  rendering advanced params whose `modes` AND `models` match the current `model_name`. So dev shows
+  an "advanced (2)" foldout (text_encoder fp8/bf16, fp8_matmul auto/native/dequant); Klein shows
+  nothing. Full path verified: FE params channel → `validate_params` (accepts the knobs, rejects bad
+  enums) → `emit_argv` (model-gated) → worker. `tsc` + `vite build` clean.
+- **Defaults audit.** Size is correct in code — the dev variant `defaults` carry **512²** and an
+  unset cast resolves to 512² (`model_size_default`); the **768 the user saw is the drawer
+  *placeholder*** leaking the flux2 pipeline height default, shown only when the FE can't resolve the
+  model override (a stale/un-refreshed `/models`). Guidance was inconsistent (variant 4.0 vs preset
+  4.5) — now both **4.0** (author set the variant + preset to **8 steps / 4.0** for fast 512² dev
+  drafts). ⚠ dev is NOT step-distilled — 8 steps without the Comfy Flux2-Turbo LoRA (not wired) will
+  be under-denoised; the spike used 50. Left as the author's deliberate choice.
+
+**Batch dev in expansion (2026-06-26, scope amended — author's real driver).** The original M2.5
+call ("batch ref stays Klein-only") is **reversed**: dev's advanced structured-JSON prompting is
+wanted in the **expansion/curation screen** (the Stage-B coverage sweep), so `run_jobs` now routes
+`flux.2-dev` to the quantized loaders.
+- `run_pipeline.run_jobs`: removed the dev refusal; branched **Phase 1** (encode-all) to the Comfy
+  Mistral TE (`ComfyMistralEmbedder`) and **Phase 2** to the fp8 transformer + Comfy VAE
+  (`scaled_fp8.*`), Klein path unchanged. The existing encode-all → free-TE → load-flow structure is
+  exactly dev's memory profile (17 GB TE and 34 GB transformer never co-reside), and the slow load is
+  paid ONCE per sweep. Batch summary carries `backend_variant:"comfy-q8"`.
+- Adapter `_SHARED_KEYS` += `text_encoder`/`fp8_matmul` so a dev sweep applies the knobs once for the
+  whole batch.
+- **The Stage-B endpoint + FE were already dev-aware** (built in M0d/M0e): per-cell JSON prompts for
+  dev (`json_prompt = advanced_prompt and eff_model=="flux.2-dev"`), `model_size_default`→512²,
+  the `variant_weights_present` gate, and the "Dev / JSON" sampling preset that selects dev +
+  enables advanced prompting. My generic `ParamControls` foldout already surfaces the dev knobs on
+  the Stage-B params bar. So only the worker guard + `_SHARED_KEYS` were missing.
+- Tests: `test_batch_run_jobs_routes_dev_to_quantized` (intercepts the first quantized call →
+  proves dev is routed there, not refused, and the summary records `comfy-q8`) +
+  `test_batch_shared_block_carries_dev_knobs`. Full suite **325 passed**.
+- ⚠ Speed: dev is guidance- but NOT step-distilled — a sweep at the author's 8-step default will
+  under-denoise without the Comfy **Flux2-Turbo LoRA** (not wired; LoRA-on-scaled-FP8 is the next
+  pass). Run dev sweeps at ~50 steps until the Turbo LoRA lands. On-rig sweep sign-off owed.
+
+**Fix (2026-06-26, first on-rig sweep — VAE dtype).** First real dev sweep failed at
+`encode_image_refs`: `RuntimeError: Input type (float) and bias type (c10::BFloat16) should be the
+same`. Cause: the dev path loaded the **VAE in bf16** (mirroring the spike, which only ever ran t2i =
+decode-only). Klein's `load_ae` loads the same Comfy VAE in **float32** (the file's weights are F32,
+preserved by `assign=True`), and the ref/i2i path feeds the VAE a **float32** image — so a bf16 VAE
+mismatches on `conv_in`. Decode tolerated bf16 only because `AutoEncoder.inv_normalize` (float32 `bn`
+buffers) promotes the bf16 latent to float32 anyway. **Fix:** load the dev VAE in **float32** (Klein
+parity) in both dev loaders (`stage1._load_dev_quantized` + `run_jobs` Phase 2); transformer + TE stay
+bf16/fp8. Regression test `test_dev_loaders_use_float32_vae_bf16_transformer` (mocks the three Comfy
+loaders, asserts vae=float32 / tr=te=bf16). Suite **326**. ⚠ The spike `src/pipeline/flux2_q8` has
+the same bf16-VAE bug (its `ref`/`img2img` modes were never exercised) — do not port its VAE dtype.
+(Benign: 24× `Kwargs passed to processor.__call__ …` deprecation warnings from the TE's
+`apply_chat_template` on transformers 5.4 — noise, encoding succeeds.)
+
 **Fix (2026-06-26, user-reported black t2i output on rig).** Test project `loom/stubz001`,
 `job_5ed46dc6/flux2_20260626_082100_s1444149108.png`, was not a prompt/color failure: the PNG was
 all black because stage 3 produced **NaN latents** (`x_min/x_max/x_mean = NaN`) and stage 4 decoded
@@ -810,6 +863,30 @@ postproc generate on the RX 9070 XT using the **8-step q8 default**, manifest sh
 Klein `ref` sweep still decodes correctly on the Comfy VAE; (3) FE advanced foldout to surface the
 `text_encoder`/`fp8_matmul` dev knobs (catalog already serves them). (4) confirm
 `Comfy-Org/flux2-dev` is ungated at fetch.
+
+**Follow-ups (2026-06-27): dev knobs on every surface + per-image timing.**
+- **Dev knobs are now inline, not in a foldout.** The `text_encoder`/`fp8_matmul` catalog params
+  dropped `advanced: True` (kept the `models:["flux.2-dev"]` gate), so they render directly in the
+  params panel when dev is selected (supersedes the earlier "advanced foldout" note above).
+- **Stage-B knob visibility fix.** The knobs showed on the t2i cast bar but not the expansion
+  screen: `ParamControls` gated on `values.model_name`, but Stage-B holds its model in a SEPARATE
+  `stageBModel` state (not `advParamsB.model_name`). Added an explicit `modelName` prop to
+  `ParamControls` (falls back to `values.model_name`) and passed `stageBModel` from the Stage-B
+  panel. Backend already accepted them (`validate_params("flux2","ref",…)` + the `channel` →
+  `params` path); it was purely a FE visibility gate. (Corrects the batch-dev note's "FE already
+  wired" claim — the worker guard + `_SHARED_KEYS` were done, but the Stage-B FE gate was missing.)
+- **Per-image generation time in the inspector** (user request — the batch sweep's per-cell cost
+  was invisible; only the batch total showed). The data already existed: Stage-B records per-cell
+  `duration_s` (`run_jobs`), multi records per-candidate `duration_s` (stage_runner /
+  arch_compose_character). Propagated it to `output_meta`: `_batch.parse_batch_result` copies the
+  item `duration_s`; `multi.parse_result` now builds `outputs_meta` (parallel to outputs) with
+  per-candidate `duration_s`+seed+pipeline. The runner already keys `outputs_meta` → `output_meta`
+  by filename. Inspector now shows **`batch`** (whole-batch compute) **+ `image`** (the selected
+  image's own time) for batch jobs, and the existing **`duration`** for single jobs. Tests extended
+  (`test_batch_worker`, `test_multi_adapter`), `OutputMeta` TS type gained `duration_s`/`pipeline`/
+  `pass`. Suite **326**; `tsc` + `vite build` green. (Confirmed the dev-sweep cost is inherent:
+  single dev 512²/8-step denoise ≈ 87 s — 34 GB transformer paged over PCIe on 16 GB — so a 31-cell
+  sweep ≈ 45 min; Klein is the fast sweep workhorse, dev for single key shots.)
 
 ⏭ Push at milestone close (carried convention) once the author signs off the on-rig smoke.
 

@@ -213,6 +213,9 @@ def parse_result(returncode: int, stdout: str, stderr: str, output_dir: Path) ->
     the worker's own exit logic)."""
     manifest_path = _find_manifest(output_dir)
     outputs: list[str] = []
+    meta: list[dict] = []   # per-output meta (candidate/pass), parallel to `outputs` — carries
+                            # the per-IMAGE gen time so the inspector can show it (not just the
+                            # batch total). The runner zips it into result.output_meta by name.
     manifest_status: str | None = None
     error: str | None = None
     duration_s: float | None = None
@@ -230,6 +233,8 @@ def parse_result(returncode: int, stdout: str, stderr: str, output_dir: Path) ->
                     if c.get("status") == "ok" and c.get("output_path"):
                         if Path(c["output_path"]).is_file():
                             outputs.append(c["output_path"])
+                            meta.append({"duration_s": c.get("duration_s"),
+                                         "seed": c.get("seed"), "pipeline": c.get("pipeline")})
                 if not outputs and ideate.get("status") == "completed":
                     error = "ideate completed but no candidate images on disk"
                 elif ideate.get("status") == "failed":
@@ -245,6 +250,7 @@ def parse_result(returncode: int, stdout: str, stderr: str, output_dir: Path) ->
                     op = r.get("output_path")
                     if r.get("status") == "ok" and op and Path(op).is_file():
                         outputs.append(op)
+                        meta.append({"duration_s": r.get("duration_s"), "pass": stage_name})
         except (json.JSONDecodeError, OSError) as e:
             error = f"multi manifest unreadable: {e}"
     else:
@@ -266,4 +272,5 @@ def parse_result(returncode: int, stdout: str, stderr: str, output_dir: Path) ->
         manifest_status=manifest_status,
         error=error,
         stderr_tail=(stdout or stderr or "")[-1500:],
+        outputs_meta=meta if len(meta) == len(outputs) else None,
     )

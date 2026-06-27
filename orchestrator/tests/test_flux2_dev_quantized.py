@@ -190,16 +190,68 @@ def test_denoise_debug_and_guard_mark_nonfinite_latents():
         stage3_denoise._ensure_finite_latents(result["x"], "denoise")
 
 
-def test_batch_run_jobs_refuses_dev(tmp_path):
-    """The batch `ref` sweep is Klein-only (M2.5); run_jobs must refuse dev before any model load."""
-    from pipeline.flux2 import run_pipeline
+def test_batch_run_jobs_routes_dev_to_quantized(tmp_path, monkeypatch):
+    """The expansion/coverage sweep now accepts dev (M2.5 batch): run_jobs routes it to the
+    quantized Comfy loaders — NOT the old refusal, NOT the full-weight load_flow_model path."""
+    from pipeline.flux2 import run_pipeline, scaled_fp8
+    sentinel = RuntimeError("SENTINEL quantized loader reached")
+
+    def _boom(*a, **k):
+        raise sentinel
+    # intercept at the first quantized call so we don't actually download/load weights
+    monkeypatch.setattr(scaled_fp8, "resolve_hf_file", _boom)
     jobs = tmp_path / "jobs.json"
     jobs.write_text(json.dumps({
-        "shared": {"mode": "ref", "model_name": DEV, "width": 512, "height": 512},
-        "items": [{"prompt": "a ranger, front view", "seed": 1}],
+        "shared": {"mode": "ref", "model_name": DEV, "width": 512, "height": 512,
+                   "text_encoder": "fp8", "fp8_matmul": "auto"},
+        "items": [{"prompt": "front view, a ranger", "seed": 1}],
     }), encoding="utf-8")
     rc = run_pipeline.run_jobs(str(jobs), output_dir=str(tmp_path))
-    assert rc == 2  # refused (single-run only) — never reaches the full-weight load path
+    assert rc == 2  # failed at the (intercepted) quantized load — i.e. dev WAS routed there
+    summ = sorted(tmp_path.glob("flux2_batch_*.json"))[-1]
+    data = json.loads(summ.read_text(encoding="utf-8"))
+    assert data["backend_variant"] == "comfy-q8"      # quantized-dev lineage on the batch summary
+    assert "SENTINEL" in (data.get("error") or "")     # reached the quantized loader, not a guard
+
+
+def test_batch_shared_block_carries_dev_knobs(tmp_path):
+    """A flux.2-dev coverage sweep writes the quantized knobs into the jobs.json shared block so
+    the worker applies them once for the whole batch."""
+    from orchestrator.adapters import flux2
+    from orchestrator.adapters.base import JobSpec
+    out = tmp_path / "sweep"
+    out.mkdir()
+    items = [{"prompt": "front view, a ranger", "seed": 1, "meta": {}}]
+    spec = JobSpec(pipeline="flux2", mode="ref", params={
+        "model_name": DEV, "width": 512, "height": 512,
+        "ref_images": [str(tmp_path / "hero.png")], "batch_items": items,
+        "text_encoder": "fp8", "fp8_matmul": "auto"}, output_dir=out)
+    argv = flux2.build_argv(spec, "python", flux2.resolve_script([]))
+    assert "--jobs-file" in argv
+    shared = json.loads((out / "jobs.json").read_text(encoding="utf-8"))["shared"]
+    assert shared["model_name"] == DEV
+    assert shared["text_encoder"] == "fp8" and shared["fp8_matmul"] == "auto"
+
+
+def test_dev_loaders_use_float32_vae_bf16_transformer(monkeypatch):
+    """Regression: the dev VAE must load in float32 (Klein parity) so ref/i2i encode of a float32
+    image works (decode is fine — inv_normalize promotes the bf16 latent). A bf16 VAE broke
+    encode_image_refs ('Input type (float) and bias type (BFloat16)'). Transformer + TE stay bf16."""
+    import torch
+    from pipeline.flux2 import stage1_load_models as s1
+    from pipeline.flux2 import scaled_fp8 as q
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(q, "resolve_hf_file", lambda repo, fn, **k: fn)
+    monkeypatch.setattr(q, "load_comfy_mistral_text_encoder",
+                        lambda p, device, dtype, **k: (seen.update(te=dtype), (object(), object(), {}))[1])
+    monkeypatch.setattr(q, "load_comfy_flux2_transformer",
+                        lambda p, device, dtype, **k: (seen.update(tr=dtype), (object(), {}))[1])
+    monkeypatch.setattr(q, "load_comfy_vae",
+                        lambda p, device, dtype, **k: (seen.update(vae=dtype), (object(), {}))[1])
+    s1._load_dev_quantized("cpu", cpu_offload=False, dtype="bfloat16",
+                           local_files_only=True, fp8_matmul="auto", text_encoder_variant="fp8")
+    assert seen["te"] == torch.bfloat16 and seen["tr"] == torch.bfloat16
+    assert seen["vae"] == torch.float32  # the fix
 
 
 # --- the two map_comfy_vae_key copies must not drift -----------------------------------

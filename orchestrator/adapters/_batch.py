@@ -117,6 +117,7 @@ def parse_batch_result(returncode: int, stdout: str, stderr: str,
                 m.setdefault("index", it.get("index"))
                 m.setdefault("manifest_path", it.get("manifest_path"))
                 m.setdefault("prompt", it.get("prompt"))   # chained passes reuse it
+                m.setdefault("duration_s", it.get("duration_s"))  # per-image gen time (inspector)
                 meta.append(m)
         if status == "failed":
             error = data.get("error") or (

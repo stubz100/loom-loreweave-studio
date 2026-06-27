@@ -60,7 +60,7 @@ DEFAULT_MAX_REFS = 4
 # M2.5: `text_encoder`/`fp8_matmul` ride the shared block so a `flux.2-dev` coverage sweep applies
 # the dev quantized knobs once for the whole batch (ignored for Klein — never present in its params).
 _SHARED_KEYS = ("mode", "model_name", "width", "height", "num_steps", "guidance",
-                "cpu_offload", "ref_images", "text_encoder", "fp8_matmul")
+                "cpu_offload", "ref_images", "text_encoder", "fp8_matmul", "turbo")
 
 _MANIFEST_RE = re.compile(r"^\s*Manifest:\s*(.+?)\s*$", re.MULTILINE)
 

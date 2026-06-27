@@ -100,6 +100,8 @@ def _load_dev_quantized(
     local_files_only: bool,
     fp8_matmul: str,
     text_encoder_variant: str | None,
+    turbo: bool = False,
+    turbo_strength: float = 1.0,
 ) -> dict:
     """Load `flux.2-dev` from the Comfy-Org quantized split files. Returns the same contract as
     run() (model/ae/text_encoder/model_info/...) plus quantized lineage for the manifest."""
@@ -136,6 +138,16 @@ def _load_dev_quantized(
     )
     timings["flow_model_load_s"] = round(time.time() - t0, 4)
 
+    # M2.6: Turbo LoRA for viable low-step sweeps. Attach on `torch_device` (the compute device)
+    # even under cpu_offload — the hooks fire at DENOISE time, after run() moves the flow model to
+    # torch_device, so A/B must live there. JSON prompting is unaffected (TE is untouched).
+    lora_stats = None
+    if turbo:
+        t0 = time.time()
+        _handles, lora_stats = q.apply_turbo_lora(
+            model, device=torch_device, local_files_only=local_files_only, strength=turbo_strength)
+        timings["turbo_lora_load_s"] = round(time.time() - t0, 4)
+
     t0 = time.time()
     # The VAE runs in float32 (matching Klein's load_ae) — NOT bf16 like the transformer/TE. The
     # spike used bf16 here, which works for t2i (decode only) but breaks ref/i2i: encode_image_refs
@@ -164,8 +176,11 @@ def _load_dev_quantized(
             "fp8_matmul": fp8_matmul,
             "dtype": dtype,
             "cpu_offload": cpu_offload,
+            "turbo": turbo,
+            "turbo_strength": turbo_strength if turbo else None,
         },
-        "quant_stats": {"transformer": tr_stats, "text_encoder": te_stats, "vae": vae_stats},
+        "quant_stats": {"transformer": tr_stats, "text_encoder": te_stats, "vae": vae_stats,
+                        "turbo_lora": lora_stats},
     }
 
 
@@ -178,6 +193,8 @@ def run(
     local_files_only: bool = True,
     fp8_matmul: str = "auto",
     text_encoder_variant: str | None = None,
+    turbo: bool = False,
+    turbo_strength: float = 1.0,
 ) -> dict:
     """Load all three model components and return them with metadata.
 
@@ -192,6 +209,7 @@ def run(
     if model_name == QUANTIZED_DEV_MODEL:
         return _load_dev_quantized(
             device, cpu_offload, dtype, local_files_only, fp8_matmul, text_encoder_variant,
+            turbo=turbo, turbo_strength=turbo_strength,
         )
 
     torch_device = torch.device(device)

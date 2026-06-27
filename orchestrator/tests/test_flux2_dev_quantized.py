@@ -305,3 +305,101 @@ def test_comfy_vae_remaps_onto_bfl_autoencoder_strict():
     expected = set(ae.state_dict().keys())
     assert set(sd.keys()) == expected  # exact key-for-key bijection
     ae.load_state_dict(sd, strict=True, assign=True)  # the load load_ae() performs
+
+
+# --- M2.6 Turbo LoRA (low-step dev) ----------------------------------------------------
+
+def test_turbo_keymap_diffusers_to_bfl_and_qkv_fusion():
+    """The Comfy(Diffusers) LoRA module names remap onto BFL Flux2, and the separate q/k/v
+    projections fuse onto BFL's single `*_attn.qkv` at the right output-row offsets."""
+    from pipeline.flux2.scaled_fp8 import map_comfy_lora_key as mk
+    # diffusion_model.* maps by name (1:1)
+    assert mk("diffusion_model.single_blocks.7.linear1") == ("single_blocks.7.linear1", 0)
+    assert mk("diffusion_model.guidance_in.in_layer") == ("guidance_in.in_layer", 0)
+    # embedding remaps
+    assert mk("diffusion_model.transformer.context_embedder") == ("txt_in", 0)
+    assert mk("diffusion_model.transformer.x_embedder") == ("img_in", 0)
+    assert mk("diffusion_model.transformer.proj_out") == ("final_layer.linear", 0)
+    # img qkv fusion (to_q/k/v → img_attn.qkv slices)
+    p = "diffusion_model.transformer.transformer_blocks.3.attn."
+    assert mk(p + "to_q") == ("double_blocks.3.img_attn.qkv", 0)
+    assert mk(p + "to_k") == ("double_blocks.3.img_attn.qkv", 6144)
+    assert mk(p + "to_v") == ("double_blocks.3.img_attn.qkv", 12288)
+    # txt qkv fusion (add_q/k/v → txt_attn.qkv slices) + proj remaps
+    assert mk(p + "add_v_proj") == ("double_blocks.3.txt_attn.qkv", 12288)
+    assert mk(p + "to_out.0") == ("double_blocks.3.img_attn.proj", 0)
+    assert mk(p + "to_add_out") == ("double_blocks.3.txt_attn.proj", 0)
+
+
+def test_turbo_lora_hook_math():
+    """The forward hook adds scale·B(A·x) at the right output-row offset (incl. fused qkv)."""
+    import torch
+    from pipeline.flux2.scaled_fp8 import _make_lora_hook
+    x = torch.randn(4, 3)
+    A, B = torch.randn(2, 3), torch.randn(4, 2)
+    lin = torch.nn.Linear(3, 4, bias=False)
+    torch.nn.init.zeros_(lin.weight)                       # base output = 0 → output == LoRA delta
+    lin.register_forward_hook(_make_lora_hook([(0, A, B)], 1.0))
+    assert torch.allclose(lin(x), (x @ A.T) @ B.T, atol=1e-5)
+    # two LoRAs into a fused out=6 Linear at offsets 0 and 3, strength 0.5
+    A1, B1, A2, B2 = torch.randn(2, 3), torch.randn(3, 2), torch.randn(2, 3), torch.randn(3, 2)
+    fused = torch.nn.Linear(3, 6, bias=False)
+    torch.nn.init.zeros_(fused.weight)
+    fused.register_forward_hook(_make_lora_hook([(0, A1, B1), (3, A2, B2)], 0.5))
+    exp = 0.5 * torch.cat([(x @ A1.T) @ B1.T, (x @ A2.T) @ B2.T], dim=-1)
+    assert torch.allclose(fused(x), exp, atol=1e-5)
+
+
+def test_turbo_emits_for_dev_only():
+    dev = mc.emit_argv("flux2", {"model_name": DEV, "turbo": True, "width": 512, "height": 512}, "t2i")
+    klein = mc.emit_argv("flux2", {"model_name": "flux.2-klein-4b", "turbo": True}, "t2i")
+    assert "--turbo" in dev and "--turbo" not in klein
+    turbo_p = next(p for p in mc.CATALOG["flux2"]["params"] if p["name"] == "turbo")
+    assert turbo_p["type"] == "flag" and turbo_p["models"] == ["flux.2-dev"]
+
+
+def _turbo_lora_cached():
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        from pipeline.flux2 import scaled_fp8
+        hit = try_to_load_from_cache(COMFY_REPO, scaled_fp8.TURBO_LORA_FILE)
+        return hit if isinstance(hit, str) else None
+    except Exception:
+        return None
+
+
+@pytest.mark.skipif(_turbo_lora_cached() is None, reason="Flux2-Turbo LoRA not cached (no-weights rig)")
+def test_turbo_lora_maps_every_module_onto_a_bfl_linear():
+    """Every one of the 170 LoRA modules maps onto a real BFL Flux2 Linear with matching
+    in-features and a fitting output slice; the 16 fused qkv modules are tiled by exactly the
+    3 q/k/v slices. (Reads the LoRA header only — no weights, no GPU.)"""
+    import json, struct, collections, torch
+    from flux2.model import Flux2, Flux2Params
+    from pipeline.flux2.scaled_fp8 import map_comfy_lora_key
+    with torch.device("meta"):
+        m = Flux2(Flux2Params())
+    lin = {n: mod for n, mod in m.named_modules() if isinstance(mod, torch.nn.Linear)}
+    with open(_turbo_lora_cached(), "rb") as fh:
+        n = struct.unpack("<Q", fh.read(8))[0]
+        h = json.loads(fh.read(n))
+    h.pop("__metadata__", None)
+    bases: dict = collections.defaultdict(dict)
+    for k, v in h.items():
+        base = k.rsplit(".lora_", 1)[0]
+        if k.endswith("lora_A.weight"):
+            bases[base]["in"] = v["shape"][1]
+        if k.endswith("lora_B.weight"):
+            bases[base]["out"] = v["shape"][0]
+    qkv: dict = collections.defaultdict(set)
+    for base, d in bases.items():
+        mp = map_comfy_lora_key(base)
+        assert mp is not None, f"unmapped LoRA module {base}"
+        path, off = mp
+        assert path in lin, f"{base} -> {path} is not a BFL Linear"
+        assert d["in"] == lin[path].in_features, f"in-features {base}->{path}"
+        assert off + d["out"] <= lin[path].out_features, f"slice overflow {base}->{path}"
+        if "qkv" in path:
+            qkv[path].add((off, off + d["out"]))
+    assert len(bases) == 170
+    assert len(qkv) == 16
+    assert all(s == {(0, 6144), (6144, 12288), (12288, 18432)} for s in qkv.values())

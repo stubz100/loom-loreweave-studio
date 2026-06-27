@@ -43,6 +43,8 @@ def run(
     text_encoder_variant: str | None = None,
     dtype: str = "bfloat16",
     local_files_only: bool = True,
+    turbo: bool = False,
+    turbo_strength: float = 1.0,
 ) -> PipelineManifest:
     """Run the full Flux2 image generation pipeline.
 
@@ -107,6 +109,7 @@ def run(
             model_name=model_name, device=device, cpu_offload=cpu_offload,
             dtype=dtype, local_files_only=local_files_only,
             fp8_matmul=fp8_matmul, text_encoder_variant=text_encoder_variant,
+            turbo=turbo, turbo_strength=turbo_strength,
         )
         manifest.quantized = s1.get("quantized", {})  # M2.5: comfy-q8 lineage for dev, {} for Klein
         manifest.end_stage(rec, stage1_load_models.get_manifest_outputs(s1), stage1_load_models.get_manifest_debug(s1))
@@ -290,6 +293,8 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
     fp8_matmul = shared.get("fp8_matmul", "auto")
     text_encoder_variant = shared.get("text_encoder")
     dtype = shared.get("dtype", "bfloat16")
+    turbo = bool(shared.get("turbo"))           # M2.6: Turbo LoRA for viable low-step dev sweeps
+    turbo_strength = float(shared.get("turbo_strength", 1.0))
 
     out_dir = Path(shared.get("output_dir") or output_dir)
     if not out_dir.is_absolute():
@@ -373,6 +378,8 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
             # VAE in float32 (matches Klein) — required for ref/i2i encode of a float32 image; the
             # bf16 latent is promoted in the VAE's inv_normalize, so decode is fine too.
             ae, _ = scaled_fp8.load_comfy_vae(vae_path, device=torch_device, dtype=torch.float32)
+            if turbo:  # M2.6: attach the Turbo LoRA so the whole sweep runs few-step (loaded once)
+                scaled_fp8.apply_turbo_lora(model, device=torch_device, strength=turbo_strength)
         else:
             model = load_flow_model(model_name, device=torch_device)
             ae = load_ae(model_name, device=torch_device)
@@ -478,6 +485,9 @@ def main():
     parser.add_argument("--fp8-matmul", dest="fp8_matmul", default="auto",
                         choices=list(scaled_fp8.FP8_MATMUL_MODES),
                         help="flux.2-dev only: scaled-FP8 Linear backend (auto/native use torch._scaled_mm).")
+    parser.add_argument("--turbo", action="store_true",
+                        help="flux.2-dev only (M2.6): attach the Flux2-Turbo LoRA for viable low-step "
+                             "(~4-6) generation — JSON prompting unaffected (TE untouched).")
     args = parser.parse_args()
 
     if args.jobs_file:
@@ -502,6 +512,7 @@ def main():
         ref_images=args.ref_image,
         fp8_matmul=args.fp8_matmul,
         text_encoder_variant=args.text_encoder,
+        turbo=args.turbo,
     )
 
 

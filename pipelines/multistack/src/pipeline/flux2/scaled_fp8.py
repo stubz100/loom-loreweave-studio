@@ -244,6 +244,109 @@ def load_comfy_flux2_transformer(
     return model, stats
 
 
+# ── Flux2-Turbo LoRA (M2.6) — low-step dev ───────────────────────────────────────────────────
+# The Comfy Flux2-Turbo LoRA is a step-distillation adapter: it makes the dev transformer converge
+# in ~4–6 steps (vs 50), so a `flux.2-dev` coverage sweep is viable. It's authored in DIFFUSERS
+# layout (separate q/k/v) while our runtime is the BFL `flux2.model.Flux2` (fused qkv), so the
+# attention LoRAs apply to OUTPUT-ROW SLICES of the fused `*_attn.qkv` Linear. Applied via forward
+# hooks so it works on fp8 (ScaledFP8Linear) AND bf16 Linears without touching their forward.
+TURBO_LORA_FILE = "split_files/loras/Flux2TurboComfyv2.safetensors"
+# q/k/v projection name → output-row offset within BFL's fused qkv (each block 6144 wide).
+_LORA_QKV_OFFSET = {"to_q": 0, "to_k": 6144, "to_v": 12288,
+                    "add_q_proj": 0, "add_k_proj": 6144, "add_v_proj": 12288}
+
+
+def map_comfy_lora_key(base: str) -> tuple[str, int] | None:
+    """Map a Comfy Flux2-Turbo LoRA module path → (BFL `Flux2` module path, output-row offset).
+
+    Offset is 0 for every module except the Diffusers q/k/v projections, which fuse into BFL's
+    single `*_attn.qkv` Linear at rows [0:6144] (q), [6144:12288] (k), [12288:18432] (v). Returns
+    None to skip a module that has no BFL counterpart. `base` is the key minus `.lora_{A,B}.weight`.
+    """
+    b = base[len("diffusion_model."):] if base.startswith("diffusion_model.") else base
+    if not b.startswith("transformer."):
+        return (b, 0)  # diffusion_model.<bfl-name> (modulation / single_blocks / time_in / guidance_in)
+    b = b[len("transformer."):]
+    if b == "context_embedder":
+        return ("txt_in", 0)
+    if b == "x_embedder":
+        return ("img_in", 0)
+    if b == "proj_out":
+        return ("final_layer.linear", 0)
+    m = re.match(r"transformer_blocks\.(\d+)\.attn\.(.+)$", b)
+    if m:
+        i, sub = m.group(1), m.group(2)
+        if sub in ("to_q", "to_k", "to_v"):
+            return (f"double_blocks.{i}.img_attn.qkv", _LORA_QKV_OFFSET[sub])
+        if sub in ("add_q_proj", "add_k_proj", "add_v_proj"):
+            return (f"double_blocks.{i}.txt_attn.qkv", _LORA_QKV_OFFSET[sub])
+        if sub == "to_out.0":
+            return (f"double_blocks.{i}.img_attn.proj", 0)
+        if sub == "to_add_out":
+            return (f"double_blocks.{i}.txt_attn.proj", 0)
+    return None
+
+
+def _make_lora_hook(loras: list, strength: float):
+    """A forward hook that adds Σ strength·B(A·x) to the module's output (each at its row offset)."""
+    def hook(module, inputs, output):
+        x = inputs[0]
+        delta = torch.zeros_like(output)
+        for (start, A, B) in loras:
+            a = A.to(device=x.device, dtype=x.dtype)   # no-op when already matched (offload-safe)
+            b = B.to(device=x.device, dtype=x.dtype)
+            d = F.linear(F.linear(x, a), b)            # x @ Aᵀ @ Bᵀ → [..., out_slice]
+            w = d.shape[-1]
+            delta[..., start:start + w] += d
+        return output + strength * delta
+    return hook
+
+
+def load_flux2_turbo_lora(model: nn.Module, lora_path: str | Path, device, *, strength: float = 1.0):
+    """Attach the Flux2-Turbo LoRA to the BFL transformer via forward hooks. Returns (handles, stats).
+    A/B are kept resident bf16 on `device`; the qkv q/k/v projections share one hook per fused qkv."""
+    import collections
+
+    by_mod: dict[str, list] = collections.defaultdict(list)
+    skipped: list[str] = []
+    missing: list[str] = []
+    with safe_open(str(lora_path), framework="pt", device="cpu") as sf:
+        pairs: dict[str, dict] = collections.defaultdict(dict)
+        for k in sf.keys():
+            if k.endswith(".lora_A.weight"):
+                pairs[k[:-len(".lora_A.weight")]]["A"] = k
+            elif k.endswith(".lora_B.weight"):
+                pairs[k[:-len(".lora_B.weight")]]["B"] = k
+        for base, ab in pairs.items():
+            if "A" not in ab or "B" not in ab:
+                skipped.append(base); continue
+            mapped = map_comfy_lora_key(base)
+            if mapped is None:
+                skipped.append(base); continue
+            bfl_path, offset = mapped
+            A = sf.get_tensor(ab["A"]).to(device=device, dtype=torch.bfloat16)
+            B = sf.get_tensor(ab["B"]).to(device=device, dtype=torch.bfloat16)
+            by_mod[bfl_path].append((offset, A, B))
+
+    handles, applied = [], 0
+    for bfl_path, loras in by_mod.items():
+        try:
+            module = _get_module(model, bfl_path)
+        except (AttributeError, KeyError, IndexError, ValueError):
+            missing.append(bfl_path); continue
+        handles.append(module.register_forward_hook(_make_lora_hook(loras, strength)))
+        applied += len(loras)
+    stats = {"lora_file": str(lora_path), "strength": strength, "target_modules": len(by_mod),
+             "applied_loras": applied, "skipped": len(skipped), "missing_modules": missing}
+    return handles, stats
+
+
+def apply_turbo_lora(model: nn.Module, *, device, local_files_only: bool = True, strength: float = 1.0):
+    """Resolve the Comfy Turbo LoRA file (cache) and attach it to `model`. Returns (handles, stats)."""
+    path = resolve_hf_file(COMFY_FLUX2_REPO, TURBO_LORA_FILE, local_files_only=local_files_only)
+    return load_flux2_turbo_lora(model, path, device, strength=strength)
+
+
 def load_comfy_mistral_text_encoder(
     safetensors_path: str | Path,
     device: str | torch.device,

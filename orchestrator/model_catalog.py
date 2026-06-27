@@ -134,6 +134,10 @@ def _catalog() -> dict:
                  "choices": ["auto", "native", "dequant"], "models": ["flux.2-dev"],
                  "note": "flux.2-dev only: scaled-FP8 Linear backend (auto/native = torch._scaled_mm; "
                          "dequant = compatibility fallback)"},
+                {"name": "turbo", "flag": "--turbo", "type": "flag", "default": False,
+                 "models": ["flux.2-dev"],
+                 "note": "flux.2-dev only (M2.6): Flux2-Turbo LoRA — viable low-step (~4-6) generation, "
+                         "the practical way to run dev coverage sweeps; JSON prompting unaffected"},
             ],
             # `ref` (§11): t2i conditioned on the hero as a reference image (identity-preserving
             # Stage-B expansion). `ref_images` rides the batch jobs-file shared block (the worker

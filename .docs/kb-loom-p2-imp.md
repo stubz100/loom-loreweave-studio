@@ -892,6 +892,52 @@ Klein `ref` sweep still decodes correctly on the Comfy VAE; (3) FE advanced fold
 
 ---
 
+## M2.6 — Turbo LoRA (low-step `flux.2-dev` sweeps) (spec §12 "M2.6"; 2026-06-27)
+
+**Status: backend built + no-GPU-verified; on-rig quality/speed sign-off OWED.** Goal: make dev
+coverage sweeps practical. A single dev 512²/8-step denoise ≈ 87 s (34 GB fp8 transformer paged over
+PCIe on 16 GB) → a 31-cell sweep ≈ 45 min, and 8 raw steps under-denoise (dev isn't step-distilled).
+The Comfy **Flux2-Turbo LoRA** is a step-distillation adapter that should give good quality at ~4–6
+steps. Author asked: does JSON prompting survive, and can it be an optional dev param? **Yes to both.**
+
+- **JSON prompting persists** — orthogonal: the LoRA adapts only the **transformer** (denoise
+  convergence); the Mistral TE that parses the JSON is untouched. (Distillation softens *guidance
+  adherence* a bit; the structured-prompt content stays.)
+- **LoRA structure** (`Flux2TurboComfyv2.safetensors`): 170 rank-256 BF16 pairs (`B(A·x)`, no alpha ⇒
+  scale = strength, default 1.0). Targets attention + `single_blocks` + embeddings + modulation; NOT
+  the double-block MLPs.
+- **The crux — Diffusers→BFL key map + qkv fusion** (`scaled_fp8.map_comfy_lora_key`). The file mixes
+  two namespaces: `diffusion_model.*` (103 mods) map 1:1 to BFL; `transformer.*` (67, Diffusers) remap
+  — embeddings (`context_embedder`→`txt_in`, `x_embedder`→`img_in`, `proj_out`→`final_layer.linear`),
+  `to_out.0`/`to_add_out`→`*_attn.proj`, and the **qkv fusion**: BFL fuses q,k,v into one `*_attn.qkv`
+  Linear, so the LoRA's separate `to_q/k/v` (+ `add_q/k/v`) apply to **output-row slices**
+  `[0:6144]/[6144:12288]/[12288:18432]`. ✅ Verified: **170/170 map onto real BFL Linears**, in-features
+  match, all 16 fused qkv tiled by exactly the 3 slices; the only uncovered BFL Linears are the
+  (unadapted) double-block MLPs.
+- **Application — forward hooks** (`load_flux2_turbo_lora` / `apply_turbo_lora`). Rather than
+  special-casing `ScaledFP8Linear` vs `nn.Linear`, a `register_forward_hook` adds
+  `strength·F.linear(F.linear(x, A), B)` to each target's output (each at its row offset; one hook per
+  fused qkv carries the 3 q/k/v). A/B resident bf16; `.to(x.device, x.dtype)` in the hook is
+  offload-safe (no-op when matched). The base fp8 matmul is unchanged. ⚙ Attached on `torch_device`
+  (compute device) — hooks fire at denoise, after run() moves the flow model to GPU.
+- **Wiring**: `stage1._load_dev_quantized` + `run_jobs` Phase 2 apply the LoRA when `turbo`; threaded
+  through `run()`/`--turbo`; rides the batch `_SHARED_KEYS`. Catalog adds a **dev-gated `turbo` flag**
+  (inline, like the other dev knobs). Manifest `quantized.turbo` + `quant_stats.turbo_lora`. No forced
+  step change — turbo just *arms* the LoRA; the user picks the (now-viable) low step count.
+- **Tests** (`test_flux2_dev_quantized.py`): keymap unit (diffusers→BFL + qkv offsets), **full
+  170-module coverage** vs the real LoRA + BFL model (gated on the file), forward-hook math (plain +
+  qkv slices + strength), `--turbo` dev-gated argv + catalog shape. Full suite **330**. Monorepo→loom
+  synced (3 files SAME).
+
+⚠ **Owed (on-rig — can't run 34 GB+2.6 GB on 16 GB from CI):** (1) a dev image at 4–6 steps with turbo
+looks good vs the under-denoised no-turbo 8-step, and a sweep is meaningfully faster (the **+2.6 GB**
+bf16 LoRA adds paging — the step cut should still net a win, but that's the empirical question); (2)
+confirm BFL qkv order is q,k,v (standard, but verify the slices land right); (3) tune the step count /
+whether turbo wants lower guidance; (4) a proper 412 weight-gate + fetch for the LoRA file (worker
+currently resolves it from cache, fails clearly if absent).
+
+---
+
 ## P2-era fixes (non-milestone)
 
 ### Krea2 Turbo vendored as a Loom T2I generator (2026-06-25, user-requested)

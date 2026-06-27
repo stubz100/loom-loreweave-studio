@@ -775,6 +775,61 @@ regress against.)*
   ([[project-posture]]: licensing deferred), but if the repo ever goes public, move them to the
   companion weights repo (fetch as small `file` entries) rather than ship them in git.
 
+#### M2.6 solution design — Turbo LoRA (low-step `flux.2-dev` for viable sweeps)
+
+*Status: **planned 2026-06-27** — make `flux.2-dev` sweeps practical. Per the timing investigation
+(kb-loom-p2-imp.md), a single dev 512²/8-step image denoises in ~87 s (the 34 GB fp8 transformer pages
+over PCIe on 16 GB), so a 31-cell expansion sweep ≈ 45 min. The Comfy **Flux2-Turbo LoRA** is a
+step-distillation adapter that should give good quality at **~4–6 steps**, roughly halving sweep time.
+An **optional, dev-gated `turbo` toggle** on the params panel arms it. On-rig quality/speed validation
+is OWED (can't run the 34 GB+2.6 GB on 16 GB from CI).*
+
+**Does JSON prompting survive?** Yes — the Turbo LoRA adapts only the **transformer** (denoise
+convergence); the Mistral TE that parses the structured JSON is untouched. Expect the usual
+step-distillation softening of *guidance adherence*, but the structured-prompt content persists.
+
+**LoRA structure (inspected `Flux2TurboComfyv2.safetensors`).** 170 rank-256 BF16 LoRA pairs
+(`<m>.lora_A` [r,in], `<m>.lora_B` [out,r]); delta = `strength · B(A·x)` (no alpha tensor ⇒ Comfy
+α=rank ⇒ scale = `strength`, default 1.0). It targets attention + `single_blocks` + embeddings +
+modulation; the double-block MLPs are NOT adapted.
+
+**Key map → BFL `flux2.model.Flux2` (the crux).** Two namespaces in the file:
+- **`diffusion_model.*` (103 mods) map by name 1:1** — `double_stream_modulation_{img,txt}.lin`,
+  `single_blocks.N.{linear1,linear2}`, `single_stream_modulation.lin`, `guidance_in.{in,out}_layer`,
+  `time_in.{in,out}_layer`.
+- **`transformer.*` (67 mods, Diffusers naming) remap** — embeddings: `context_embedder`→`txt_in`,
+  `x_embedder`→`img_in`, `proj_out`→`final_layer.linear`; double-block attention (8 blocks):
+  `to_out.0`→`img_attn.proj`, `to_add_out`→`txt_attn.proj`; and the **qkv fusion** — BFL fuses q,k,v
+  into one `*_attn.qkv` Linear (6144→18432), so the LoRA's separate projections apply to **output-row
+  slices**: `to_q/to_k/to_v` → `img_attn.qkv` rows `[0:6144]/[6144:12288]/[12288:18432]`;
+  `add_q/add_k/add_v` → `txt_attn.qkv` slices. (Verify the BFL qkv order is q,k,v — standard, but
+  confirm on the spike.)
+
+**Application — forward hooks (works on fp8 AND bf16 Linears).** Rather than special-casing
+`ScaledFP8Linear` vs `nn.Linear`, register a **forward hook** on each target module that adds the LoRA
+delta to its output: build a `zeros_like(output)` delta, fill each `[start:start+slice]` with
+`scale·F.linear(F.linear(x, A), B)`, return `output + delta`. Non-fused mods use one entry at
+`start=0` (full width); fused qkv attaches three entries at the three slices. A/B stay resident bf16
+(activations are bf16 ⇒ no dtype juggling). The base fp8 matmul is unchanged.
+
+**Toggle + schedule.** A dev-gated catalog `turbo` flag (same channel as `text_encoder`/`fp8_matmul`:
+single-run `--turbo` + the batch `_SHARED_KEYS` for sweeps). When on: load the Turbo LoRA after the
+transformer, attach the hooks, and default `num_steps` to the Turbo count (**6**, overridable). The UI
+shows it inline for `flux.2-dev` only.
+
+**Risks / owed.** (1) **+2.6 GB** bf16 LoRA on the already-overflowing 16 GB adds paging — the 8→4/6
+step cut should still net a speedup, but that's the empirical on-rig question. (2) qkv-order + exact
+slice correctness — validate on the spike (one image, eyeball vs no-turbo). (3) optimal step count +
+whether Turbo wants a fixed/low guidance — on-rig tuning. (4) the LoRA file weight-gate (Comfy
+`split_files/loras/Flux2TurboComfyv2.safetensors`) — worker resolves local; a proper 412 fetch gate is
+owed. (5) the LoRA hook compute (rank-256 over ~170 mods) is ~modest vs the base, but measure.
+
+**Acceptance (no-GPU close; on-rig owed).** Closes on: the key-map covers every LoRA module onto a
+real BFL Linear (171-module audit + qkv slices), the forward-hook delta is correct on a tiny synthetic
+Linear, dry-run argv carries `--turbo`, and the `turbo` toggle is dev-gated end-to-end. **Owed
+(on-rig):** a dev image at 4–6 steps with Turbo looks good vs the under-denoised no-Turbo 8-step, and a
+sweep is meaningfully faster.
+
 ### Phase A — Training skeleton (prove a LoRA can be made + used on this rig)
 
 1. **M1 — training spike (no UI).** Vendor **ai-toolkit**; train **one** `zimage` LoRA from a fixed
@@ -794,6 +849,11 @@ regress against.)*
    Comfy `flux2-vae.safetensors` (Klein runtime/Stage-B otherwise unchanged). Closes on wiring +
    dry-run + no-GPU tests; on-rig dev smoke + Klein-VAE value spot-check owed. *(Runtime/model-fit
    migration, not trainer work.)*
+3b. **M2.6 — Turbo LoRA (low-step dev).** Make dev coverage sweeps viable: attach the Comfy
+   Flux2-Turbo LoRA (Diffusers→BFL key map + qkv-fusion onto the fused `*_attn.qkv`, applied via
+   forward hooks on the quantized transformer) behind an optional dev-gated **`turbo`** param. JSON
+   prompting unaffected (TE untouched). Backend + no-GPU tests done; on-rig quality/speed sign-off
+   owed (+2.6 GB LoRA paging vs the 8→4 step cut). Design: §12 "M2.6 solution design".
 
 ### Phase B — Thicken (all VLM-free)
 

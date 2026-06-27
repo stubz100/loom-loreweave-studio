@@ -272,10 +272,11 @@ def test_stage_b_zimage_cells_are_individual_warm_jobs(client):
     assert p0.index("view") < p0.index("a test ranger")
 
 
-def test_stage_b_with_post_passes_keeps_the_cold_batch_job(client, monkeypatch):
-    """M2.7 Phase 2a guardrail: the warm path doesn't chain post-passes yet, so when a sweep has
-    them (here: clean), zimage/sd35 stay on the proven cold `--jobs-file` batch job (one per group)
-    — no silent loss of identity/clean/polish. Phase 2b lifts post-passes onto warm cells."""
+def test_stage_b_post_passes_now_ride_warm_cells(client):
+    """M2.7 Phase 2b: a sweep WITH post-passes (here: clean) no longer falls back to the cold batch —
+    it streams warm cell-jobs, each CARRYING the post_passes so it chains its own pass(es) on
+    completion (one pass tile per cell, all pause-safe). (`mixed` is the only remaining cold case —
+    covered by test_birefnet_matting.py::test_stage_b_mixed_fires_two_batch_jobs.)"""
     from orchestrator.runner import RUNNER
     a = _asset_with_hero(RUNNER.workspace)
     RUNNER.pause()
@@ -283,9 +284,11 @@ def test_stage_b_with_post_passes_keeps_the_cold_batch_job(client, monkeypatch):
                     json={"preset": "npc_lite", "character_clause": "x", "params": {"clean": True}})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["count"] == 1                               # ONE batch job (post-passes ride it)
-    job = RUNNER.get(body["job_ids"][0])
-    assert len(job["params"]["batch_items"]) == 17 and job.get("warm_group") is None
+    assert body["count"] == 17                              # warm cells, NOT one cold batch job
+    for jid in body["job_ids"]:
+        job = RUNNER.get(jid)
+        assert "batch_items" not in job["params"] and job["warm_group"]
+        assert "clean" in [p["pass"] for p in job["post_passes"]]   # each cell carries its passes
 
 
 def test_stage_b_dry_run_reports_batch_shape(client):

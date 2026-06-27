@@ -1000,8 +1000,8 @@ class JobRunner:
         return result
 
     def _record_warm(self, job_id: str, result: dict, t0: float, out_root: Path) -> None:
-        """Mark the cell-job done/failed/canceled from its serve-result + write a lineage edge.
-        (No OOM-retry / post-pass chaining in Phase 1 — a failed cell just fails; re-run it.)"""
+        """Mark the cell-job done/failed/canceled from its serve-result, write a lineage edge, and
+        (M2.7 Phase 2b) chain its post-passes. No OOM-retry — a failed cell just fails; re-run it."""
         ok = result.get("status") == "ok"
         out_path = result.get("output_path") or ""
         name = None
@@ -1057,6 +1057,16 @@ class JobRunner:
                 lineage.record_output(self._ws, snap)
             except Exception as e:  # noqa: BLE001 — lineage is non-critical
                 _warn(f"lineage write failed for {job_id}: {e}")
+            # M2.7 Phase 2b: chain the next post-pass (identity/clean/polish) over THIS cell's single
+            # output — same `_submit_chained` mechanism as the cold path. The pass jobs are created as
+            # cells complete (later created_at), so FIFO runs ALL the sweep's warm cells first (the
+            # worker stays resident — no thrash) and the passes after; each pass tile is its own
+            # pause-safe job, like the cells. Best-effort: a chain failure leaves the cell done.
+            if snap.get("post_passes"):
+                try:
+                    self._submit_chained(snap)
+                except Exception as e:  # noqa: BLE001
+                    _warn(f"post-pass chain failed for {job_id}: {e}")
             if self._observer is not None:
                 try:
                     self._observer(snap)

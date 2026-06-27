@@ -884,9 +884,12 @@ the amortization. Out of the initial phases.)*
     else-branch emits N img2img cell-jobs per realization group through the **same** runner warm
     dispatch as flux2. Gated to **no-post-pass, non-`mixed`** sweeps — those still ride the cold
     `--jobs-file` batch job until 2b (no silent loss of identity/clean/polish).
-  - **2b — post-passes on warm cells**: chain identity/clean/polish per warm cell (the Phase 1
-    deferral), then drop the cold-batch fallback (warm cells become the path for flux2 + sd35/zimage,
-    incl. `mixed`).
+  - **2b — post-passes on warm cells** (DONE): each warm cell-job carries the sweep's `post_passes`
+    and chains them over its OWN output on completion (`_record_warm` → the same `_submit_chained` the
+    cold path uses); the no-post-pass gate is gone, so identity/clean/polish now ride warm sweeps (one
+    pass tile per cell, each its own pause-safe job). Because the pass jobs are created as cells finish
+    (later `created_at`), FIFO runs all warm cells first (worker resident, no thrash), passes after.
+    `realize="mixed"` is the only remaining cold-batch Expansion case (its two-group bg-mask path).
   - **2c — multi (Cast) individual queue jobs**: orchestrator-driven candidate fan-out so each Cast
     candidate is its own pause-surviving queue entry. NOT a warm worker (Cast spans 3 models); the win
     is pause-persistence, not warmth.

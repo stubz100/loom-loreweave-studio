@@ -1648,15 +1648,14 @@ def create_app() -> FastAPI:
         else:
             groups = [("img2img", cells, req.strength)]
         split = {mode: len(gcells) for mode, gcells, _ in groups}
-        # M2.7 Phase 2a: zimage/sd35 Expansion streams INDIVIDUAL warm cell-jobs (one resident worker
+        # M2.7: zimage/sd35 (+ flux2) Expansion streams INDIVIDUAL warm cell-jobs (one resident worker
         # per realization group, model loaded once) so each tile is its own queue entry that survives
-        # pause/resume — EXCEPT when the sweep chains post-passes (identity/clean/polish): those still
-        # ride the proven cold `--jobs-file` batch job, because the warm path doesn't chain post-passes
-        # yet (Phase 2b lifts that, then this fallback goes away). flux2 is always warm (Phase 1; its
-        # ref sweeps don't use post-passes — identity rides the reference). `realize="mixed"` (the
-        # inpaint background-diversity axis) stays on the cold batch path for now — its two-group
-        # bg-mask realization + frequent identity pass come to the warm path in a later phase.
-        warm_cells = is_flux2 or (not post_passes and req.realize != "mixed"
+        # pause/resume. Phase 2b: post-passes (identity/clean/polish) now chain PER CELL off the warm
+        # cell-job (each pass tile its own pause-safe job too), so a sweep with post-passes no longer
+        # falls back to the cold batch. `realize="mixed"` (the inpaint background-diversity axis) still
+        # rides the cold batch — its two-group bg-mask realization comes to the warm path in a later
+        # phase; that's the only remaining cold-batch Expansion case.
+        warm_cells = is_flux2 or (req.realize != "mixed"
                                   and hasattr(ADAPTERS.get(req.pipeline), "serve_argv"))
         planned = len(cells) if warm_cells else len(groups)
 
@@ -1727,7 +1726,8 @@ def create_app() -> FastAPI:
                     pipeline="flux2", mode="ref", params=cparams,
                     batch_id=batch_id, index=i, batch_size=len(cells),
                     requester_id=vid, profile_version_id=vid, stage="B",
-                    coverage_cell=c["coverage_cell"], warm_group=wg))
+                    coverage_cell=c["coverage_cell"], warm_group=wg,
+                    post_passes=post_passes))   # Phase 2b: each cell chains its own post-passes
         else:
           for gmode, gcells, gstrength in groups:
             if warm_cells:
@@ -1752,7 +1752,8 @@ def create_app() -> FastAPI:
                         pipeline=req.pipeline, mode=gmode, params=cparams,
                         batch_id=batch_id, index=len(job_ids), batch_size=len(cells),
                         requester_id=vid, profile_version_id=vid, stage="B",
-                        coverage_cell=c["coverage_cell"], warm_group=wg))
+                        coverage_cell=c["coverage_cell"], warm_group=wg,
+                        post_passes=post_passes))   # Phase 2b: each cell chains its own post-passes
                 continue
             # Cold batch fallback (post-passes present): ONE --jobs-file job per group, post-passes
             # chained after the sweep. Provenance method = the ACTUAL realization; zimage/sd35 keep

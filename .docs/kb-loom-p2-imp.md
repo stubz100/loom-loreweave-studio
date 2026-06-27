@@ -1122,6 +1122,40 @@ skips the reload. The dev **encode-ahead buffer** (pre-encode all prompts + pers
 per-cell TE shuttle and surviving a full eviction) remains the Phase 3 option if the per-cell shuttle
 proves to matter.
 
+**On the "serialize the encoding to survive an app restart" ask (user clarified: restart, not a brief
+pause).** The keep-warm grace only covers an in-session pause — across a process restart the worker
+dies and the model reloads regardless. But there's little to serialize: the **done tiles already
+persist** (each warm cell is its own queue entry), so only the remaining cells re-run; the **model
+load** (the real cost) can't be serialized faster than the HF cache already is (weights→VRAM); and the
+hero-ref **encode is cheap** (seconds). Conclusion: not worth persisting the encoding for the restart
+case. The Phase 3 encode-ahead buffer (pre-encode all prompts + persist) is the only thing that would
+save real work across a restart, and even then the model reload dominates — deferred unless it bites.
+
+### Phase 2b — post-passes on warm cells (2026-06-27; on-rig owed)
+
+Lifts the Phase 1/2a deferral: warm Expansion cells can now run post-passes (identity/clean/polish),
+so a sweep with them no longer falls back to the cold batch.
+
+- **`runner._record_warm`**: after a warm cell is marked done + lineage, it chains its post-passes via
+  the **same `_submit_chained`** the cold `_finalize` uses — each cell is a 1-output parent, so the
+  chained pass is a 1-item job over THAT cell's image (carrying its `coverage_cell` so curation
+  survives). Best-effort (a chain failure leaves the cell done).
+- **`main.py` Stage-B**: both warm branches (flux2 + sd35/zimage) now pass `post_passes=post_passes`
+  to each cell submit, and the `not post_passes` gate is gone — `warm_cells = is_flux2 or (realize !=
+  "mixed" and serve-capable)`. `mixed` is the lone remaining cold-batch case.
+- **No warm-worker thrash**: the pass jobs are created as cells finish (later `created_at`), so FIFO
+  runs ALL the sweep's warm cells first (the resident worker is never evicted mid-sweep for a pass),
+  then the passes. Each pass tile is its own pause-safe job — consistent with the "everything
+  individual" goal. (Trade-off: diffusion passes (clean/polish) load their backend per cell; identity
+  — the common Stage-B pass, inswapper onnx/CPU — is cheap. Warming the pass backends is a later
+  optimization if clean/polish-heavy sweeps need it.)
+- **Tests**: `test_warm_cell_chains_its_post_passes_on_completion` (a warm cell chains a clean pass
+  over its output, coverage_cell carried), `test_stage_b_post_passes_now_ride_warm_cells` (post-passes
+  → warm, not cold). `mixed`-stays-cold is still covered by the birefnet two-batch-jobs test. 342 green.
+
+⚠ Owed on-rig: a real Stage-B sweep with identity (anchor) confirms each cell streams + gets an
+identity-locked pass tile, all pause-safe. **Next:** 2c (multi/Cast individual jobs).
+
 ---
 
 ## P2-era fixes (non-milestone)

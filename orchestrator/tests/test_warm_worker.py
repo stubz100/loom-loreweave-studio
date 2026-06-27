@@ -227,6 +227,32 @@ def test_warm_cell_fails_when_worker_dies_without_result(bound_runner, monkeypat
     assert R._warm_proc is None            # the dead worker was dropped
 
 
+def test_warm_cell_chains_its_post_passes_on_completion(bound_runner, monkeypatch):
+    """M2.7 Phase 2b: a warm cell carrying post_passes chains its pass(es) over its OWN output when
+    it finishes (the same `_submit_chained` the cold path uses) — so a Stage-B sweep gets identity/
+    clean/polish PER cell, each chained pass its own pause-safe tile, with the cell's coverage_cell
+    carried through so curation still works."""
+    R = bound_runner
+    fakes: list = []
+    _patch_spawn(monkeypatch, R, fakes)
+    jid = R.submit(pipeline="flux2", mode="ref", batch_id="bat_pp", index=0, batch_size=1,
+                   warm_group="grp-PP",
+                   params={"prompt": "c", "seed": 1, "model_name": "flux.2-klein-4b",
+                           "meta": {"coverage_cell": {"angle": "front", "shot_size": "portrait"}}},
+                   post_passes=[{"pass": "clean", "backend": "zimage"}])
+    R._execute_warm(jid, "flux2", "ref", R.get(jid)["params"], "grp-PP")
+    assert R.get(jid)["status"] == "done"
+    chained = [j for j in R.jobs.values() if j.get("chained_from") == jid]
+    assert len(chained) == 1                                  # one chained pass over this cell
+    cj = chained[0]
+    assert cj["pipeline"] == "zimage" and cj["pass"] == "clean" and cj["status"] == "queued"
+    items = cj["params"]["batch_items"]
+    assert len(items) == 1 and items[0]["init_image"].endswith("flux2_fake.png")
+    assert items[0]["meta"]["coverage_cell"]["angle"] == "front"   # curation survives the pass
+    cj["status"] = "canceled"   # tidy: this real pass job is queued — don't let the shared runner
+                                # dispatch it (a stray subprocess) once the fixture unpauses on teardown
+
+
 # --- keep-warm-across-pause grace (M2.7): a quick pause→resume skips the model reload -----------
 
 def test_warm_kept_across_a_brief_pause_then_evicted_after_grace(bound_runner, monkeypatch):

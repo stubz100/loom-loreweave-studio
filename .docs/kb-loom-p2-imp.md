@@ -979,6 +979,37 @@ tiles that **persist across a pause** and resume with the model loaded once. **N
 Cast + sd35/zimage `--serve`) and post-pass chaining on warm cells; Phase 3 cross-batch warmth + the
 dev encode-ahead buffer.
 
+**Fix (2026-06-27, first on-rig warm sweep — dev OOM).** Klein Expansion streamed warm cells fine, but
+a `flux.2-dev` warm cell crashed at **load** time:
+
+```
+stage1_load_models._load_dev_quantized -> scaled_fp8.load_comfy_flux2_transformer
+  -> load_safetensors_into_model -> _assign_tensor(model, mapped, tensor.to(device))
+torch.OutOfMemoryError: HIP out of memory. Tried to allocate 144.00 MiB ... 63.81 GiB allocated by PyTorch
+```
+
+Cause: `_ServeGenerator._load` hard-coded `cpu_offload=False`, so the **34 GB fp8 transformer loaded
+straight onto the 16 GB GPU** while the Mistral TE was also resident — the exact co-residence the
+cold `run()`/single-run path avoids by forcing `--cpu-offload`. The warm worker's whole premise
+(everything resident across cells) is right for **klein** (fits, and the user confirmed it works) but
+wrong for **dev**, which the journal already flagged as a co-residence problem.
+
+Fix — make `_ServeGenerator` **offload-aware**, gated on the model:
+- `_load`: `self.cpu_offload = job.cpu_offload or model_name == QUANTIZED_DEV_MODEL`. Under offload the
+  flow model loads on **CPU**; refs are encoded with the GPU-resident AE (never the flow model), then
+  the TE is **parked on CPU**. Both flow + TE stay in **CPU RAM** between cells, so the 34 GB disk
+  read + fp8 dequant happens **once per sweep** — the warm win is preserved; only the PCIe shuttle is
+  per-cell (the same cost the cold path already pays, ~87 s/img).
+- `generate` (offload branch only): TE→GPU → encode text → TE→CPU + `empty_cache()` → flow→GPU
+  (ROCm host-pages the 34 GB) → denoise → flow→CPU + `empty_cache()` → decode (AE stayed GPU). The
+  flow + TE never co-reside on the GPU — this is the cold `run()` swap, applied per warm image.
+- **Klein path unchanged**: `cpu_offload=False`, everything resident, the fast warm path.
+
+`ComfyMistralEmbedder` is an `nn.Module` that reads its device dynamically (`forward` looks at
+`embed_tokens.weight.device`), so `.cpu()`/`.to(device)` shuttling is safe. Both `run_pipeline.py`
+copies (loom mirror + monorepo) updated byte-identical; 7/7 warm-worker tests green (the offload swap
+is GPU-path code → **on-rig dev Expansion sweep still owed**, alongside the klein pause/resume sweep).
+
 ---
 
 ## P2-era fixes (non-milestone)

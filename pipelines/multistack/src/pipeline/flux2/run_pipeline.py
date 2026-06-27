@@ -465,21 +465,25 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
 #   stdout (worker -> runner): free-text progress (the runner streams it to the job log) + ONE
 #           result line per job, framed `SERVE_RESULT_PREFIX + <json>`:
 #           {job_id, status:"ok"|"failed", output_path, seed, width, height, duration_s, meta, error}.
-# The model (flow + AE, encoded ref) stays resident across jobs; the text encoder is (re)loaded per
-# job by stage1 — the dev/klein TE can't co-reside with the flow model on 16 GB (the batch worker's
-# encode-all-then-free-TE avoids that; an encode-ahead buffer to recover it is a later phase).
+# The flow model + AE + TE are loaded ONCE (from the first job) and kept resident across the group
+# so the expensive disk read / fp8 dequant happens once per sweep, not per cell. Klein fits in 16 GB
+# fully resident. Dev's 34 GB transformer + Mistral TE do NOT co-reside, so the dev worker keeps both
+# in CPU RAM and shuttles them onto the GPU one at a time per image (TE for the text encode, then the
+# flow model for the denoise) — the cold run() offload swap, paid per warm cell but with no re-read.
 SERVE_RESULT_PREFIX = "[serve-result] "
 
 
 class _ServeGenerator:
-    """Lazy-loads the flow model + AE (+ ref) from the FIRST job and keeps them resident; each
-    `generate(job)` produces one image. The text encoder rides stage1's load. GPU code — exercised
-    on-rig; the stdin/stdout protocol (`run_serve`) is what the no-GPU tests cover."""
+    """Lazy-loads the flow model + AE (+ ref) + TE from the FIRST job and keeps them resident; each
+    `generate(job)` produces one image. For the dev (`cpu_offload`) model the flow + TE live in CPU
+    RAM between cells and are paged onto the GPU per image so they never co-reside. GPU code —
+    exercised on-rig; the stdin/stdout protocol (`run_serve`) is what the no-GPU tests cover."""
 
     def __init__(self, output_dir: str, device: str) -> None:
         self.output_dir = output_dir
         self.device = device
         self.state: dict | None = None
+        self.cpu_offload = False  # set per-load: dev pages flow<->GPU; klein stays resident
 
     def _load(self, job: dict) -> None:
         from flux2.sampling import encode_image_refs
@@ -487,13 +491,20 @@ class _ServeGenerator:
 
         model_name = job.get("model_name", "flux.2-klein-4b")
         torch_device = torch.device(self.device)
+        # dev's 34 GB fp8 transformer can't co-reside with the Mistral TE on 16 GB — load the flow
+        # model on CPU and page it onto the GPU per image (TE freed first), exactly like the cold
+        # run() path. Klein fits resident, so it stays resident (the fast warm path the user runs).
+        self.cpu_offload = bool(job.get("cpu_offload")) or (model_name == stage1_load_models.QUANTIZED_DEV_MODEL)
         s1 = stage1_load_models.run(
-            model_name=model_name, device=self.device, cpu_offload=False,
+            model_name=model_name, device=self.device, cpu_offload=self.cpu_offload,
             fp8_matmul=job.get("fp8_matmul", "auto"),
             text_encoder_variant=job.get("text_encoder"),
             turbo=bool(job.get("turbo")),
         )
         info = FLUX2_MODEL_INFO[model_name]
+        enc = s1["text_encoder"]
+        # refs are encoded with the AE (small, GPU-resident) — never the flow model — so this is
+        # safe under offload while the flow model is still parked on CPU.
         ref_tokens = ref_ids = None
         ref_paths = list(job.get("ref_images") or [])
         if job.get("mode") == "ref" and ref_paths:
@@ -502,8 +513,13 @@ class _ServeGenerator:
                 ref_tokens, ref_ids = encode_image_refs(s1["ae"], refs)
                 if ref_tokens is not None:
                     ref_tokens, ref_ids = ref_tokens.to(torch_device), ref_ids.to(torch_device)
+        if self.cpu_offload:
+            # park the TE on CPU so the idle worker holds only the AE (+ refs) on the GPU; each
+            # generate() shuttles TE->GPU for the text encode and flow->GPU for the denoise.
+            enc.cpu()
+            torch.cuda.empty_cache()
         self.state = {
-            "model": s1["model"], "ae": s1["ae"], "enc": s1["text_encoder"],
+            "model": s1["model"], "ae": s1["ae"], "enc": enc,
             "distilled": info.get("guidance_distilled", True), "defaults": info.get("defaults", {}),
             "ref_tokens": ref_tokens, "ref_ids": ref_ids, "model_name": model_name,
         }
@@ -523,6 +539,7 @@ class _ServeGenerator:
         if self.state is None:
             self._load(job)
         s = self.state
+        torch_device = torch.device(self.device)
         seed = job.get("seed")
         if seed is None:
             seed = random.randrange(2**31)
@@ -535,18 +552,31 @@ class _ServeGenerator:
         out_path = self._resolve_out_dir(job) / f"flux2_{ts}_s{seed}.png"
         t0 = time.time()
         with torch.no_grad():
+            # --- text encode --- under offload the TE rides onto the GPU here, then is freed before
+            # the 34 GB flow model is paged in (the cold run() swap, applied per warm image).
+            if self.cpu_offload:
+                s["enc"].to(torch_device)
             c = s["enc"]([job["prompt"]]).to(torch.bfloat16)
             if not s["distilled"]:
                 c = torch.cat([s["enc"]([""]).to(torch.bfloat16), c], dim=0)
             ctx, ctx_ids = batched_prc_txt(c)
-            g = torch.Generator(device="cuda").manual_seed(int(seed))
+            if self.cpu_offload:
+                s["enc"].cpu()
+                torch.cuda.empty_cache()
+                s["model"].to(torch_device)  # flow -> GPU (ROCm pages it through host memory)
+            # --- denoise ---
+            g = torch.Generator(device=self.device).manual_seed(int(seed))
             noise = torch.randn((1, 128, height // 16, width // 16), generator=g,
-                                dtype=torch.bfloat16, device="cuda")
+                                dtype=torch.bfloat16, device=torch_device)
             x, x_ids = batched_prc_img(noise)
             timesteps = get_schedule(num_steps, x.shape[1])
             dn = denoise if s["distilled"] else denoise_cfg
             x = dn(s["model"], x, x_ids, ctx, ctx_ids, timesteps=timesteps, guidance=guidance,
                    img_cond_seq=s["ref_tokens"], img_cond_seq_ids=s["ref_ids"])
+            if self.cpu_offload:
+                s["model"].cpu()             # flow -> CPU (kept in RAM for the next cell, not re-read)
+                torch.cuda.empty_cache()
+            # --- decode (AE stayed GPU-resident; flow is off the GPU now under offload) ---
             s4 = stage4_decode.run(ae=s["ae"], x=x, x_ids=x_ids, output_path=out_path)
         return {"job_id": job.get("job_id"), "status": "ok", "output_path": str(out_path),
                 "seed": seed, "width": s4["width"], "height": s4["height"],

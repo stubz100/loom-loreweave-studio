@@ -44,6 +44,18 @@ WIRED_PARAMS = (
 
 _MANIFEST_RE = re.compile(r"^\s*Manifest:\s*(.+?)\s*$", re.MULTILINE)
 
+# M2.7 Phase 2a — warm-worker serve mode: the runner feeds same-`warm_group` Stage-B cell-jobs to
+# ONE persistent `--serve` process (pipeline loaded once for the sweep). The result-line prefix the
+# worker frames each per-job result with; the runner matches on it (see runner._feed_warm).
+SERVE_RESULT_PREFIX = "[serve-result] "
+
+
+def serve_argv(python: str, script: Path, device: str, out_dir: str) -> list[str]:
+    """argv to spawn the persistent warm worker (one pipeline load, N stdin jobs). zimage is invoked
+    by absolute file path (its bare imports need the script dir on sys.path[0]); the per-cell output
+    dir rides each fed job spec, so `--output-dir` here is just the default fallback."""
+    return [python, str(script), "--serve", "--device", str(device), "--output-dir", str(out_dir)]
+
 
 def resolve_script(roots: list[Path]) -> Path | None:
     """First existing worker across the ordered pipeline roots (vendored-first).

@@ -877,7 +877,19 @@ the amortization. Out of the initial phases.)*
 - **Phase 1 — flux2 Expansion** (the actual pain): `--serve` mode on the flux2 worker; the runner
   warm-worker dispatch + lifecycle (one resident worker, group match, evict); the Stage-B endpoint
   emits N cell-jobs. Prove a klein/dev sweep streams individual persistent tiles + survives pause.
-- **Phase 2 — multi (Cast) + sd35/zimage** `--serve` modes through the same runner path.
+- **Phase 2 — the rest of batch generation.** Split (the original "multi serve mode" didn't survive
+  contact — a Cast spans 3 VRAM-isolated pipelines, so a single resident worker can't map to it):
+  - **2a — sd35/zimage Expansion warm cells** (DONE): `--serve` on both workers (a shared
+    `_generate_item` so the batch + serve paths can't drift) + adapter `serve_argv`; the Stage-B
+    else-branch emits N img2img cell-jobs per realization group through the **same** runner warm
+    dispatch as flux2. Gated to **no-post-pass, non-`mixed`** sweeps — those still ride the cold
+    `--jobs-file` batch job until 2b (no silent loss of identity/clean/polish).
+  - **2b — post-passes on warm cells**: chain identity/clean/polish per warm cell (the Phase 1
+    deferral), then drop the cold-batch fallback (warm cells become the path for flux2 + sd35/zimage,
+    incl. `mixed`).
+  - **2c — multi (Cast) individual queue jobs**: orchestrator-driven candidate fan-out so each Cast
+    candidate is its own pause-surviving queue entry. NOT a warm worker (Cast spans 3 models); the win
+    is pause-persistence, not warmth.
 - **Phase 3 — cross-batch warmth + idle-eviction tuning** (the worker survives between unrelated
   same-group jobs) + the dev encode-ahead buffer if wanted.
 

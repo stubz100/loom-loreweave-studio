@@ -99,6 +99,19 @@ def test_sd35_batch_argv_translates_slg_flag(tmp_path):
     assert "no_skip_layer_guidance" not in jobs["shared"]
 
 
+def test_sd35_zimage_serve_argv():
+    """M2.7 Phase 2a: the warm-worker spawn argv — file-path invocation + `--serve` (the runner
+    feeds same-warm_group cell-jobs to ONE persistent process; each cell's output dir + params ride
+    the fed stdin spec). The runner gates the warm path on `hasattr(adapter, 'serve_argv')`."""
+    for mod in (sd35, zimage):
+        argv = mod.serve_argv("py", Path(f"x/{mod.PIPELINE}/run_pipeline.py"), "cuda", "F:/out")
+        assert argv[0] == "py" and argv[1].endswith("run_pipeline.py")  # file path, NOT `-m module`
+        assert "--serve" in argv and "-m" not in argv
+        assert argv[argv.index("--device") + 1] == "cuda"
+        assert argv[argv.index("--output-dir") + 1] == "F:/out"
+        assert mod.SERVE_RESULT_PREFIX == "[serve-result] "
+
+
 # --- adapter: batch manifest parse (outputs + outputs_meta) ---------------------------
 
 def _write_batch_manifest(out: Path, pipeline: str, oks: int, fails: int = 0,
@@ -231,7 +244,10 @@ def _asset_with_hero(ws):
     return a
 
 
-def test_stage_b_fires_one_batch_job(client):
+def test_stage_b_zimage_cells_are_individual_warm_jobs(client):
+    """M2.7 Phase 2a: a zimage/sd35 Expansion with NO post-passes emits N INDIVIDUAL img2img
+    cell-jobs (each a persistent tile surviving pause/resume) serviced by ONE warm worker — not a
+    single opaque batch job. (With post-passes it falls back to the cold batch job; see below.)"""
     from orchestrator.runner import RUNNER
     a = _asset_with_hero(RUNNER.workspace)
     RUNNER.pause()    # hold the queue — no GPU in tests
@@ -239,15 +255,37 @@ def test_stage_b_fires_one_batch_job(client):
                     json={"preset": "npc_lite", "character_clause": "a test ranger"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["count"] == 1 and body["items"] == 17      # one batch job, 17 cells
-    job = RUNNER.get(body["job_ids"][0])
-    items = job["params"]["batch_items"]
-    assert len(items) == 17
-    assert items[0]["meta"]["coverage_cell"]["background"] == ""   # img2img realization
-    # prompt order: cell fragment leads, clause follows, (default) style trails
-    p0 = items[0]["prompt"]
+    assert body["count"] == 17 and body["items"] == 17     # one job PER cell, not a single batch
+    groups = set()
+    for jid in body["job_ids"]:
+        job = RUNNER.get(jid)
+        p = job["params"]
+        assert "batch_items" not in p                       # individual, not a batch
+        assert p["init_image"] and p["meta"]["method"] in ("img2img", "inpaint")
+        assert job["coverage_cell"] is not None             # cell metadata on the job (curation)
+        groups.add(job["warm_group"])
+    assert len(groups) == 1 and next(iter(groups))          # all cells share ONE warm worker
+    assert RUNNER.get(body["job_ids"][0])["coverage_cell"]["background"] == ""  # img2img realization
+    # prompt order unchanged: cell fragment leads, clause follows, (default) style trails
+    p0 = RUNNER.get(body["job_ids"][0])["params"]["prompt"]
     assert p0.startswith("front view") and "a test ranger" in p0
     assert p0.index("view") < p0.index("a test ranger")
+
+
+def test_stage_b_with_post_passes_keeps_the_cold_batch_job(client, monkeypatch):
+    """M2.7 Phase 2a guardrail: the warm path doesn't chain post-passes yet, so when a sweep has
+    them (here: clean), zimage/sd35 stay on the proven cold `--jobs-file` batch job (one per group)
+    — no silent loss of identity/clean/polish. Phase 2b lifts post-passes onto warm cells."""
+    from orchestrator.runner import RUNNER
+    a = _asset_with_hero(RUNNER.workspace)
+    RUNNER.pause()
+    r = client.post(f"/assets/{a['id']}/stage-b",
+                    json={"preset": "npc_lite", "character_clause": "x", "params": {"clean": True}})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 1                               # ONE batch job (post-passes ride it)
+    job = RUNNER.get(body["job_ids"][0])
+    assert len(job["params"]["batch_items"]) == 17 and job.get("warm_group") is None
 
 
 def test_stage_b_dry_run_reports_batch_shape(client):
@@ -257,7 +295,8 @@ def test_stage_b_dry_run_reports_batch_shape(client):
                     json={"preset": "npc_lite", "character_clause": "x", "dry_run": True})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["planned_jobs"] == 1 and body["items"] == 17
+    # warm cells (M2.7 Phase 2a): one queue job per cell → planned_jobs == the cell count
+    assert body["planned_jobs"] == body["items"] == 17
 
 
 # --- weight pre-flight vs the params-channel model (review 2026-06-11) ----------------

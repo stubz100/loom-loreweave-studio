@@ -1648,6 +1648,17 @@ def create_app() -> FastAPI:
         else:
             groups = [("img2img", cells, req.strength)]
         split = {mode: len(gcells) for mode, gcells, _ in groups}
+        # M2.7 Phase 2a: zimage/sd35 Expansion streams INDIVIDUAL warm cell-jobs (one resident worker
+        # per realization group, model loaded once) so each tile is its own queue entry that survives
+        # pause/resume — EXCEPT when the sweep chains post-passes (identity/clean/polish): those still
+        # ride the proven cold `--jobs-file` batch job, because the warm path doesn't chain post-passes
+        # yet (Phase 2b lifts that, then this fallback goes away). flux2 is always warm (Phase 1; its
+        # ref sweeps don't use post-passes — identity rides the reference). `realize="mixed"` (the
+        # inpaint background-diversity axis) stays on the cold batch path for now — its two-group
+        # bg-mask realization + frequent identity pass come to the warm path in a later phase.
+        warm_cells = is_flux2 or (not post_passes and req.realize != "mixed"
+                                  and hasattr(ADAPTERS.get(req.pipeline), "serve_argv"))
+        planned = len(cells) if warm_cells else len(groups)
 
         if req.dry_run:
             # Preview with a single-cell argv (a batch argv would write jobs.json into
@@ -1664,7 +1675,7 @@ def create_app() -> FastAPI:
                       "seed": cell0["seed"], "model_name": model_name, **extra}
                 spec = JobSpec(pipeline=req.pipeline, mode="img2img", params=p0, output_dir=ws.out_dir)
             return {"dry_run": True, "preset": req.preset, "pipeline": req.pipeline,
-                    "planned_jobs": len(groups), "items": built["target"], "split": split,
+                    "planned_jobs": planned, "items": built["target"], "split": split,
                     "realize": req.realize, "bg_mask": req.bg_mask,
                     "advanced_prompt": built["advanced_prompt"],
                     "json_prompt": built["json_prompt"],
@@ -1719,10 +1730,33 @@ def create_app() -> FastAPI:
                     coverage_cell=c["coverage_cell"], warm_group=wg))
         else:
           for gmode, gcells, gstrength in groups:
-            # Provenance method = the ACTUAL realization. flux2 realizes every cell via `ref`
-            # (review 2026-06-13: the recipe's preferred c["method"] would mislabel flux2 refs
-            # as img2img/inpaint, and P2 is metadata-driven). zimage/sd35 keep the recipe method
-            # (in mixed it already equals the group; in plain img2img it's the cell's preference).
+            if warm_cells:
+                # M2.7 Phase 2a: N INDIVIDUAL cell-jobs per realization group, each a persistent tile
+                # serviced by ONE warm worker (the model is the load-bound part of the warm_group, so
+                # a group's cells share the resident pipeline; img2img and inpaint groups bind distinct
+                # groups and run back-to-back — one evict between them, cells contiguous so no thrash).
+                wg = "|".join([req.pipeline, str(model_name), gmode, f"{eff_width}x{eff_height}",
+                               str(hero_path), f"s={gstrength}"])
+                for c in gcells:
+                    cparams = {"prompt": c["prompt"], "seed": c["seed"],
+                               "width": eff_width, "height": eff_height,
+                               "meta": {"coverage_cell": c["coverage_cell"], "method": c["method"]},
+                               **extra}
+                    cparams["init_image"] = str(hero_path)
+                    cparams["strength"] = gstrength
+                    if gmode == "inpaint":
+                        cparams["mask_image"] = bg_mask_abs
+                    if model_name:
+                        cparams["model_name"] = model_name
+                    job_ids.append(RUNNER.submit(
+                        pipeline=req.pipeline, mode=gmode, params=cparams,
+                        batch_id=batch_id, index=len(job_ids), batch_size=len(cells),
+                        requester_id=vid, profile_version_id=vid, stage="B",
+                        coverage_cell=c["coverage_cell"], warm_group=wg))
+                continue
+            # Cold batch fallback (post-passes present): ONE --jobs-file job per group, post-passes
+            # chained after the sweep. Provenance method = the ACTUAL realization; zimage/sd35 keep
+            # the recipe method (in mixed it already equals the group; in plain img2img the cell's).
             items = [{"prompt": c["prompt"], "seed": c["seed"],
                       "meta": {"coverage_cell": c["coverage_cell"],
                                "method": "ref" if gmode == "ref" else c["method"]}}

@@ -130,7 +130,8 @@ def test_stage_b_flux2_dry_run_routes_to_ref(client):
                     json={"pipeline": "flux2", "preset": "npc_lite", "dry_run": True})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["pipeline"] == "flux2" and body["planned_jobs"] == 1
+    # warm cells (M2.7): one queue job PER cell, so planned_jobs == the cell count (not 1 batch job)
+    assert body["pipeline"] == "flux2" and body["planned_jobs"] == body["items"]
     assert "ref" in body["split"] and body["split"]["ref"] > 0
     # the dry-run argv module-invokes flux2 with the hero as a reference
     assert "-m" in body["first_argv"] and "pipeline.flux2.run_pipeline" in body["first_argv"]

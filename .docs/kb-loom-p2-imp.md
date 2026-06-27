@@ -1052,6 +1052,46 @@ Two UX gaps the first good dev sweep surfaced:
 Tests: `test_shared_seed_gives_every_cell_the_same_seed` (recipe) + a one-seed assertion on
 `test_stage_b_flux2_cells_are_individual_warm_jobs`. 338 backend green; frontend `tsc --noEmit` clean.
 
+### Phase 2a — sd35/zimage Expansion warm cells (2026-06-27; on-rig owed)
+
+Extends the proven flux2 warm path to the img2img coverage sweep (user pick — the direct, lowest-risk
+Phase 2 increment; `multi`/Cast needs a different mechanism, see §12 phasing). The runner side is
+already pipeline-agnostic (`_execute_warm` gates on `hasattr(adapter, "serve_argv")`), so 2a is
+worker + adapter + the Stage-B dispatch:
+
+- **Workers** (`sd35`, `zimage` `run_pipeline.py`): a `--serve` loop mirroring flux2's (one JSON job
+  per stdin line → one image + `[serve-result]`; `{"cmd":"shutdown"}`/EOF exits). The per-image
+  generate+save body was **extracted from `run_jobs` into a shared `_generate_item`** so the
+  `--jobs-file` batch loop and the `--serve` warm loop **can't drift** on the (subtle) img2img/inpaint
+  path; `run_jobs` now just calls it. The serve `_ServeGenerator` loads the pipeline ONCE (the model
+  is the load-bound part of the warm_group) and reuses it per cell. It honors the catalog's INVERTED
+  flags directly (`no_cpu_offload`, sd35 `no_skip_layer_guidance`) since the warm spec doesn't pass
+  through `build_batch_argv`'s inversion. **No offload dance** (unlike flux2-dev): these fit 16 GB and
+  `enable_model_cpu_offload`'s per-call hooks persist across warm jobs.
+- **Adapters** (`sd35.py`, `zimage.py`): `serve_argv` (file-path invocation + `--serve --device
+  --output-dir`, NOT `-m`) + `SERVE_RESULT_PREFIX`.
+- **Stage-B** (`main.py` else-branch): emits **N img2img cell-jobs per realization group**, each with
+  a mode+strength-bound `warm_group` (so a group's cells share one resident worker; img2img and
+  inpaint groups run back-to-back). **Gated**: `warm_cells = is_flux2 or (no post_passes and realize
+  != "mixed" and serve-capable)`. Post-pass sweeps + `mixed` keep the **cold batch job** (post-passes
+  chain there) until 2b — so identity/clean/polish are never silently dropped. The dry-run
+  `planned_jobs` now reports the real job count (`len(cells)` for warm) — this also corrected flux2's
+  Phase-1 dry-run, which still said `1`.
+- **Vendor sync (R162)**: `_generate_item`/serve landed in all copies byte-identical — sd35 ×2
+  (monorepo + multistack), **zimage ×3** (monorepo + `pipelines/zimage` + multistack). The drift
+  guard (`test_vendored_workers_match_monorepo_source`) is green.
+- **Tests**: `test_sd35_zimage_serve_argv` (adapter argv), `test_stage_b_zimage_cells_are_individual_
+  warm_jobs` (N cell-jobs + shared warm_group), `test_stage_b_with_post_passes_keeps_the_cold_batch_
+  job` (the gate), updated dry-run/flux2 shape assertions. The serve **protocol loop** is byte-
+  identical to flux2's (already round-trip-tested); the heavy workers can't be imported in-process
+  (bare-import name collision between sd35/zimage `stage1_load_pipeline`), so it's covered by the
+  adapter argv + the pipeline-agnostic runner dispatch (`test_warm_worker`) + the byte-identical sync.
+  **340 backend green.**
+
+⚠ **Owed (on-rig — can't run the model from CI):** a real sd35/zimage Expansion sweep streams
+individual img2img tiles that **persist across a pause**, model loaded once. **Next:** 2b (post-passes
+on warm cells → drop the cold-batch fallback), then 2c (multi/Cast individual jobs).
+
 ---
 
 ## P2-era fixes (non-milestone)

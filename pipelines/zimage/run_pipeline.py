@@ -254,6 +254,94 @@ _BATCH_SHARED_ONLY = ("mode", "model_name", "dtype", "attention_backend",
 _BATCH_MODES = ("t2i", "img2img", "inpaint")
 
 
+def _generate_item(s1: dict, *, model_name: str, model_info: dict, defaults: dict, mode: str,
+                   device: str, merged: dict, out_dir: Path, idx: int = 0) -> dict:
+    """Generate + save ONE image from `merged` params into `out_dir`, returning the per-item
+    result record (status/output_path/manifest_path/seed/duration_s/error/meta). SHARED by the
+    `--jobs-file` batch loop and the `--serve` warm loop (M2.7 Phase 2a) so the two can never
+    drift on the (subtle) img2img/inpaint generation path. Per-item failure is captured in the
+    record (status='failed' + error), never raised — the caller decides how to report it."""
+    seed = merged.get("seed")
+    if seed is None:
+        seed = random.randrange(2**31)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    output_path = out_dir / f"zimage_{ts}_i{idx:03d}_s{seed}.png"
+    manifest_path = output_path.with_suffix(".json")
+    it0 = time.time()
+    rec_out = {"index": idx, "status": "failed", "seed": seed, "prompt": merged["prompt"],
+               "output_path": "", "manifest_path": "", "duration_s": 0.0,
+               "error": None, "meta": merged.get("meta")}
+    try:
+        init_image = merged.get("init_image")
+        mask_image = merged.get("mask_image")
+        if mode in ("img2img", "inpaint") and init_image is None:
+            raise ValueError(f"mode={mode} requires init_image")
+        if mode == "inpaint" and mask_image is None:
+            raise ValueError("mode=inpaint requires mask_image")
+        if mode == "img2img":
+            mask_image = None
+        num_steps = merged.get("num_steps")
+        if num_steps is None:
+            num_steps = defaults["num_steps"]
+        guidance_scale = merged.get("guidance_scale")
+        if guidance_scale is None:
+            guidance_scale = defaults["guidance_scale"]
+        negative_prompt = merged.get("negative_prompt")
+        if negative_prompt and not model_info["supports_negative_prompt"]:
+            print(f"[warn] {model_name} does not support negative prompts -- ignoring")
+            negative_prompt = None
+        cfg_normalization = merged.get("cfg_normalization")
+        if cfg_normalization is not None and not model_info["supports_cfg_normalization"]:
+            print(f"[warn] {model_name} does not support cfg_normalization -- ignoring")
+            cfg_normalization = None
+        cfg_truncation = merged.get("cfg_truncation")
+        if cfg_truncation is not None and not model_info["supports_cfg_normalization"]:
+            print(f"[warn] {model_name} does not support cfg_truncation -- ignoring")
+            cfg_truncation = None
+        width = merged.get("width", 1024)
+        height = merged.get("height", 1024)
+        strength = merged.get("strength")
+
+        manifest = PipelineManifest(
+            model_name=model_name, prompt=merged["prompt"], seed=seed,
+            width=width, height=height,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            device=device, run_id=_artifact_id.mint_run_id(seed),
+        )
+        manifest.pipeline_start = time.time()
+        rec = manifest.begin_stage("generate", stage2_generate.get_manifest_inputs(
+            merged["prompt"], width, height, seed, num_steps, guidance_scale,
+            negative_prompt, cfg_normalization, cfg_truncation, mode,
+            init_image, mask_image, strength,
+        ))
+        s2 = stage2_generate.run(
+            pipe=s1["pipe"], prompt=merged["prompt"], width=width, height=height,
+            seed=seed, num_inference_steps=num_steps, guidance_scale=guidance_scale,
+            negative_prompt=negative_prompt, cfg_normalization=cfg_normalization,
+            cfg_truncation=cfg_truncation, mode=mode,
+            init_image=init_image, mask_image=mask_image, strength=strength,
+        )
+        manifest.end_stage(rec, stage2_generate.get_manifest_outputs(s2),
+                           stage2_generate.get_manifest_debug(s2))
+        rec = manifest.begin_stage("save", stage3_save.get_manifest_inputs(str(output_path)))
+        s3 = stage3_save.run(image=s2["image"], output_path=output_path)
+        manifest.end_stage(rec, stage3_save.get_manifest_outputs(s3),
+                           stage3_save.get_manifest_debug(s3))
+        manifest.artifacts.append(_artifact_id.make_artifact_record(
+            output_path, kind="image/png", produced_by_stage="save"))
+        manifest.pipeline_end = time.time()
+        manifest.pipeline_duration_s = round(manifest.pipeline_end - manifest.pipeline_start, 4)
+        manifest.output_path = str(output_path)
+        manifest.save(manifest_path)
+        dt = round(time.time() - it0, 2)
+        rec_out.update(status="ok", output_path=str(output_path),
+                       manifest_path=str(manifest_path), duration_s=dt)
+        print(f"  Image: {output_path}")
+    except Exception as e:  # captured, not raised — one bad item must not kill the batch/sweep
+        rec_out.update(error=str(e), duration_s=round(time.time() - it0, 2))
+    return rec_out
+
+
 def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = "cuda") -> int:
     """Execute a jobs file: one shared pipeline load, then generate+save per item.
 
@@ -360,90 +448,141 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
             status = "stopped"
             break
         merged = {**shared, **item}
-        seed = merged.get("seed")
-        if seed is None:
-            seed = random.randrange(2**31)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        output_path = out_dir / f"zimage_{ts}_i{idx:03d}_s{seed}.png"
-        manifest_path = output_path.with_suffix(".json")
-        print(f"[item {idx + 1}/{len(items)}] seed={seed}")
-        it0 = time.time()
-        rec_out = {"index": idx, "status": "failed", "seed": seed, "prompt": merged["prompt"],
-                   "output_path": "", "manifest_path": "", "duration_s": 0.0,
-                   "error": None, "meta": item.get("meta")}
-        try:
-            init_image = merged.get("init_image")
-            mask_image = merged.get("mask_image")
-            if mode in ("img2img", "inpaint") and init_image is None:
-                raise ValueError(f"mode={mode} requires init_image")
-            if mode == "inpaint" and mask_image is None:
-                raise ValueError("mode=inpaint requires mask_image")
-            if mode == "img2img":
-                mask_image = None
-            num_steps = merged.get("num_steps")
-            if num_steps is None:
-                num_steps = defaults["num_steps"]
-            guidance_scale = merged.get("guidance_scale")
-            if guidance_scale is None:
-                guidance_scale = defaults["guidance_scale"]
-            negative_prompt = merged.get("negative_prompt")
-            if negative_prompt and not model_info["supports_negative_prompt"]:
-                print(f"[warn] {model_name} does not support negative prompts -- ignoring")
-                negative_prompt = None
-            cfg_normalization = merged.get("cfg_normalization")
-            if cfg_normalization is not None and not model_info["supports_cfg_normalization"]:
-                print(f"[warn] {model_name} does not support cfg_normalization -- ignoring")
-                cfg_normalization = None
-            cfg_truncation = merged.get("cfg_truncation")
-            if cfg_truncation is not None and not model_info["supports_cfg_normalization"]:
-                print(f"[warn] {model_name} does not support cfg_truncation -- ignoring")
-                cfg_truncation = None
-            width = merged.get("width", 1024)
-            height = merged.get("height", 1024)
-            strength = merged.get("strength")
-
-            manifest = PipelineManifest(
-                model_name=model_name, prompt=merged["prompt"], seed=seed,
-                width=width, height=height,
-                created_at=datetime.now(timezone.utc).isoformat(),
-                device=device, run_id=_artifact_id.mint_run_id(seed),
-            )
-            manifest.pipeline_start = time.time()
-            rec = manifest.begin_stage("generate", stage2_generate.get_manifest_inputs(
-                merged["prompt"], width, height, seed, num_steps, guidance_scale,
-                negative_prompt, cfg_normalization, cfg_truncation, mode,
-                init_image, mask_image, strength,
-            ))
-            s2 = stage2_generate.run(
-                pipe=s1["pipe"], prompt=merged["prompt"], width=width, height=height,
-                seed=seed, num_inference_steps=num_steps, guidance_scale=guidance_scale,
-                negative_prompt=negative_prompt, cfg_normalization=cfg_normalization,
-                cfg_truncation=cfg_truncation, mode=mode,
-                init_image=init_image, mask_image=mask_image, strength=strength,
-            )
-            manifest.end_stage(rec, stage2_generate.get_manifest_outputs(s2),
-                               stage2_generate.get_manifest_debug(s2))
-            rec = manifest.begin_stage("save", stage3_save.get_manifest_inputs(str(output_path)))
-            s3 = stage3_save.run(image=s2["image"], output_path=output_path)
-            manifest.end_stage(rec, stage3_save.get_manifest_outputs(s3),
-                               stage3_save.get_manifest_debug(s3))
-            manifest.artifacts.append(_artifact_id.make_artifact_record(
-                output_path, kind="image/png", produced_by_stage="save"))
-            manifest.pipeline_end = time.time()
-            manifest.pipeline_duration_s = round(manifest.pipeline_end - manifest.pipeline_start, 4)
-            manifest.output_path = str(output_path)
-            manifest.save(manifest_path)
-            dt = round(time.time() - it0, 2)
-            rec_out.update(status="ok", output_path=str(output_path),
-                           manifest_path=str(manifest_path), duration_s=dt)
-            print(f"[item {idx + 1}/{len(items)}] done in {dt}s")
-            print(f"  Image: {output_path}")
-        except Exception as e:  # record + continue: one bad item must not kill the batch
-            rec_out.update(error=str(e), duration_s=round(time.time() - it0, 2))
-            print(f"[item {idx + 1}/{len(items)}] FAILED: {e}")
+        if merged.get("seed") is None:
+            merged["seed"] = random.randrange(2**31)
+        print(f"[item {idx + 1}/{len(items)}] seed={merged['seed']}")
+        rec_out = _generate_item(
+            s1, model_name=model_name, model_info=model_info, defaults=defaults, mode=mode,
+            device=device, merged=merged, out_dir=out_dir, idx=idx,
+        )
+        if rec_out["status"] == "ok":
+            print(f"[item {idx + 1}/{len(items)}] done in {rec_out['duration_s']}s")
+        else:
+            print(f"[item {idx + 1}/{len(items)}] FAILED: {rec_out['error']}")
         results.append(rec_out)
 
     return _finish(status, load_s)
+
+
+# --- Serve mode (--serve): a PERSISTENT warm worker (M2.7 Phase 2a) -------------------
+#
+# Mirrors the flux2/sd35 workers' `--serve`: the runner feeds same-`warm_group` cell-jobs (one image
+# each) to ONE long-lived process so the pipeline loads ONCE for the whole Expansion sweep, while
+# each image is its own queue entry that persists the moment it's done (pause keeps the finished
+# tiles). Protocol — stdin: one JSON job per line (`{job_id, model_name, mode, prompt, seed, width,
+# height, init_image, mask_image, strength, num_steps, guidance_scale, negative_prompt, output_dir,
+# meta, ...}`); a `{"cmd":"shutdown"}` line (or EOF) exits. stdout: free-text stage prints (streamed
+# to the job log) + ONE result line per job, framed `SERVE_RESULT_PREFIX + <json>`.
+SERVE_RESULT_PREFIX = "[serve-result] "
+
+
+class _ServeGenerator:
+    """Loads the Z-Image pipeline (+ any character LoRA) from the FIRST job and keeps it resident —
+    the model is the load-bound part of the warm_group, so every cell in a sweep shares it; each
+    `generate(job)` produces one image via the shared `_generate_item`. GPU code — exercised on-rig;
+    the stdin/stdout protocol (`run_serve`) is what the no-GPU tests cover."""
+
+    def __init__(self, output_dir: str, device: str) -> None:
+        self.output_dir = output_dir
+        self.device = device
+        self.state: dict | None = None
+
+    def _load(self, job: dict) -> None:
+        model_name = job.get("model_name", "zimage-turbo")
+        if model_name not in ZIMAGE_MODEL_INFO:
+            raise ValueError(f"unknown model_name {model_name!r}")
+        mode = job.get("mode", "img2img")
+        if mode not in _BATCH_MODES:
+            raise ValueError(f"serve mode must be one of {_BATCH_MODES} (got {mode!r})")
+        model_info = ZIMAGE_MODEL_INFO[model_name]
+        # Honor the catalog's INVERTED no_cpu_offload flag directly — the warm job spec carries it
+        # as-is (it doesn't pass through build_batch_argv's inversion).
+        cpu_offload = job.get("cpu_offload", True) and not job.get("no_cpu_offload", False)
+        s1 = stage1_load_pipeline.run(
+            model_name=model_name, device=self.device,
+            cpu_offload=cpu_offload, dtype=job.get("dtype", "bfloat16"),
+            attention_backend=job.get("attention_backend"), mode=mode,
+            lora_path=job.get("lora_path"), lora_name=job.get("lora_name", "loom_character"),
+            lora_weight=job.get("lora_weight", 1.0),
+        )
+        self.state = {"s1": s1, "model_name": model_name, "model_info": model_info,
+                      "defaults": model_info["defaults"], "mode": mode}
+
+    def _resolve_out_dir(self, job: dict) -> Path:
+        out_dir = Path(job.get("output_dir") or self.output_dir)
+        if not out_dir.is_absolute():
+            out_dir = Path(__file__).resolve().parents[3] / out_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
+
+    def generate(self, job: dict) -> dict:
+        if self.state is None:
+            self._load(job)
+        s = self.state
+        merged = dict(job)                       # the spec already carries the per-cell params
+        if merged.get("seed") is None:
+            merged["seed"] = random.randrange(2**31)
+        rec = _generate_item(
+            s["s1"], model_name=s["model_name"], model_info=s["model_info"],
+            defaults=s["defaults"], mode=s["mode"], device=self.device,
+            merged=merged, out_dir=self._resolve_out_dir(job), idx=0,
+        )
+        ok = rec["status"] == "ok"
+        return {"job_id": job.get("job_id"), "status": "ok" if ok else "failed",
+                "output_path": rec["output_path"], "seed": rec["seed"],
+                "width": merged.get("width", 1024), "height": merged.get("height", 1024),
+                "duration_s": rec["duration_s"], "meta": job.get("meta"), "error": rec.get("error")}
+
+    def close(self) -> None:
+        self.state = None
+        try:
+            import torch
+            torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def run_serve(output_dir: str = "src/assets/pics", device: str = "cuda", *,
+              in_stream=None, emit=None, generator=None) -> int:
+    """Persistent warm-worker loop (M2.7 Phase 2a): one image per stdin job line, pipeline loaded
+    once. `in_stream`/`emit`/`generator` are injectable so the protocol is unit-testable without a
+    GPU (mirrors the flux2/sd35 workers)."""
+    if "PYTORCH_ALLOC_CONF" not in os.environ:
+        os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+    in_stream = in_stream if in_stream is not None else sys.stdin
+    emit = emit if emit is not None else (lambda line: print(line, flush=True))
+    gen = generator if generator is not None else _ServeGenerator(output_dir, device)
+    n_ok = n_fail = 0
+    print(f"[serve] ready (device={device})", flush=True)
+    try:
+        for raw in in_stream:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                job = json.loads(line)
+            except json.JSONDecodeError as exc:
+                emit(SERVE_RESULT_PREFIX + json.dumps(
+                    {"job_id": None, "status": "failed", "error": f"bad job json: {exc}"}))
+                continue
+            if job.get("cmd") == "shutdown":
+                break
+            try:
+                result = gen.generate(job)
+            except Exception as exc:  # noqa: BLE001 — one image's failure never kills the worker
+                import traceback
+                traceback.print_exc()
+                result = {"job_id": job.get("job_id"), "status": "failed",
+                          "output_path": "", "error": str(exc), "meta": job.get("meta")}
+            if result.get("status") == "ok":
+                n_ok += 1
+            else:
+                n_fail += 1
+            emit(SERVE_RESULT_PREFIX + json.dumps(result))
+    finally:
+        gen.close()
+    print(f"[serve] done ({n_ok} ok / {n_fail} failed)", flush=True)
+    return 0
 
 
 def main():
@@ -453,6 +592,9 @@ def main():
     parser.add_argument("--jobs-file", default=None,
                         help="Batch mode: JSON jobs file ({shared:{...}, items:[{prompt,seed,meta},...]}); "
                              "loads the pipeline once and generates every item")
+    parser.add_argument("--serve", action="store_true",
+                        help="Warm-worker mode (M2.7): read one JSON job per stdin line, load the "
+                             "pipeline once, emit one image + a [serve-result] line per job.")
     parser.add_argument("--model-name", default="zimage-turbo", choices=list(ZIMAGE_MODEL_INFO.keys()))
     parser.add_argument("--width", type=int, default=1024, help="Must be divisible by 16")
     parser.add_argument("--height", type=int, default=1024, help="Must be divisible by 16")
@@ -522,6 +664,8 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.serve:
+        sys.exit(run_serve(output_dir=args.output_dir, device=args.device))
     if args.jobs_file:
         sys.exit(run_jobs(args.jobs_file, output_dir=args.output_dir, device=args.device))
     if not args.prompt:

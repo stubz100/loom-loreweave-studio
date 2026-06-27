@@ -225,3 +225,38 @@ def test_warm_cell_fails_when_worker_dies_without_result(bound_runner, monkeypat
     j = R.get(jid)
     assert j["status"] == "failed"
     assert R._warm_proc is None            # the dead worker was dropped
+
+
+# --- keep-warm-across-pause grace (M2.7): a quick pause→resume skips the model reload -----------
+
+def test_warm_kept_across_a_brief_pause_then_evicted_after_grace(bound_runner, monkeypatch):
+    """The resident worker is KEPT while a sweep is paused mid-flight (so resume reuses the loaded
+    model), and only evicted once the pause outlasts WARM_IDLE_GRACE_S — or immediately when the
+    sweep is drained / the project is gone / shutting down."""
+    import time as _time
+    from orchestrator import runner as _runner
+    R = bound_runner                                # bound_runner leaves the queue PAUSED
+    R._warm_proc = object()                         # pretend a worker is resident
+    R._warm_group = "grp-P"
+    _submit_cell(R, "grp-P", 0)                     # a queued same-group cell keeps the sweep alive
+
+    # paused mid-sweep, grace clock not started yet → KEEP
+    R._warm_idle_since = None
+    with R._lock:
+        assert R._warm_evict_reason_locked() is None
+    # paused within the grace window → KEEP
+    R._warm_idle_since = _time.time()
+    with R._lock:
+        assert R._warm_evict_reason_locked() is None
+    # paused PAST the grace window → evict ('grace')
+    R._warm_idle_since = _time.time() - (_runner.WARM_IDLE_GRACE_S + 5)
+    with R._lock:
+        assert R._warm_evict_reason_locked() == "grace"
+    # no more queued same-group cells → 'drained' regardless of the clock
+    R._warm_idle_since = _time.time()
+    for j in R.jobs.values():
+        if j.get("warm_group") == "grp-P":
+            j["status"] = "done"
+    with R._lock:
+        assert R._warm_evict_reason_locked() == "drained"
+    R._warm_proc = None                             # tidy the singleton for the next test

@@ -263,6 +263,12 @@ VRAM_ESTIMATES = {"zimage": 11.0, "multi": 14.0, "sd35": 13.0, "birefnet": 4.0,
                   "zimage_trainer": 15.0}                 # P2 Z-Image LoRA train, qfloat8/low_vram
 DEFAULT_VRAM_GB = 8.0
 MAX_OOM_RETRIES = 1
+# M2.7: how long the resident warm worker is kept across a PAUSE (or an idle gap) while its sweep
+# still has queued cells, before it's evicted to free VRAM. A quick pause→inspect→resume within this
+# window skips the (expensive) model reload + ref re-encode; a longer pause frees the GPU. Hard
+# reasons (project close / shutdown / disk hard-stop / a different sweep) still evict immediately.
+WARM_IDLE_GRACE_S = float(os.environ.get("LOOM_WARM_IDLE_GRACE_S", "180"))
+_WARM_HOLD_POLL_S = 5.0   # while holding a warm worker across a pause, re-check the grace this often
 _OOM_MARKERS = (
     "out of memory", "hip out of memory", "cuda out of memory",
     "outofmemoryerror", "hiperror: out of memory",
@@ -300,6 +306,7 @@ class JobRunner:
         self._warm_proc: subprocess.Popen | None = None
         self._warm_group: str | None = None
         self._warm_pipeline: str | None = None
+        self._warm_idle_since: float | None = None   # when the resident worker went idle (pause/gap)
         self._paused = False
         # Why the queue is paused — "resume" (resume-paused load, R88) | "user" (explicit
         # /queue/pause) | None. Surfaced via state()/queue.json so the UI can say WHY
@@ -803,20 +810,54 @@ class JobRunner:
         pend.sort(key=lambda j: j["created_at"])  # FIFO (ISO timestamps sort chronologically)
         return pend[0]["id"]
 
+    def _warm_evict_reason_locked(self) -> str | None:
+        """Why the resident warm worker should be evicted NOW (None = keep it). Must hold `_lock`.
+        'free' — release the GPU regardless (no project / shutdown / disk hard-stop). 'drained' — its
+        sweep has no more queued cells (finished, or a group-change took the queue elsewhere). 'grace'
+        — a pause outlasted WARM_IDLE_GRACE_S. A pause WITH queued same-group cells still inside the
+        window returns None, so the model stays resident and a quick resume skips the reload."""
+        if self._warm_proc is None:
+            return None
+        if self._ws is None or self._shutting_down or self._disk_blocked():
+            return "free"
+        if self._warm_group is None or self._next_same_group_queued_locked(self._warm_group) is None:
+            return "drained"
+        if (self._paused and self._warm_idle_since is not None
+                and time.time() - self._warm_idle_since > WARM_IDLE_GRACE_S):
+            return "grace"
+        return None
+
     def _run_loop(self) -> None:
         while True:
-            # Idle-evict (M2.7): when there's nothing runnable right now, release the warm worker
-            # so it never holds VRAM while paused/idle — the next same-group job re-spawns it.
+            # Idle-evict (M2.7): release the resident warm worker when there's nothing for it to do.
+            # HARD reasons (no project / shutdown / disk hard-stop / its sweep drained) free VRAM
+            # immediately. A PAUSE with the sweep's cells still queued, though, keeps the worker warm
+            # for WARM_IDLE_GRACE_S — so a quick pause→inspect→resume skips the model reload + ref
+            # re-encode — then evicts if the pause drags on. (`group drained` covers a finished sweep
+            # AND a group-change, both of which want the GPU back now.)
             if self._warm_proc is not None:
                 with self._lock:
-                    idle = (self._ws is None or self._paused or self._shutting_down
-                            or self._disk_blocked() or self._next_queued_id_locked() is None)
-                if idle:
+                    reason = self._warm_evict_reason_locked()
+                    if reason is None:
+                        # keep the worker: start the grace clock if we're paused mid-sweep, else
+                        # (actively working / dispatching) reset it.
+                        self._warm_idle_since = (self._warm_idle_since or time.time()) \
+                            if self._paused else None
+                if reason is not None:
+                    self._warm_idle_since = None
                     self._evict_warm()
             with self._cv:
                 while (self._ws is None or self._paused or self._shutting_down
                        or self._disk_blocked() or self._next_queued_id_locked() is None):
-                    self._cv.wait()
+                    # While holding a warm worker across a pause, wake periodically so the grace-evict
+                    # above can fire; otherwise block until a submit/unpause notifies.
+                    self._cv.wait(_WARM_HOLD_POLL_S if self._warm_proc is not None
+                                  and not self._shutting_down else None)
+                    if self._warm_proc is not None and not self._shutting_down:
+                        break   # re-evaluate the grace-evict at the top of the loop
+                if self._ws is None or self._paused or self._shutting_down \
+                        or self._disk_blocked() or self._next_queued_id_locked() is None:
+                    continue    # woke only to re-check the warm grace — nothing to dispatch yet
                 job_id = self._next_queued_id_locked()
                 job = self.jobs[job_id]
                 if job_id in self._canceled:

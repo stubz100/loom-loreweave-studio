@@ -1092,6 +1092,36 @@ worker + adapter + the Stage-B dispatch:
 individual img2img tiles that **persist across a pause**, model loaded once. **Next:** 2b (post-passes
 on warm cells → drop the cold-batch fallback), then 2c (multi/Cast individual jobs).
 
+### Phase 2a follow-ups (2026-06-27, user on-rig) — klein offload + keep-warm-across-pause
+
+Two issues from the user's sd35 + flux2-klein on-rig run (sd35 ✓; klein showed the dev symptom):
+
+- **klein warm cells slowed each image** (2nd > 1st) — the **same per-cell HMM thrash** dev had.
+  Phase 1's "klein fits resident, stays resident" was **wrong**: klein-4b (~8 GB flow) + Qwen3 TE
+  (~8 GB) = 16 GB with **no room for the latents**, so keeping both resident thrashes ROCm HMM and
+  worsens per cell (the single-run klein path forces `--cpu-offload` for exactly this reason). Fix:
+  **every** flux2 model offloads in warm mode — `_ServeGenerator.cpu_offload = bool(job.get(
+  "cpu_offload", True))` (was dev-only). Flow loads on GPU **once** (resident for the group), the TE
+  is shuttled GPU↔CPU per cell; nothing is migrated per cell. Synced to both run_pipeline.py copies.
+
+- **"serialize the up-front encoding so a pause doesn't redo it?"** — the honest answer: the warm
+  worker doesn't pre-encode all jobs up front (that's the Phase 3 encode-ahead buffer); what it does
+  ONCE is **load the model** (the real cost — and it can't be usefully serialized: it's weights→VRAM,
+  and the weights are already the HF cache) + encode the hero ref (cheap, seconds). The reload was
+  happening because the idle-evict freed the worker **on pause**. Better fix than serializing the
+  cheap part: **keep the worker warm across a brief pause.** `_run_loop` now evicts only for HARD
+  reasons (no project / shutdown / disk hard-stop / sweep drained or group-changed); a pause WITH
+  queued same-group cells keeps the model resident for `WARM_IDLE_GRACE_S` (default **180 s**,
+  `LOOM_WARM_IDLE_GRACE_S`) — a quick pause→inspect→resume reuses the loaded model (no reload, no ref
+  re-encode), and a longer pause still frees the GPU. Decision factored into
+  `_warm_evict_reason_locked` ('free' / 'drained' / 'grace' / None) + unit-tested
+  (`test_warm_kept_across_a_brief_pause_then_evicted_after_grace`). 341 backend green.
+
+⚠ Owed on-rig: confirm klein warm cells now hold steady (flat per-cell), and that a brief pause→resume
+skips the reload. The dev **encode-ahead buffer** (pre-encode all prompts + persist them, killing the
+per-cell TE shuttle and surviving a full eviction) remains the Phase 3 option if the per-cell shuttle
+proves to matter.
+
 ---
 
 ## P2-era fixes (non-milestone)

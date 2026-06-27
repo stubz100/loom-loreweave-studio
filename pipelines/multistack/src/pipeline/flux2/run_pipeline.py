@@ -494,13 +494,15 @@ class _ServeGenerator:
 
         model_name = job.get("model_name", "flux.2-klein-4b")
         torch_device = torch.device(self.device)
-        # dev's 34 GB fp8 transformer can't co-reside with the Mistral TE *at load* on 16 GB, so
-        # load the flow model on CPU (TE on GPU), encode the refs, then free the TE and move the flow
-        # model onto the GPU ONCE — resident for the whole group, like the cold batch path (~87 s/cell
-        # while ROCm HMM pages it during denoise). The TE is shuttled GPU<->CPU per cell for the cheap
-        # text encode; the flow model is NEVER migrated per cell (that 34 GB round-trip thrashed HMM
-        # and made each cell progressively slower than the last). Klein fits resident, stays resident.
-        self.cpu_offload = bool(job.get("cpu_offload")) or (model_name == stage1_load_models.QUANTIZED_DEV_MODEL)
+        # NO flux2 model fits the flow model + its text encoder resident together on 16 GB: dev is a
+        # 34 GB fp8 transformer; even klein-4b (~8 GB flow + ~8 GB Qwen3 TE) leaves no room for the
+        # latents, so keeping both resident thrashes ROCm HMM and gets WORSE each cell (the single-run
+        # path forces --cpu-offload for the same reason). So EVERY flux2 model offloads: load the flow
+        # model on CPU (TE on GPU), encode the refs, free the TE, then move the flow model onto the GPU
+        # ONCE — resident for the whole group (HMM pages it during denoise). The TE is shuttled
+        # GPU<->CPU per cell for the cheap text encode; the flow model is NEVER migrated per cell (that
+        # round-trip thrashed HMM and made each cell progressively slower than the last).
+        self.cpu_offload = bool(job.get("cpu_offload", True))
         s1 = stage1_load_models.run(
             model_name=model_name, device=self.device, cpu_offload=self.cpu_offload,
             fp8_matmul=job.get("fp8_matmul", "auto"),

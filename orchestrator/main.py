@@ -1690,7 +1690,29 @@ def create_app() -> FastAPI:
         # inpaint-method cells repaint the background (white bg mask) around the held
         # subject — identity-safe, restores the §7.1 background-diversity axis.
         job_ids: list[str] = []
-        for gmode, gcells, gstrength in groups:
+        if is_flux2:
+            # M2.7: flux2 Expansion → N INDIVIDUAL cell-jobs (each a persistent tile that survives
+            # pause/resume), serviced by ONE warm worker so the model loads once for the sweep. The
+            # `warm_group` is the load-bound params + hero, so the whole sweep (and a later sweep
+            # with the same model/hero/size) shares the resident model. Each cell rides the hero as
+            # its in-context reference (§11). ⚠ Phase 1: post-passes (identity/clean/polish) are NOT
+            # chained onto warm cells yet (per-cell chaining = Phase 2); raw ref cells stream in.
+            wg = "|".join(["flux2", str(model_name), f"{eff_width}x{eff_height}", str(hero_path),
+                           f"turbo={bool(extra.get('turbo'))}", f"te={extra.get('text_encoder')}",
+                           f"mm={extra.get('fp8_matmul')}"])
+            for i, c in enumerate(cells):
+                cparams = {"prompt": c["prompt"], "seed": c["seed"], "ref_images": [str(hero_path)],
+                           "width": eff_width, "height": eff_height,
+                           "meta": {"coverage_cell": c["coverage_cell"], "method": "ref"}, **extra}
+                if model_name:
+                    cparams["model_name"] = model_name
+                job_ids.append(RUNNER.submit(
+                    pipeline="flux2", mode="ref", params=cparams,
+                    batch_id=batch_id, index=i, batch_size=len(cells),
+                    requester_id=vid, profile_version_id=vid, stage="B",
+                    coverage_cell=c["coverage_cell"], warm_group=wg))
+        else:
+          for gmode, gcells, gstrength in groups:
             # Provenance method = the ACTUAL realization. flux2 realizes every cell via `ref`
             # (review 2026-06-13: the recipe's preferred c["method"] would mislabel flux2 refs
             # as img2img/inpaint, and P2 is metadata-driven). zimage/sd35 keep the recipe method

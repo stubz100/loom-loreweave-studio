@@ -294,6 +294,12 @@ class JobRunner:
         self._procs: dict[str, subprocess.Popen] = {}
         self._cancel_jobs: dict[str, int] = {}   # job_id -> per-job kill Job Object handle (win32)
         self._canceled: set[str] = set()
+        # M2.7 warm-worker: ONE resident `--serve` process reused across same-`warm_group`
+        # cell-jobs so the model loads once for a whole sweep. Touched only by the worker thread
+        # (spawn/feed/evict); cancel kills it via `_procs[running_cell_id]` like any worker.
+        self._warm_proc: subprocess.Popen | None = None
+        self._warm_group: str | None = None
+        self._warm_pipeline: str | None = None
         self._paused = False
         # Why the queue is paused — "resume" (resume-paused load, R88) | "user" (explicit
         # /queue/pause) | None. Surfaced via state()/queue.json so the UI can say WHY
@@ -495,7 +501,10 @@ class JobRunner:
         LOG.info("graceful shutdown — re-queue in-flight + clean stop")
         with self._lock:
             self._shutting_down = True
-            for proc in list(self._procs.values()):
+            procs = list(self._procs.values())
+            if self._warm_proc is not None and self._warm_proc not in procs:
+                procs.append(self._warm_proc)   # M2.7: also stop an idle resident warm worker
+            for proc in procs:
                 if proc.poll() is None:
                     try:
                         proc.terminate()
@@ -539,7 +548,7 @@ class JobRunner:
                coverage_cell: dict | None = None,
                post_passes: list | None = None,
                chained_from: str | None = None, pass_name: str | None = None,
-               resumable: bool = False) -> str:
+               resumable: bool = False, warm_group: str | None = None) -> str:
         job_id = new_id("job", 8)
         with self._cv:
             self.jobs[job_id] = {
@@ -557,6 +566,7 @@ class JobRunner:
                 "pass": pass_name,                          # "clean" | "polish" | None
                 "vram_estimate_gb": VRAM_ESTIMATES.get(pipeline, DEFAULT_VRAM_GB),
                 "resumable": bool(resumable),      # P2 trainer jobs checkpoint/resume (R159)
+                "warm_group": warm_group,          # M2.7: same-group cell-jobs share one warm worker
                 "retry_count": 0,
                 "status": "queued",
                 "progress": 0.0,
@@ -795,6 +805,14 @@ class JobRunner:
 
     def _run_loop(self) -> None:
         while True:
+            # Idle-evict (M2.7): when there's nothing runnable right now, release the warm worker
+            # so it never holds VRAM while paused/idle — the next same-group job re-spawns it.
+            if self._warm_proc is not None:
+                with self._lock:
+                    idle = (self._ws is None or self._paused or self._shutting_down
+                            or self._disk_blocked() or self._next_queued_id_locked() is None)
+                if idle:
+                    self._evict_warm()
             with self._cv:
                 while (self._ws is None or self._paused or self._shutting_down
                        or self._disk_blocked() or self._next_queued_id_locked() is None):
@@ -811,10 +829,14 @@ class JobRunner:
                 job["started_at"] = _now()
                 job["progress"] = 0.0
                 pipeline, mode, params = job["pipeline"], job["mode"], dict(job["params"])
+                warm_group = job.get("warm_group")
                 self._persist_locked()
             LOG.info("running %s (%s/%s)", job_id, pipeline, mode)
             try:
-                self._execute(job_id, pipeline, mode, params)
+                if warm_group and hasattr(ADAPTERS.get(pipeline), "serve_argv"):
+                    self._execute_warm(job_id, pipeline, mode, params, warm_group)
+                else:
+                    self._execute(job_id, pipeline, mode, params)
             except Exception as e:  # never let the worker die
                 with self._lock:
                     j = self.jobs.get(job_id)
@@ -824,6 +846,181 @@ class JobRunner:
                         j["result"] = {"ok": False, "returncode": -1, "outputs": [],
                                        "error": f"runner error: {e}", "stderr_tail": str(e)}
                         self._persist_locked()
+
+    # --- warm-worker dispatch (M2.7) — a persistent --serve process reused across a sweep -----
+    def _next_same_group_queued_locked(self, group: str) -> str | None:
+        for j in self.jobs.values():
+            if (j["status"] == "queued" and j.get("warm_group") == group
+                    and j["id"] not in self._canceled):
+                return j["id"]
+        return None
+
+    def _evict_warm(self) -> None:
+        """Tear down the resident warm worker (close stdin → it frees VRAM + exits). Worker-thread
+        only. Best-effort kill if it doesn't exit promptly."""
+        proc, self._warm_proc, self._warm_group, self._warm_pipeline = self._warm_proc, None, None, None
+        if proc is None:
+            return
+        try:
+            if proc.stdin and not proc.stdin.closed:
+                proc.stdin.write(json.dumps({"cmd": "shutdown"}) + "\n")
+                proc.stdin.flush()
+                proc.stdin.close()
+        except (OSError, ValueError):
+            pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self._kill_tree(proc)
+        LOG.info("warm worker evicted")
+
+    def _spawn_warm(self, pipeline: str, group: str) -> None:
+        adapter = ADAPTERS[pipeline]
+        script = adapter.resolve_script(CONFIG.pipeline_roots)
+        if script is None:
+            raise RuntimeError(f"{pipeline} worker not found in any pipeline root")
+        argv = adapter.serve_argv(CONFIG.venv_python, script, "cuda", str(self._ws.out_dir))
+        env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+        proc = subprocess.Popen(
+            argv, cwd=str(script.parents[2]), env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, encoding="utf-8", errors="replace",
+        )
+        _assign_to_kill_job(proc)   # die with the orchestrator — never orphan the GPU
+        self._warm_proc, self._warm_group, self._warm_pipeline = proc, group, pipeline
+        LOG.info("warm worker spawned (%s, group=%s)", pipeline, str(group)[:24])
+
+    def _execute_warm(self, job_id: str, pipeline: str, mode: str, params: dict, group: str) -> None:
+        """Run ONE cell-job on the resident warm worker (spawning/swapping it as needed), then
+        evict when its sweep has no more queued cells. The cold `_execute` is untouched."""
+        ws = self._ws
+        if ws is None:
+            raise RuntimeError("no project workspace bound")
+        if self._warm_proc is not None and self._warm_group != group:
+            self._evict_warm()           # a different sweep → swap the resident model
+        if self._warm_proc is None:
+            self._spawn_warm(pipeline, group)
+        t0 = time.time()
+        out_dir = ws.out_dir / job_id    # per-cell dir — /outputs + lineage key on it like any job
+        out_dir.mkdir(parents=True, exist_ok=True)
+        result = self._feed_warm(job_id, mode, params, out_dir)
+        self._record_warm(job_id, result, t0, ws.out_dir.resolve())
+        with self._lock:                 # free VRAM once the sweep is drained
+            more = self._next_same_group_queued_locked(group)
+        if more is None:
+            self._evict_warm()
+
+    def _feed_warm(self, job_id: str, mode: str, params: dict, out_dir: Path) -> dict:
+        adapter = ADAPTERS[self._warm_pipeline]
+        prefix = getattr(adapter, "SERVE_RESULT_PREFIX", "[serve-result] ")
+        proc = self._warm_proc
+        spec = {"job_id": job_id, "mode": mode, "output_dir": str(out_dir), **params}
+        with self._lock:
+            self._procs[job_id] = proc   # cancel kills the warm proc (current cell) via _procs
+        try:
+            proc.stdin.write(json.dumps(spec) + "\n")
+            proc.stdin.flush()
+        except (OSError, ValueError) as e:
+            with self._lock:
+                self._procs.pop(job_id, None)
+            self._warm_proc = self._warm_group = self._warm_pipeline = None
+            return {"job_id": job_id, "status": "failed", "error": f"warm worker stdin: {e}"}
+        tail: deque[str] = deque(maxlen=60)
+        progress_fn = getattr(adapter, "progress", lambda _l: None)
+        result: dict | None = None
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                tail.append(line)
+                if line.startswith(prefix):
+                    try:
+                        r = json.loads(line[len(prefix):])
+                    except json.JSONDecodeError:
+                        continue
+                    if r.get("job_id") == job_id:
+                        result = r
+                        break
+                else:
+                    pr = progress_fn(line)
+                    with self._lock:
+                        j = self.jobs.get(job_id)
+                        if j:
+                            if pr is not None:
+                                j["progress"] = pr
+                            j["log_tail"] = "\n".join(tail)
+        except (OSError, ValueError):
+            pass
+        with self._lock:
+            self._procs.pop(job_id, None)
+        if result is None:               # worker died (EOF/kill) before a result → drop it, fail cell
+            self._warm_proc = self._warm_group = self._warm_pipeline = None
+            result = {"job_id": job_id, "status": "failed",
+                      "error": "warm worker ended without a result", "log": "\n".join(tail)}
+        return result
+
+    def _record_warm(self, job_id: str, result: dict, t0: float, out_root: Path) -> None:
+        """Mark the cell-job done/failed/canceled from its serve-result + write a lineage edge.
+        (No OOM-retry / post-pass chaining in Phase 1 — a failed cell just fails; re-run it.)"""
+        ok = result.get("status") == "ok"
+        out_path = result.get("output_path") or ""
+        name = None
+        if ok and out_path and Path(out_path).is_file():
+            try:
+                name = Path(out_path).resolve().relative_to(out_root).as_posix()
+            except ValueError:
+                name = f"{job_id}/{os.path.basename(out_path)}"
+        with self._lock:
+            canceled = job_id in self._canceled
+            shutting = self._shutting_down
+        if shutting:                     # re-queue the in-flight cell (cold-path parity)
+            with self._cv:
+                j = self.jobs[job_id]
+                j["status"] = "queued"; j["progress"] = 0.0; j["partial_outputs"] = []
+                j["note"] = "re-queued at shutdown"
+                self._persist_locked(clean_shutdown=True)
+            return
+        if canceled and not ok:
+            with self._lock:
+                j = self.jobs[job_id]
+                j["status"] = "canceled"; j["finished_at"] = _now()
+                j["wall_s"] = round(time.time() - t0, 2)
+                self._canceled.discard(job_id)
+                self._persist_locked()
+            return
+        jr = {"ok": ok, "returncode": 0 if ok else 1,
+              "outputs": [out_path] if (ok and name) else [],
+              "error": result.get("error"), "manifest_status": "completed" if ok else "failed",
+              "stderr_tail": (result.get("log") or "")[-1500:], "duration_s": result.get("duration_s")}
+        if name:
+            meta = dict(result.get("meta") or {})
+            meta.setdefault("seed", result.get("seed"))
+            meta.setdefault("duration_s", result.get("duration_s"))
+            jr.update(output_name=name, output_names=[name], output_meta={name: meta},
+                      seed=result.get("seed"))
+        with self._lock:
+            j = self.jobs[job_id]
+            j["status"] = "done" if ok else "failed"
+            j["result"] = jr
+            j["finished_at"] = _now()
+            j["wall_s"] = round(time.time() - t0, 2)
+            j["progress"] = 1.0 if ok else j.get("progress", 0.0)
+            if name:
+                j["partial_outputs"] = [name]
+            self._canceled.discard(job_id)
+            self._persist_locked()
+            snap = dict(j) if ok else None
+        LOG.info("done %s (warm) -> %s", job_id, name) if ok else \
+            LOG.warning("failed %s (warm): %s", job_id, (result.get("error") or "")[:160])
+        if snap is not None:
+            try:
+                lineage.record_output(self._ws, snap)
+            except Exception as e:  # noqa: BLE001 — lineage is non-critical
+                _warn(f"lineage write failed for {job_id}: {e}")
+            if self._observer is not None:
+                try:
+                    self._observer(snap)
+                except Exception as e:  # noqa: BLE001
+                    _warn(f"completion observer failed for {job_id}: {e}")
 
     def _execute(self, job_id: str, pipeline: str, mode: str, params: dict) -> None:
         adapter = ADAPTERS[pipeline]

@@ -95,3 +95,133 @@ def test_serve_bad_json_and_per_job_failure_are_isolated():
 def test_serve_blank_lines_ignored():
     rc, fake, results = _run(["", "   ", json.dumps({"job_id": "j1", "prompt": "a"}), ""])
     assert [r["job_id"] for r in results] == ["j1"]
+
+
+# --- Phase 1c: runner warm-worker dispatch (fake serve proc — no real subprocess / GPU) -----
+
+import pytest  # noqa: E402
+from pathlib import Path as _P  # noqa: E402
+
+
+class _FakeStdin:
+    def __init__(self, proc): self.proc = proc; self.closed = False; self.writes = []
+    def write(self, s): self.writes.append(s); self.proc._on_stdin(s)
+    def flush(self): pass
+    def close(self): self.closed = True
+
+
+class _FakeStdout:
+    def __init__(self, proc): self.proc = proc
+    def __iter__(self): return self
+    def __next__(self):
+        if self.proc._out:
+            return self.proc._out.pop(0)
+        raise StopIteration
+
+
+class _FakeServeProc:
+    """A fake `--serve` worker: each fed job writes a PNG into its `output_dir` and queues a
+    `[serve-result]` line. ONE instance == one model load (the runner reuses it across a group)."""
+    def __init__(self, die_without_result=False):
+        self._out: list[str] = []
+        self.stdin = _FakeStdin(self)
+        self.stdout = _FakeStdout(self)
+        self.jobs: list[dict] = []
+        self.terminated = False
+        self._die = die_without_result
+
+    def _on_stdin(self, line):
+        line = line.strip()
+        if not line:
+            return
+        job = json.loads(line)
+        if job.get("cmd") == "shutdown":
+            return
+        self.jobs.append(job)
+        if self._die:
+            return  # emit nothing → the runner sees EOF and fails the cell
+        out_dir = _P(job["output_dir"]); out_dir.mkdir(parents=True, exist_ok=True)
+        png = out_dir / "flux2_fake.png"; png.write_bytes(b"PNG")
+        self._out.append("[serve-result] " + json.dumps({
+            "job_id": job["job_id"], "status": "ok", "output_path": str(png),
+            "seed": job.get("seed"), "duration_s": 1.0, "meta": job.get("meta"), "error": None}))
+
+    def poll(self): return None
+    def terminate(self): self.terminated = True
+    def kill(self): self.terminated = True
+    def wait(self, timeout=None): return 0
+
+
+@pytest.fixture()
+def bound_runner(monkeypatch, tmp_path):
+    """A RUNNER bound to a fresh project + PAUSED so the worker thread never dispatches — the
+    tests drive `_execute_warm` directly."""
+    monkeypatch.setenv("LOOM_PROJECT_DIR", str(tmp_path / "proj"))
+    monkeypatch.setenv("LOOM_ACTIVE_PHASES", "P0,P1")
+    from fastapi.testclient import TestClient
+    from orchestrator.main import app
+    from orchestrator.runner import RUNNER
+    with TestClient(app):
+        RUNNER.pause()
+        yield RUNNER
+        if RUNNER._warm_proc is not None:
+            RUNNER._warm_proc = RUNNER._warm_group = RUNNER._warm_pipeline = None
+        RUNNER.unpause()
+
+
+def _patch_spawn(monkeypatch, RUNNER, fakes, *, die=False):
+    def fake_spawn(pipeline, group):
+        p = _FakeServeProc(die_without_result=die)
+        fakes.append(p)
+        RUNNER._warm_proc, RUNNER._warm_group, RUNNER._warm_pipeline = p, group, pipeline
+    monkeypatch.setattr(RUNNER, "_spawn_warm", fake_spawn)
+
+
+def _submit_cell(RUNNER, group, i):
+    return RUNNER.submit(
+        pipeline="flux2", mode="ref", batch_id="bat_w", index=i, batch_size=99, warm_group=group,
+        params={"prompt": f"cell{i}", "seed": i, "model_name": "flux.2-klein-4b",
+                "meta": {"coverage_cell": {"angle": "front", "shot_size": "portrait"}}})
+
+
+def test_warm_reuses_one_worker_and_records_each_cell(bound_runner, monkeypatch):
+    R = bound_runner
+    fakes: list = []
+    _patch_spawn(monkeypatch, R, fakes)
+    ids = [_submit_cell(R, "grp-A", i) for i in range(3)]
+    for jid in ids:
+        R._execute_warm(jid, "flux2", "ref", R.get(jid)["params"], "grp-A")
+    for jid in ids:
+        j = R.get(jid)
+        assert j["status"] == "done"
+        name = j["result"]["output_name"]
+        assert name.endswith("flux2_fake.png")
+        assert j["result"]["output_meta"][name]["coverage_cell"]["angle"] == "front"
+        assert j["result"]["output_meta"][name]["seed"] == j["params"]["seed"]
+    assert len(fakes) == 1                 # ONE worker serviced all 3 (model loaded once)
+    assert len(fakes[0].jobs) == 3
+    assert R._warm_proc is None            # evicted once the group drained
+
+
+def test_warm_evicts_resident_worker_on_group_change(bound_runner, monkeypatch):
+    R = bound_runner
+    fakes: list = []
+    _patch_spawn(monkeypatch, R, fakes)
+    a1 = _submit_cell(R, "g1", 0); _a2 = _submit_cell(R, "g1", 1)   # a2 keeps g1 alive (no end-evict)
+    b1 = _submit_cell(R, "g2", 0)
+    R._execute_warm(a1, "flux2", "ref", R.get(a1)["params"], "g1")
+    assert R._warm_group == "g1" and len(fakes) == 1               # still resident (g1 has a2 queued)
+    R._execute_warm(b1, "flux2", "ref", R.get(b1)["params"], "g2")
+    assert fakes[0].stdin.closed is True                           # g1 worker evicted on group change
+    assert len(fakes) == 2 and fakes[1].jobs[0]["job_id"] == b1     # a fresh worker for g2
+
+
+def test_warm_cell_fails_when_worker_dies_without_result(bound_runner, monkeypatch):
+    R = bound_runner
+    fakes: list = []
+    _patch_spawn(monkeypatch, R, fakes, die=True)
+    jid = _submit_cell(R, "grp-X", 0)
+    R._execute_warm(jid, "flux2", "ref", R.get(jid)["params"], "grp-X")
+    j = R.get(jid)
+    assert j["status"] == "failed"
+    assert R._warm_proc is None            # the dead worker was dropped

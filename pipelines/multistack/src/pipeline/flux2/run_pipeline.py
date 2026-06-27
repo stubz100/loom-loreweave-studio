@@ -502,16 +502,20 @@ class _ServeGenerator:
                 ref_tokens, ref_ids = encode_image_refs(s1["ae"], refs)
                 if ref_tokens is not None:
                     ref_tokens, ref_ids = ref_tokens.to(torch_device), ref_ids.to(torch_device)
-        out_dir = Path(self.output_dir)
-        if not out_dir.is_absolute():
-            out_dir = Path(__file__).resolve().parents[3] / out_dir
-        out_dir.mkdir(parents=True, exist_ok=True)
         self.state = {
             "model": s1["model"], "ae": s1["ae"], "enc": s1["text_encoder"],
             "distilled": info.get("guidance_distilled", True), "defaults": info.get("defaults", {}),
-            "ref_tokens": ref_tokens, "ref_ids": ref_ids, "out_dir": out_dir,
-            "model_name": model_name,
+            "ref_tokens": ref_tokens, "ref_ids": ref_ids, "model_name": model_name,
         }
+
+    def _resolve_out_dir(self, job: dict) -> Path:
+        # each cell-job writes into its OWN dir (the runner passes `output_dir = <proj>/out/<job_id>`)
+        # so /outputs serves it + lineage keys on it, exactly like a normal single job.
+        out_dir = Path(job.get("output_dir") or self.output_dir)
+        if not out_dir.is_absolute():
+            out_dir = Path(__file__).resolve().parents[3] / out_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
 
     def generate(self, job: dict) -> dict:
         from flux2.sampling import batched_prc_img, batched_prc_txt, denoise, denoise_cfg, get_schedule
@@ -528,7 +532,7 @@ class _ServeGenerator:
         if guidance is None:
             guidance = s["defaults"].get("guidance", 1.0)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        out_path = s["out_dir"] / f"flux2_{ts}_s{seed}.png"
+        out_path = self._resolve_out_dir(job) / f"flux2_{ts}_s{seed}.png"
         t0 = time.time()
         with torch.no_grad():
             c = s["enc"]([job["prompt"]]).to(torch.bfloat16)

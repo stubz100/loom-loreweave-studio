@@ -40,6 +40,15 @@ PIPELINE = "flux2"
 # Module-invoked (package-relative imports), like `multi` — NOT run by bare path.
 MODULE = "pipeline.flux2.run_pipeline"
 SUPPORTED_MODES = ("t2i", "img2img", "ref")
+# M2.7 warm-worker: a persistent `--serve` process the runner feeds same-warm_group cell-jobs.
+# Its presence (hasattr serve_argv) is how the runner knows flux2 supports warm dispatch.
+SERVE_RESULT_PREFIX = "[serve-result] "
+
+
+def serve_argv(python: str, script: "Path", device: str, out_dir: str) -> list[str]:
+    """argv to spawn the persistent warm worker (one model load, N stdin jobs). The per-cell
+    output dir rides each fed job spec; `--output-dir` here is just the default fallback."""
+    return [python, "-m", MODULE, "--serve", "--device", str(device), "--output-dir", str(out_dir)]
 # loom wires `ref` (identity-preserving Stage-B expansion, §11/R147) + `t2i` (standalone
 # casting/sandbox — flux2 as a first-class generator, not only inside `multi`) + `img2img`
 # (M0d Part C — flux.2-dev structured-JSON i2i via the M0c postprocess step: edit/re-pose an

@@ -938,6 +938,49 @@ currently resolves it from cache, fails clearly if absent).
 
 ---
 
+## M2.7 — warm-worker batch queue (spec §12 "M2.7"; 2026-06-27)
+
+**Problem (user).** A batch (Cast/Expansion) is ONE queue job whose worker loops the cells; on pause
+the runner `_discard_partial`s it and re-queues from scratch — every finished image disappears, and a
+sweep is a single opaque queue entry. **Goal:** each image = an individual queue entry that persists
+the moment it's done, serviced by a persistent warm worker (model loads once). Built in phases
+(design: kb-loom-p2.md §12 "M2.7 solution design").
+
+**Phase 1 — flux2 Expansion (DONE no-GPU; on-rig owed).** Built from the safe end inward so the proven
+cold path is never touched (337 tests green throughout):
+
+- **1b — flux2 `--serve` worker** (`run_pipeline.run_serve` + `_ServeGenerator`, `--serve` CLI). Reads
+  one JSON job per stdin line, loads the model ONCE (`stage1.run`, flow+AE resident), writes one image
+  into the job's own `output_dir`, emits a `[serve-result] <json>` line. `{"cmd":"shutdown"}`/EOF
+  exits. **Purely additive** — the runner still dispatched normally, zero queue risk. (commit
+  `2c3802c`.) ⚙ The TE is (re)loaded per cell — the dev 17 GB / Klein Qwen3 TE can't co-reside with
+  the flow model on 16 GB; an encode-ahead buffer to recover that is a later phase.
+- **1c — runner warm dispatch.** A resident `--serve` process lives on `self._warm_proc`/`_warm_group`
+  across `_execute` calls. New `_execute_warm` (a SEPARATE path; cold `_execute` untouched): group
+  match → feed the resident worker via stdin + read its `[serve-result]`; else `_spawn_warm`
+  (evicting any other — one model on 16 GB). `_record_warm` marks the cell done/failed/canceled
+  from its serve-result (output_name + per-cell `output_meta` with coverage_cell/seed/duration +
+  lineage edge). Evict (`_evict_warm`: close stdin → frees VRAM) on **group change**, **end of group**
+  (no more queued same-group cells), **idle/pause** (in `_run_loop`), and **shutdown**. Cancel kills
+  the warm proc via `_procs[running_cell]`; a worker that EOFs without a result fails just that cell.
+  `submit()` gained `warm_group`; the FE/queue render each cell-job naturally.
+- **1d — Stage-B emits N cell-jobs.** The flux2 branch of `/assets/{id}/stage-b` now `submit()`s one
+  `ref`-mode job per coverage cell (carrying `coverage_cell` + a shared `warm_group` =
+  pipeline+model+size+hero+turbo/te/mm) instead of one `batch_items` job. zimage/sd35 stay on the
+  batch path (Phase 2). ⚠ **post-passes (identity/clean/polish) are NOT chained onto warm cells in
+  Phase 1** (per-cell chaining = Phase 2) — raw ref cells stream as individual persistent tiles.
+- **Tests** (`test_warm_worker.py`): the serve protocol (round-trip / shutdown / bad-json + per-job
+  failure isolation, via an injected fake generator) **and** the runner dispatch (reuse one worker
+  across a group, group-change eviction, worker-dies-without-result → cell fails, via a fake serve
+  proc — no GPU/subprocess). Stage-B test updated to assert N individual warm cell-jobs. Suite **337**.
+
+⚠ **Owed (on-rig — can't run the model from CI):** a real klein Expansion sweep streams individual
+tiles that **persist across a pause** and resume with the model loaded once. **Next:** Phase 2 (multi
+Cast + sd35/zimage `--serve`) and post-pass chaining on warm cells; Phase 3 cross-batch warmth + the
+dev encode-ahead buffer.
+
+---
+
 ## P2-era fixes (non-milestone)
 
 ### Krea2 Turbo vendored as a Loom T2I generator (2026-06-25, user-requested)

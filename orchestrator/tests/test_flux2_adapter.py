@@ -193,22 +193,30 @@ def test_stage_b_flux2_rejects_mixed(client):
     assert r.status_code == 422 and "reference-conditioned" in r.text
 
 
-def test_stage_b_flux2_items_record_ref_method(client, monkeypatch):
-    """Review 2026-06-13 Medium: a submitted flux2 cell's meta.method must be 'ref' (the actual
-    realization), not the recipe's preferred img2img/inpaint — P2 curation persists it into
-    ref_set.method and is metadata-driven."""
+def test_stage_b_flux2_cells_are_individual_warm_jobs(client, monkeypatch):
+    """M2.7: flux2 Expansion emits N INDIVIDUAL cell-jobs (not one batch), each a `ref`-mode warm
+    job — meta.method is 'ref' (the actual realization, persisted into ref_set.method), the hero
+    rides as the reference, and ALL cells share one `warm_group` so a single warm worker services
+    the whole sweep (the model loads once)."""
     from orchestrator import components
     from orchestrator.runner import RUNNER
     monkeypatch.setattr(components, "image_model_present", lambda repo_id: True)  # skip weight gate
-    RUNNER.pause()                                          # queue it; never dispatch to the GPU
+    RUNNER.pause()                                          # queue them; never dispatch to the GPU
     a = _asset_with_hero(client, RUNNER.workspace, name="RefMeta")
     r = client.post(f"/assets/{a['id']}/stage-b", json={"pipeline": "flux2", "preset": "npc_lite"})
     assert r.status_code == 200, r.text
-    jid = r.json()["job_ids"][0]
-    params = RUNNER.jobs[jid]["params"]
-    items = params["batch_items"]
-    assert items and all(it["meta"]["method"] == "ref" for it in items)
-    assert params["ref_images"] and "init_image" not in params   # hero rides as the reference
+    job_ids = r.json()["job_ids"]
+    assert len(job_ids) >= 2                                # one job PER cell, not a single batch
+    groups = set()
+    for jid in job_ids:
+        job = RUNNER.jobs[jid]
+        p = job["params"]
+        assert "batch_items" not in p                      # individual, not a batch
+        assert p["meta"]["method"] == "ref"
+        assert p["ref_images"] and "init_image" not in p   # hero rides as the reference
+        assert job["coverage_cell"] is not None            # cell metadata on the job (curation)
+        groups.add(job["warm_group"])
+    assert len(groups) == 1 and next(iter(groups))         # all cells share ONE warm worker
 
 
 def test_flux2_t2i_casting_dry_run(client):

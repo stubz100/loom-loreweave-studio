@@ -56,6 +56,45 @@ def test_vendored_workers_match_monorepo_source(rel, copies):
         assert got == want, f"{c} drifted from monorepo {rel} — re-vendor it"
 
 
+# --- completeness guard: every pipeline loom can run must be vendored in-repo ----------
+
+def test_every_adapter_resolves_without_the_monorepo_fallback():
+    """User concern (2026-06-28): *all* code that runs in loom must live under
+    `loom-loreweave-studio/`, not silently resolve to the parent monorepo `src/pipeline/`
+    dev fallback. Drop that fallback root and assert every adapter still finds its worker
+    inside the app repo — so adding a pipeline (or an adapter) without vendoring its worker
+    fails CI here instead of only working on a checkout that happens to sit beside the
+    monorepo. Direction-agnostic on purpose (R162 byte-match is a separate guard): a few
+    vendored files are intentionally ahead of the stale monorepo copy, which is fine — this
+    only asserts presence, never equality."""
+    from orchestrator.config import CONFIG
+    from orchestrator.adapters import (
+        birefnet, face_restore, flux2, frame_harvest, identity, krea2,
+        ltxv, multi, sd35, zimage, zimage_trainer,
+    )
+
+    monorepo_fallback = CONFIG.src_root / "pipeline"
+    vendored_roots = [r for r in CONFIG.pipeline_roots if r != monorepo_fallback]
+    assert vendored_roots, "no vendored pipeline roots registered"
+
+    app_root = str(CONFIG.app_repo_root)
+    adapters = {
+        "zimage": zimage, "krea2": krea2, "flux2": flux2, "sd35": sd35,
+        "multi": multi, "ltxv": ltxv, "birefnet": birefnet,
+        "face_restore": face_restore, "frame_harvest": frame_harvest,
+        "identity": identity, "zimage_trainer": zimage_trainer,
+    }
+    missing = []
+    for name, mod in adapters.items():
+        script = mod.resolve_script(vendored_roots)
+        if script is None or not str(script.resolve()).startswith(app_root):
+            missing.append(f"{name} -> {script}")
+    assert not missing, (
+        "these pipelines are NOT vendored under loom-loreweave-studio/ (they would only "
+        f"resolve via the monorepo `src/pipeline/` dev fallback): {missing}"
+    )
+
+
 # --- adapter: batch argv + jobs.json --------------------------------------------------
 
 def _items(n=3):

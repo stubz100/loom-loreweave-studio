@@ -1210,6 +1210,40 @@ OOMs we gate it back to offload.
 
 ## P2-era fixes (non-milestone)
 
+### Vendoring-completeness audit + guard (2026-06-28, user-asked)
+
+**User:** "I've checked the local pipeline code in `loom/loom-loreweave-studio/pipelines/` — there's
+only krea2, multistack and zimage. Are we not still running pipelines from code in `src/pipeline`?
+Make sure all code that runs in loom is copied in `loom/loom-loreweave-studio/`."
+
+**Finding — all present, nothing escapes to the monorepo.** The three top-level entries are the whole
+set: `krea2` + `zimage` are flat (file-path-invoked standalone), and **everything else is bundled
+inside `multistack/src/pipeline/`** — flux2, sd35, multi, ltxv, and all four postproc passes
+(birefnet, identity, face_restore, frame_harvest), plus the BFL flux2 lib at `multistack/flux2/src`.
+Simulated the real resolver (`config._resolve_pipeline_roots`) with the monorepo `src/pipeline/`
+**fallback removed**: all 10 inference adapters **and** the zimage trainer (`trainers/loom_zimage_lora.py`)
+still resolve in-repo. `multi` self-locates (`stage_runner` `REPO_ROOT`/`FLUX2_LIB_SRC`) entirely
+inside `multistack/`. The only monorepo references left in the orchestrator are **model weights**
+(`village_ai/models`, R160 — one shared ~330 GB set, intentionally never vendored). So `src/pipeline/`
+is a pure dev convenience that is **never reached at runtime** because every pipeline is vendored.
+
+**Side finding — 3 vendored files are intentionally *ahead* of the stale monorepo copy** (whole-tree
+md5 scan: 75 sync, 0 missing, **3 drift**), all loom-only features edited directly in the loom repo and
+never back-ported: `krea2/stage1_load_pipeline.py` (`40e5265` "Add Krea2 Turbo" — turbo-only @768²),
+`flux2/stage3_denoise.py` + `flux2/util.py` (`7579cbd` "Route flux2 dev through quantized Comfy
+backend" — non-finite-latent black-image guard + dev→8-step default). Direction is loom-newer, so
+nothing loom runs is stale; the monorepo R162 mirror is the stale side. **No code changed** — left for
+the author to decide (back-port to monorepo to restore the single-source invariant, or accept
+loom-authoritative). The recent warm-worker edits (flux2/sd35/zimage `run_pipeline.py`,
+`zimage/stage2_generate.py`, `stage1_load_pipeline.py`) are all **in sync**.
+
+**Guard added** (`test_batch_worker.py::test_every_adapter_resolves_without_the_monorepo_fallback`):
+drops the monorepo fallback root and asserts every adapter (+ trainer) still resolves a worker under
+the app repo — so a future pipeline/adapter added without vendoring its worker **fails CI** instead of
+only working on a checkout that happens to sit beside the monorepo. Presence-only by design (the R162
+byte-match guard is separate; the 3 loom-ahead files must not trip a completeness check). 27/27
+`test_batch_worker.py` green. **✅ PUSHED `bed7a4c`.**
+
 ### Krea2 Turbo vendored as a Loom T2I generator (2026-06-25, user-requested)
 
 Author direction: keep **Krea 2 Turbo** as the practical target after the local smoke produced a

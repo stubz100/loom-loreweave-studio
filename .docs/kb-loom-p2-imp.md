@@ -1226,7 +1226,7 @@ orchestrator change** (no vendored/drift-guarded worker touched → no monorepo 
 author's "loom is the only repo that matters"). +3 tests (single emits `--no-cpu-offload`; batch
 `shared.cpu_offload=False` with no explicit flag; explicit `False` still offloads). **348 orchestrator
 tests green.** ⚠ Still owed on-rig: confirm the resident decode drops `decode+post` from 894 s to
-seconds and doesn't OOM at 1024². **✅ PUSHED `<hash>`.**
+seconds and doesn't OOM at 1024². **✅ PUSHED `6e637fe`.**
 
 ---
 

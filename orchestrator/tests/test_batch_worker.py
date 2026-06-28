@@ -124,6 +124,46 @@ def test_zimage_batch_argv_writes_jobs_file(tmp_path):
     assert jobs["items"][1]["meta"]["coverage_cell"]["shot_size"] == "portrait"
 
 
+def test_zimage_single_argv_defaults_resident(tmp_path):
+    """Probe job_b4ae9136 showed the offloaded zimage-base VAE decode = 894s; loom now runs
+    zimage RESIDENT by default. A single t2i with no explicit offload flag must emit
+    `--no-cpu-offload` (worker `cpu_offload = not args.no_cpu_offload` → resident)."""
+    out = tmp_path / "out" / "job_s1"
+    out.mkdir(parents=True)
+    spec = JobSpec(pipeline="zimage", mode="t2i",
+                   params={"prompt": "a hero", "model_name": "zimage-base"},
+                   output_dir=out)
+    argv = zimage.build_argv(spec, "python", Path("x/zimage/run_pipeline.py"))
+    assert "--no-cpu-offload" in argv and "--jobs-file" not in argv
+
+
+def test_zimage_batch_defaults_resident_without_explicit_flag(tmp_path):
+    """The Stage-B/cast batch path must also default resident — a jobs file with no explicit
+    `no_cpu_offload` still resolves to `shared.cpu_offload = False` (run_jobs reads it)."""
+    out = tmp_path / "out" / "job_s2"
+    out.mkdir(parents=True)
+    spec = JobSpec(pipeline="zimage", mode="img2img",
+                   params={"prompt": "[dataset]", "batch_items": _items(2),
+                           "init_image": "F:/hero.png"},
+                   output_dir=out)
+    zimage.build_argv(spec, "python", Path("x/zimage/run_pipeline.py"))
+    jobs = json.loads((out / "jobs.json").read_text(encoding="utf-8"))
+    assert jobs["shared"]["cpu_offload"] is False
+    assert "no_cpu_offload" not in jobs["shared"]
+
+
+def test_zimage_explicit_offload_still_honored(tmp_path):
+    """The resident default is overridable: an explicit `no_cpu_offload=False` keeps offload
+    (single path emits no `--no-cpu-offload`), so a future OOM escape hatch still works."""
+    out = tmp_path / "out" / "job_s3"
+    out.mkdir(parents=True)
+    spec = JobSpec(pipeline="zimage", mode="t2i",
+                   params={"prompt": "a hero", "no_cpu_offload": False},
+                   output_dir=out)
+    argv = zimage.build_argv(spec, "python", Path("x/zimage/run_pipeline.py"))
+    assert "--no-cpu-offload" not in argv
+
+
 def test_sd35_batch_argv_translates_slg_flag(tmp_path):
     out = tmp_path / "out" / "job_b2"
     out.mkdir(parents=True)

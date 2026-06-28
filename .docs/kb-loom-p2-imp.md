@@ -1206,6 +1206,28 @@ asks. Synced to all 3 zimage copies; warm/batch tests green (the offload default
 unit-tested). ⚠ On-rig: confirm zimage-base resident is fast (≈30 s) and doesn't OOM at 1024²; if it
 OOMs we gate it back to offload.
 
+**Probe + root cause + the missing single/batch fix (2026-06-28, user on-rig).** The warm fix above
+only covered the `--serve` path. The user then ran a **single** `zimage-base` t2i (`job_b4ae9136`,
+non-warm) that was *still* ~15 min, so I added a `[zimage-probe]` (`callback_on_step_end` splitting the
+diffusers call into encode+setup / denoise / decode+post; commit `4bbb968`). It printed the smoking
+gun: **`encode+setup=11.5s denoise=1.0s decode+post=894.1s total=906.7s`** at 1024²/50 steps, with
+`[stage1] Pipeline loaded … (cpu_offload)`. So the cost is **entirely the VAE decode under
+`enable_model_cpu_offload`** — the transformer denoises fast on-GPU during offload (the hook keeps it
+resident for the loop), so *only the final VAE decode* pays the offload tax and lands on a ~15-min
+path; resident keeps the VAE on the GPU where decode is seconds. The single + batch paths were never
+told to go resident: `emit_argv` and `_batch.build_batch_shared` only act on params **present** in the
+request, and the catalog `no_cpu_offload` **default is never injected** (`emit_argv` skips absent
+params; `build_batch_shared` only inverts if the flag is truthy) — so single ran `cpu_offload = not
+args.no_cpu_offload = True` and batch ran `shared.get("cpu_offload", True)`. **Fix:** the **zimage
+adapter** `build_argv` now `p.setdefault("no_cpu_offload", True)` — the single seam both single + batch
+flow through — so all three dispatch routes (warm/serve, single, batch) default resident and agree. A
+request may still force offload with an explicit `no_cpu_offload=False` (OOM escape hatch). **Loom-only
+orchestrator change** (no vendored/drift-guarded worker touched → no monorepo sync needed, per the
+author's "loom is the only repo that matters"). +3 tests (single emits `--no-cpu-offload`; batch
+`shared.cpu_offload=False` with no explicit flag; explicit `False` still offloads). **348 orchestrator
+tests green.** ⚠ Still owed on-rig: confirm the resident decode drops `decode+post` from 894 s to
+seconds and doesn't OOM at 1024². **✅ PUSHED `<hash>`.**
+
 ---
 
 ## P2-era fixes (non-milestone)

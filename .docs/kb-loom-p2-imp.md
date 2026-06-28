@@ -1245,7 +1245,7 @@ confirmed):** `MIOPEN_FIND_MODE=2` (FAST) → VAE-only probe decode **888 s → 
 real env wins; MIOpen-only var = harmless no-op off ROCm). **Fixes every conv worker** (sd35/zimage
 VAE + postproc), not just zimage. 348 orchestrator tests green. The earlier resident default
 (`6e637fe`) stays — it's still correct (avoids the offloaded-VAE path + thrash) and now the decode is
-fast on top of it. **✅ PUSHED `<hash>`.**
+fast on top of it. **✅ PUSHED `7bb4961`.**
 
 ---
 

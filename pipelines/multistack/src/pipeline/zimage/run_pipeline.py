@@ -502,6 +502,8 @@ class _ServeGenerator:
         # denoised fast). Offload is still honored if a job explicitly sets cpu_offload=True; the
         # catalog's no_cpu_offload flag forces resident (the default now).
         cpu_offload = bool(job.get("cpu_offload", False)) and not job.get("no_cpu_offload", False)
+        print(f"[zimage-serve] loading {model_name} mode={mode} cpu_offload={cpu_offload} "
+              f"(warm path; resident is the default)", flush=True)
         s1 = stage1_load_pipeline.run(
             model_name=model_name, device=self.device,
             cpu_offload=cpu_offload, dtype=job.get("dtype", "bfloat16"),

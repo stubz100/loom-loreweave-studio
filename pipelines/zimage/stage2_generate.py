@@ -128,8 +128,39 @@ def run(
     if mode == "inpaint":
         call_kwargs["mask_image"] = mask_pil
 
+    # --- Diagnostic probe (zimage-base 17-min investigation): split the pipe call into
+    # text-encode+setup (before the first denoise step), the denoise loop, and VAE decode+post
+    # (after the last step) via a step-end callback. `[zimage-probe]` prints to the worker log so a
+    # single run reveals which phase dominates. Defensive: if the pipeline rejects the callback kwarg
+    # we retry without it (timing then only covers the whole call).
+    import time as _ptime
+    _pb = {"start": _ptime.perf_counter(), "first": None, "last": None}
+
+    def _probe_cb(_pipe, _step, _ts, _cbk):
+        _t = _ptime.perf_counter()
+        if _pb["first"] is None:
+            _pb["first"] = _t
+        _pb["last"] = _t
+        return _cbk
+
+    call_kwargs.setdefault("callback_on_step_end", _probe_cb)
     with torch.inference_mode():
-        result = pipe(**call_kwargs)
+        try:
+            result = pipe(**call_kwargs)
+        except TypeError as _e:
+            if "callback_on_step_end" not in str(_e):
+                raise
+            call_kwargs.pop("callback_on_step_end", None)
+            result = pipe(**call_kwargs)
+    _end = _ptime.perf_counter()
+    if _pb["first"] is not None:
+        print(f"[zimage-probe] encode+setup={_pb['first'] - _pb['start']:.1f}s "
+              f"denoise={_pb['last'] - _pb['first']:.1f}s decode+post={_end - _pb['last']:.1f}s "
+              f"total={_end - _pb['start']:.1f}s | steps={num_inference_steps} {width}x{height} "
+              f"mode={mode}", flush=True)
+    else:
+        print(f"[zimage-probe] total={_end - _pb['start']:.1f}s (no step callback) | "
+              f"steps={num_inference_steps} {width}x{height} mode={mode}", flush=True)
 
     image: Image.Image = result.images[0]
 

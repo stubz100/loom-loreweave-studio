@@ -1242,7 +1242,7 @@ drops the monorepo fallback root and asserts every adapter (+ trainer) still res
 the app repo — so a future pipeline/adapter added without vendoring its worker **fails CI** instead of
 only working on a checkout that happens to sit beside the monorepo. Presence-only by design (the R162
 byte-match guard is separate; the 3 loom-ahead files must not trip a completeness check). 27/27
-`test_batch_worker.py` green. **✅ PUSHED `bed7a4c`.**
+`test_batch_worker.py` green. **✅ PUSHED `a0c40f0`.**
 
 ### Krea2 Turbo vendored as a Loom T2I generator (2026-06-25, user-requested)
 

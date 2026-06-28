@@ -495,9 +495,13 @@ class _ServeGenerator:
         if mode not in _BATCH_MODES:
             raise ValueError(f"serve mode must be one of {_BATCH_MODES} (got {mode!r})")
         model_info = ZIMAGE_MODEL_INFO[model_name]
-        # Honor the catalog's INVERTED no_cpu_offload flag directly — the warm job spec carries it
-        # as-is (it doesn't pass through build_batch_argv's inversion).
-        cpu_offload = job.get("cpu_offload", True) and not job.get("no_cpu_offload", False)
+        # zimage runs RESIDENT in the warm path (default cpu_offload=False). On 16 GB ROCm the big
+        # zimage-base spent ~17 min/image inside enable_model_cpu_offload's component shuffling while
+        # the actual denoise was ~16 s (the GPU compute is fine) — so offload was pure overhead. zimage
+        # fits 16 GB at the casting/expansion sizes (~11 GB est, and the resident transformer already
+        # denoised fast). Offload is still honored if a job explicitly sets cpu_offload=True; the
+        # catalog's no_cpu_offload flag forces resident (the default now).
+        cpu_offload = bool(job.get("cpu_offload", False)) and not job.get("no_cpu_offload", False)
         s1 = stage1_load_pipeline.run(
             model_name=model_name, device=self.device,
             cpu_offload=cpu_offload, dtype=job.get("dtype", "bfloat16"),

@@ -1191,6 +1191,21 @@ pause/cancel, with each pipeline's model loaded once. **Phase 2 (warm-worker bat
 flux2 + sd35/zimage Expansion warm cells (2a), post-passes on warm cells (2b), Cast fan-out (2c); the
 remaining cold-batch case is `realize="mixed"` Expansion (a later phase if wanted).
 
+**Fix (2026-06-28, user on-rig — zimage-base 17-min "inference").** A refined-preset Cast's
+`zimage-base` candidate (`job_0d82f0d2`) sat `running` for **17 min**. NOT the flux2-dev thrash and
+NOT slow compute: the manifest showed `generate` = **1026.87 s** while the visible **denoise was ~16 s**
+(50 steps; first step 15 s was a one-time AOTriton attention compile). So ~1011 s was OUTSIDE the
+denoise — `enable_model_cpu_offload` shuffling the big zimage-base components (text-encoder /
+transformer / VAE) CPU↔GPU on 16 GB ROCm. The transformer denoised fast *resident*, so the GPU compute
+is fine; offload was pure overhead. (Not a regression: the old `multi` worker's `invoke_zimage`
+defaulted `cpu_offload=True` too, so the pre-2c refined cast was equally slow — fast/turbo casts
+avoided it.) Fix: the zimage **warm** `_ServeGenerator._load` now defaults **resident**
+(`cpu_offload = bool(job.get("cpu_offload", False)) and not job.get("no_cpu_offload", False)`) — zimage
+fits 16 GB at the casting/expansion sizes (~11 GB est). Offload is still honored if a job explicitly
+asks. Synced to all 3 zimage copies; warm/batch tests green (the offload default is GPU-path, not
+unit-tested). ⚠ On-rig: confirm zimage-base resident is fast (≈30 s) and doesn't OOM at 1024²; if it
+OOMs we gate it back to offload.
+
 ---
 
 ## P2-era fixes (non-milestone)

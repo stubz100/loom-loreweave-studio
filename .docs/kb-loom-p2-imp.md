@@ -1228,6 +1228,25 @@ author's "loom is the only repo that matters"). +3 tests (single emits `--no-cpu
 tests green.** ⚠ Still owed on-rig: confirm the resident decode drops `decode+post` from 894 s to
 seconds and doesn't OOM at 1024². **✅ PUSHED `6e637fe`.**
 
+**RESOLVED — it was never offload OR placement; it's MIOpen on Windows ROCm (2026-06-28).** The
+resident fix above did NOT help: a resident `zimage-base` single (`job_39303cd7`) still showed
+`[zimage-probe] encode+setup=2.6s denoise=1.0s decode+post=888.8s` at 1024². The user rightly
+challenged the story (zimage-**turbo** is fast — yet it shares a **byte-identical** VAE, so the VAE
+decode can't be the differentiator). Web research (see `.github/copilot/kb-zimage.md` new chapter
+"VAE Decode Catastrophically Slow on Windows ROCm") found the documented root cause: on native
+Windows PyTorch-ROCm, MIOpen falls back to the **naive direct-conv solver** (`ConvDirectNaiveConvFwd`,
+`workspace=0`) for the **convolution-heavy FLUX VAE decoder** under the default `MIOPEN_FIND_MODE` —
+while the conv-free transformer (matmul/attention via rocBLAS/AOTriton) is unaffected (ROCm/TheRock
+#3077; ROCm #4742 "VAE decode slow… 9070 XT"; ROCm #4729; ComfyUI #10460). **Fix (on-rig
+confirmed):** `MIOPEN_FIND_MODE=2` (FAST) → VAE-only probe decode **888 s → 1.9 s cold / 0.4 s warm**
+(≈470×; CPU fallback 13.9 s, GPU+tiling 0.3 s). Wired in `orchestrator/main.py` startup:
+`os.environ.setdefault("MIOPEN_FIND_MODE", "2")` BEFORE any worker spawns (the spawns build
+`{**os.environ, …}` and stage_runner copies `os.environ`, so the whole subprocess tree inherits it;
+real env wins; MIOpen-only var = harmless no-op off ROCm). **Fixes every conv worker** (sd35/zimage
+VAE + postproc), not just zimage. 348 orchestrator tests green. The earlier resident default
+(`6e637fe`) stays — it's still correct (avoids the offloaded-VAE path + thrash) and now the decode is
+fast on top of it. **✅ PUSHED `<hash>`.**
+
 ---
 
 ## P2-era fixes (non-milestone)

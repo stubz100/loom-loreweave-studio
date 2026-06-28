@@ -630,6 +630,17 @@ async def lifespan(app: FastAPI):
         except OSError as e:
             log.warning("could not create HF cache dir %s: %s", CONFIG.hf_home, e)
 
+    # Windows ROCm MIOpen convolution fix (kb-zimage.md "VAE Decode Catastrophically Slow on
+    # Windows ROCm"). With the default MIOPEN_FIND_MODE, MIOpen falls back to the *naive* direct
+    # conv solver (ConvDirectNaiveConvFwd) for the convolution-heavy VAE decoders — a zimage-base
+    # 1024² decode took ~888 s while the conv-free transformer denoise was ~1 s. MIOPEN_FIND_MODE=2
+    # (FAST) selects a real kernel → the same decode drops to ~0.4 s warm / ~1.9 s cold (on-rig
+    # probe 2026-06-28, ≈470× faster). Set BEFORE any pipeline subprocess spawns (they inherit
+    # os.environ, like HF_HOME above); it's a MIOpen-only var so it's a harmless no-op off ROCm,
+    # and it speeds EVERY conv worker (sd35/zimage VAE, postproc), not just zimage. Real env wins.
+    if os.environ.setdefault("MIOPEN_FIND_MODE", "2") == "2":
+        log.info("MIOPEN_FIND_MODE=2 (ROCm conv-solver fix for slow VAE decode)")
+
     # Propagate an HF token from the central config (`.env.local`) into the process env so
     # pipeline subprocesses (multi → flux2/sd35 hf_hub_download) inherit it — gated weights
     # (FLUX.2-dev, sd3.5-large) need it. Real env wins; we only fill what's unset (P1/M2).

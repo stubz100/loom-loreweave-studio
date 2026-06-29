@@ -106,6 +106,7 @@ def _load_stage2(monkeypatch):
     cuda = SimpleNamespace(
         is_available=lambda: True,
         empty_cache=lambda: events.append("empty_cache"),
+        synchronize=lambda: None,
     )
     torch = ModuleType("torch")
     torch.Generator = FakeGenerator

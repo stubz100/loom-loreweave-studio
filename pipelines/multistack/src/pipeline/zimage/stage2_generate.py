@@ -300,6 +300,14 @@ def run(
             call_kwargs.pop("callback_on_step_end", None)
             result = pipe(**call_kwargs)
 
+        # CRITICAL: the tqdm bar + step callbacks fire when the 50 steps are *enqueued*, not when
+        # the GPU has computed them (CUDA/HIP is async). So _pb["last"] is enqueue time and the
+        # real denoise compute lands on the next sync. Synchronize HERE to attribute it correctly:
+        # _denoise_done is the true end of encode+denoise; everything after is the decode.
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        _denoise_done = _ptime.perf_counter()
+
         latents = result.images
         result = None
         if cpu_vae:
@@ -307,10 +315,12 @@ def run(
             images = _decode_latents_on_cpu(pipe, latents)
         else:
             # Default: free the GPU reserve, then decode on the now-empty card so MIOpen
-            # gets its conv workspace (the actual fix for the ~15-min decode).
+            # gets its conv workspace.
             _dev = "cuda" if torch.cuda.is_available() else "cpu"
             images = _decode_latents_on_gpu_freed(pipe, latents, _dev)
         image: Image.Image = images[0]
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
     _end = _ptime.perf_counter()
     # Echo the two things that decide VAE-decode speed on Windows ROCm so a single completed
     # job is self-diagnosing: MIOPEN_FIND_MODE (must be "2" for the fast conv solver — see
@@ -332,14 +342,18 @@ def run(
         _extra += f" free_vram_at_decode={_pb['free'] / (1024 ** 3):.2f}GB"
     _diag = (f"MIOPEN_FIND_MODE={_os.environ.get('MIOPEN_FIND_MODE', '(unset)')} "
              f"vae_device={getattr(_vae, 'device', '?')}{_extra}")
+    # SYNCED split (accurate): everything up to the post-pipe sync is encode+denoise; the rest is
+    # the real VAE decode. The "(async cb …)" figures are the old enqueue-time markers, kept only to
+    # show how misleading they were — the bar/callbacks finish long before the GPU does.
+    _setup_denoise = _denoise_done - _pb["start"]
+    _decode = _end - _denoise_done
+    _async = ""
     if _pb["first"] is not None:
-        print(f"[zimage-probe] encode+setup={_pb['first'] - _pb['start']:.1f}s "
-              f"denoise={_pb['last'] - _pb['first']:.1f}s decode+post={_end - _pb['last']:.1f}s "
-              f"total={_end - _pb['start']:.1f}s | steps={num_inference_steps} {width}x{height} "
-              f"mode={mode} | {_diag}", flush=True)
-    else:
-        print(f"[zimage-probe] total={_end - _pb['start']:.1f}s (no step callback) | "
-              f"steps={num_inference_steps} {width}x{height} mode={mode} | {_diag}", flush=True)
+        _async = (f" | (async cb: enqueue_to_first={_pb['first'] - _pb['start']:.1f}s "
+                  f"first_to_last={_pb['last'] - _pb['first']:.1f}s)")
+    print(f"[zimage-probe] encode+denoise={_setup_denoise:.1f}s decode={_decode:.1f}s "
+          f"total={_end - _pb['start']:.1f}s | steps={num_inference_steps} {width}x{height} "
+          f"mode={mode} | {_diag}{_async}", flush=True)
 
     return {
         "image": image,

@@ -119,9 +119,19 @@ def _decode_latents_on_gpu_freed(pipe, latents, device) -> list[Image.Image]:
     except (AttributeError, StopIteration):
         original_device = None
 
+    was_tiling = bool(getattr(vae, "use_tiling", False))
+    tile_sample_min_size = getattr(vae, "tile_sample_min_size", None)
+    tile_latent_min_size = getattr(vae, "tile_latent_min_size", None)
+
     if hasattr(pipe, "remove_all_hooks"):
         pipe.remove_all_hooks()
     vae.to(device)
+    # With the whole card free, decode the latent in ONE full-frame pass. Forced VAE tiling turns
+    # a single decode into many small overlapping tile decodes, and each tile's odd conv shape hits
+    # the slow MIOpen path again — measured ~749s tiled even at 15GB free, vs ~2s full-frame. (Same
+    # reason _decode_latents_on_cpu disables tiling: "on CPU it turns one decode into nine".)
+    if was_tiling and hasattr(vae, "disable_tiling"):
+        vae.disable_tiling()
     _free = -1.0
     try:
         if torch.cuda.is_available():
@@ -129,7 +139,8 @@ def _decode_latents_on_gpu_freed(pipe, latents, device) -> list[Image.Image]:
             _free = torch.cuda.mem_get_info()[0] / (1024 ** 3)
     except Exception:
         pass
-    print(f"[zimage-vae] GPU decode after freeing reserve: free_vram={_free:.2f}GB", flush=True)
+    print(f"[zimage-vae] GPU full-frame decode after freeing reserve: "
+          f"free_vram={_free:.2f}GB tiling_was={was_tiling}", flush=True)
 
     try:
         latents = latents.to(device=device, dtype=vae.dtype)
@@ -140,6 +151,12 @@ def _decode_latents_on_gpu_freed(pipe, latents, device) -> list[Image.Image]:
         decoded = vae.decode(latents, return_dict=False)[0]
         return pipe.image_processor.postprocess(decoded, output_type="pil")
     finally:
+        if was_tiling and hasattr(vae, "enable_tiling"):
+            vae.enable_tiling()
+            if tile_sample_min_size is not None:
+                vae.tile_sample_min_size = tile_sample_min_size
+            if tile_latent_min_size is not None:
+                vae.tile_latent_min_size = tile_latent_min_size
         if had_offload_hooks:
             pipe.enable_model_cpu_offload(device=getattr(pipe, "_offload_device", None))
         elif original_device is not None and getattr(original_device, "type", str(original_device)) != "cpu":

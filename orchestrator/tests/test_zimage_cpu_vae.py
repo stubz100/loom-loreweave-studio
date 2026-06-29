@@ -168,6 +168,8 @@ def test_default_path_frees_gpu_reserve_then_decodes_on_gpu_and_restores(monkeyp
     assert pipe.call_kwargs["output_type"] == "latent"   # we control the decode, not the pipeline
     assert pipe.hooks_removed is True                     # offload hooks dropped so VAE stays put
     assert pipe.vae.to_calls == ["cuda"]                  # decode happens ON the GPU
+    assert pipe.vae.decode_was_tiled is False             # full-frame (tiling is slow even at 15GB free)
+    assert pipe.vae.use_tiling is True                    # tiling restored for reuse
     assert "empty_cache" in events                        # reserve returned to the driver first
     assert ("scale", 0.3611) in events                    # pipeline-equivalent scale/shift decode
     assert ("shift", 0.1159) in events

@@ -94,75 +94,6 @@ def _decode_latents_on_cpu(pipe, latents) -> list[Image.Image]:
             vae.to(original_device)
 
 
-def _decode_latents_on_gpu_freed(pipe, latents, device) -> list[Image.Image]:
-    """Decode on the GPU after returning the caching-allocator reserve to the driver.
-
-    Root cause of the zimage-base "15-minute decode" on Windows ROCm: the Z-Image (FLUX) VAE
-    decoder is convolution-heavy, and MIOpen allocates its conv workspace with a *separate*
-    ``hipMalloc``. Under ``enable_model_cpu_offload`` the transformer/text-encoder are CPU-side
-    after denoise, but their ~12 GB stays in PyTorch's caching reserve, so the driver has only
-    ~1 GB free at decode time → ``hipMalloc`` fails → MIOpen falls back to ``ConvDirectNaiveConvFwd``
-    → ~900 s (measured: free_vram_at_decode≈1.2 GB ↔ ~900 s; ~15 GB free ↔ ~2 s). ``MIOPEN_FIND_MODE=2``
-    can't help with no workspace to allocate. So: drop the offload hooks (else the hook bounces the
-    VAE), put the small VAE on the GPU, ``empty_cache()`` to hand the transformer's reserve back to
-    the driver (~14 GB free), then decode — MIOpen now gets its workspace and the fast solver.
-    Pipeline state is restored afterward so batch + warm workers stay reusable.
-
-    Note: this frees the reserve, which only helps when the heavy modules are already off-GPU
-    (the offload default). In explicit resident mode they stay on the card, so the reserve can't be
-    freed — resident + this path is not the fast combination; offload + this path is.
-    """
-    vae = pipe.vae
-    had_offload_hooks = bool(getattr(pipe, "_all_hooks", None))
-    try:
-        original_device = next(vae.parameters()).device
-    except (AttributeError, StopIteration):
-        original_device = None
-
-    was_tiling = bool(getattr(vae, "use_tiling", False))
-    tile_sample_min_size = getattr(vae, "tile_sample_min_size", None)
-    tile_latent_min_size = getattr(vae, "tile_latent_min_size", None)
-
-    if hasattr(pipe, "remove_all_hooks"):
-        pipe.remove_all_hooks()
-    vae.to(device)
-    # With the whole card free, decode the latent in ONE full-frame pass. Forced VAE tiling turns
-    # a single decode into many small overlapping tile decodes, and each tile's odd conv shape hits
-    # the slow MIOpen path again — measured ~749s tiled even at 15GB free, vs ~2s full-frame. (Same
-    # reason _decode_latents_on_cpu disables tiling: "on CPU it turns one decode into nine".)
-    if was_tiling and hasattr(vae, "disable_tiling"):
-        vae.disable_tiling()
-    _free = -1.0
-    try:
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            _free = torch.cuda.mem_get_info()[0] / (1024 ** 3)
-    except Exception:
-        pass
-    print(f"[zimage-vae] GPU full-frame decode after freeing reserve: "
-          f"free_vram={_free:.2f}GB tiling_was={was_tiling}", flush=True)
-
-    try:
-        latents = latents.to(device=device, dtype=vae.dtype)
-        shift_factor = getattr(vae.config, "shift_factor", 0.0)
-        if shift_factor is None:
-            shift_factor = 0.0
-        latents = (latents / vae.config.scaling_factor) + shift_factor
-        decoded = vae.decode(latents, return_dict=False)[0]
-        return pipe.image_processor.postprocess(decoded, output_type="pil")
-    finally:
-        if was_tiling and hasattr(vae, "enable_tiling"):
-            vae.enable_tiling()
-            if tile_sample_min_size is not None:
-                vae.tile_sample_min_size = tile_sample_min_size
-            if tile_latent_min_size is not None:
-                vae.tile_latent_min_size = tile_latent_min_size
-        if had_offload_hooks:
-            pipe.enable_model_cpu_offload(device=getattr(pipe, "_offload_device", None))
-        elif original_device is not None and getattr(original_device, "type", str(original_device)) != "cpu":
-            vae.to(original_device)
-
-
 def run(
     pipe: ZImagePipeline | ZImageImg2ImgPipeline | ZImageInpaintPipeline,
     prompt: str,
@@ -253,36 +184,23 @@ def run(
     if mode == "inpaint":
         call_kwargs["mask_image"] = mask_pil
 
-    # Always stop Diffusers after denoising so WE control the VAE decode's memory state.
-    # The decode is the convolution-heavy phase that MIOpen handles badly on Windows ROCm when
-    # the card is nearly full (probe: free_vram_at_decode≈1.2GB → ~900s). Under
-    # enable_model_cpu_offload the transformer/text-encoder are CPU-side after denoise but their
-    # VRAM stays in the caching-allocator reserve; decoding inside the pipeline never frees it.
-    # Stopping here lets us empty that reserve before vae.decode (see _decode_latents_on_gpu_freed
-    # / _decode_latents_on_cpu). The pipeline's own non-latent path would just decode immediately
-    # into that starved state.
-    call_kwargs["output_type"] = "latent"
+    # The cpu_vae fallback (opt-in) needs the raw latent to decode on CPU; the default path lets the
+    # pipeline decode on the GPU. The VAE decode is ~2s either way (confirmed innocent) — the cost is
+    # the transformer denoise, so we no longer do any decode-side gymnastics here.
+    if cpu_vae:
+        call_kwargs["output_type"] = "latent"
 
-    # --- Diagnostic probe (zimage-base 17-min investigation): split the pipe call into
-    # text-encode+setup (before the first denoise step), the denoise loop, and VAE decode+post
-    # (after the last step) via a step-end callback. `[zimage-probe]` prints to the worker log so a
-    # single run reveals which phase dominates. Defensive: if the pipeline rejects the callback kwarg
-    # we retry without it (timing then only covers the whole call).
+    # --- Diagnostic probe. Times encode+denoise vs decode. CRITICAL: CUDA/HIP is async — the tqdm
+    # bar + step callbacks complete when the steps are *enqueued*, not computed, so the real denoise
+    # compute only lands on a torch.cuda.synchronize(). We sync after the pipe to time it correctly
+    # (an earlier callback-based split misattributed ~700s of denoise to "decode"). `free_vram` at
+    # the last step is kept as a memory-pressure signal (relevant to GTT paging during denoise).
     import time as _ptime
-    _pb = {"start": _ptime.perf_counter(), "first": None, "last": None, "lat": None, "free": None}
+    _pb = {"start": _ptime.perf_counter(), "first": None, "free": None}
 
     def _probe_cb(_pipe, _step, _ts, _cbk):
-        _t = _ptime.perf_counter()
         if _pb["first"] is None:
-            _pb["first"] = _t
-        _pb["last"] = _t
-        # Capture the LAST denoise latent + the free VRAM at that moment (just before decode).
-        # This isolates why the in-app decode is slow when the standalone VAE-only decode is fast:
-        #   - free_vram tiny  -> MIOpen's conv workspace is starved (offload/memory pressure)
-        #   - lat absmax huge / nonfinite>0 -> the real base latent hits a slow/overflow conv path
-        #     (would explain turbo's same-VAE decode being ~14x faster than base's).
-        if isinstance(_cbk, dict) and _cbk.get("latents") is not None:
-            _pb["lat"] = _cbk["latents"]
+            _pb["first"] = _ptime.perf_counter()
         try:
             if torch.cuda.is_available():
                 _pb["free"] = torch.cuda.mem_get_info()[0]
@@ -300,60 +218,35 @@ def run(
             call_kwargs.pop("callback_on_step_end", None)
             result = pipe(**call_kwargs)
 
-        # CRITICAL: the tqdm bar + step callbacks fire when the 50 steps are *enqueued*, not when
-        # the GPU has computed them (CUDA/HIP is async). So _pb["last"] is enqueue time and the
-        # real denoise compute lands on the next sync. Synchronize HERE to attribute it correctly:
-        # _denoise_done is the true end of encode+denoise; everything after is the decode.
+        # Sync so the timing reflects real GPU compute, not async enqueue (see probe note above).
         if torch.cuda.is_available():
             torch.cuda.synchronize()
-        _denoise_done = _ptime.perf_counter()
+        _pipe_done = _ptime.perf_counter()
 
-        latents = result.images
-        result = None
         if cpu_vae:
-            # Explicit CPU fallback (opt-in). Slower, but sidesteps MIOpen entirely.
-            images = _decode_latents_on_cpu(pipe, latents)
+            # Explicit CPU fallback (opt-in): pipe stopped at the latent; decode it on CPU.
+            images = _decode_latents_on_cpu(pipe, result.images)
+            image: Image.Image = images[0]
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
         else:
-            # Default: free the GPU reserve, then decode on the now-empty card so MIOpen
-            # gets its conv workspace.
-            _dev = "cuda" if torch.cuda.is_available() else "cpu"
-            images = _decode_latents_on_gpu_freed(pipe, latents, _dev)
-        image: Image.Image = images[0]
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+            # Default: the pipeline already decoded on the GPU (~2s).
+            image = result.images[0]
     _end = _ptime.perf_counter()
-    # Echo the two things that decide VAE-decode speed on Windows ROCm so a single completed
-    # job is self-diagnosing: MIOPEN_FIND_MODE (must be "2" for the fast conv solver — see
-    # kb-zimage.md) and the VAE device (must be cuda for the resident GPU path). If decode+post
-    # is still ~minutes with find_mode=2 + vae on cuda, the env var isn't reaching the worker.
+
     import os as _os
-    _vae = getattr(pipe, "vae", None)
-    _extra = ""
-    _lat = _pb.get("lat")
-    if _lat is not None:
-        try:
-            _lf = _lat.detach().float()
-            _nf = int((~torch.isfinite(_lf)).sum().item())
-            _extra += (f" lat[absmax={_lf.abs().max().item():.2e} mean={_lf.mean().item():.2e} "
-                       f"std={_lf.std().item():.2e} nonfinite={_nf}]")
-        except Exception:
-            pass
-    if _pb.get("free") is not None:
-        _extra += f" free_vram_at_decode={_pb['free'] / (1024 ** 3):.2f}GB"
-    _diag = (f"MIOPEN_FIND_MODE={_os.environ.get('MIOPEN_FIND_MODE', '(unset)')} "
-             f"vae_device={getattr(_vae, 'device', '?')}{_extra}")
-    # SYNCED split (accurate): everything up to the post-pipe sync is encode+denoise; the rest is
-    # the real VAE decode. The "(async cb …)" figures are the old enqueue-time markers, kept only to
-    # show how misleading they were — the bar/callbacks finish long before the GPU does.
-    _setup_denoise = _denoise_done - _pb["start"]
-    _decode = _end - _denoise_done
-    _async = ""
-    if _pb["first"] is not None:
-        _async = (f" | (async cb: enqueue_to_first={_pb['first'] - _pb['start']:.1f}s "
-                  f"first_to_last={_pb['last'] - _pb['first']:.1f}s)")
-    print(f"[zimage-probe] encode+denoise={_setup_denoise:.1f}s decode={_decode:.1f}s "
-          f"total={_end - _pb['start']:.1f}s | steps={num_inference_steps} {width}x{height} "
-          f"mode={mode} | {_diag}{_async}", flush=True)
+    _free = (f" free_vram_at_last_step={_pb['free'] / (1024 ** 3):.2f}GB"
+             if _pb.get("free") is not None else "")
+    _diag = f"MIOPEN_FIND_MODE={_os.environ.get('MIOPEN_FIND_MODE', '(unset)')}{_free}"
+    # `_pipe_done` is the synced end of the pipe call: for the default path that includes the ~2s
+    # GPU decode; for cpu_vae the pipe stops at the latent and the CPU decode is timed separately.
+    _compute = _pipe_done - _pb["start"]
+    if cpu_vae:
+        _phase = f"encode+denoise={_compute:.1f}s cpu_decode={_end - _pipe_done:.1f}s"
+    else:
+        _phase = f"encode+denoise+decode={_compute:.1f}s"
+    print(f"[zimage-probe] {_phase} total={_end - _pb['start']:.1f}s | "
+          f"steps={num_inference_steps} {width}x{height} mode={mode} | {_diag}", flush=True)
 
     return {
         "image": image,

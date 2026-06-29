@@ -85,7 +85,9 @@ def _load_stage2(monkeypatch):
         def __call__(self, **kwargs):
             self.call_kwargs = kwargs
             kwargs["callback_on_step_end"](self, 0, None, {})
-            return SimpleNamespace(images=FakeTensor())
+            if kwargs.get("output_type") == "latent":
+                return SimpleNamespace(images=FakeTensor())  # cpu_vae: pipe stops at the latent
+            return SimpleNamespace(images=[FakePILImage()])  # default: pipe decoded internally
 
         def remove_all_hooks(self):
             self.hooks_removed = True
@@ -157,24 +159,18 @@ def test_cpu_vae_requests_latents_decodes_on_cpu_and_restores_offload(monkeypatc
     assert result["width"] == 1024 and result["height"] == 1024
 
 
-def test_default_path_frees_gpu_reserve_then_decodes_on_gpu_and_restores(monkeypatch):
-    """Default (cpu_vae off) path: stop after denoise, drop offload hooks + empty_cache to hand
-    the transformer's VRAM reserve back to the driver, then decode on the GPU — so MIOpen gets
-    its conv workspace (the fix for the ~15-min ROCm decode) instead of the naive solver."""
+def test_default_path_lets_pipeline_decode_no_gymnastics(monkeypatch):
+    """Default (cpu_vae off) path: the VAE decode is ~2s (confirmed innocent — the cost is the
+    transformer denoise), so the worker does NO decode-side gymnastics. It does not force
+    output_type=latent, doesn't drop offload hooks, and doesn't empty_cache — the pipeline decodes
+    on the GPU itself."""
     module, pipeline_cls, events = _load_stage2(monkeypatch)
     pipe = pipeline_cls()
 
     result = module.run(pipe=pipe, prompt="a hero")  # cpu_vae defaults to False
 
-    assert pipe.call_kwargs["output_type"] == "latent"   # we control the decode, not the pipeline
-    assert pipe.hooks_removed is True                     # offload hooks dropped so VAE stays put
-    assert pipe.vae.to_calls == ["cuda"]                  # decode happens ON the GPU
-    assert pipe.vae.decode_was_tiled is False             # full-frame (tiling is slow even at 15GB free)
-    assert pipe.vae.use_tiling is True                    # tiling restored for reuse
-    assert "empty_cache" in events                        # reserve returned to the driver first
-    assert ("scale", 0.3611) in events                    # pipeline-equivalent scale/shift decode
-    assert ("shift", 0.1159) in events
-    assert ("postprocess", "pil") in events
-    assert pipe.offload_restored is True                  # state restored for batch/warm reuse
+    assert pipe.call_kwargs.get("output_type") != "latent"   # let the pipeline decode
+    assert pipe.hooks_removed is False                        # no hook gymnastics
+    assert "empty_cache" not in events                        # no reserve-freeing dance
     assert result["cpu_vae"] is False
     assert result["width"] == 1024 and result["height"] == 1024

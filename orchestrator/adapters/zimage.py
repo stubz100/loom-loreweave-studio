@@ -39,6 +39,7 @@ WIRED_MODES = ("t2i", "img2img", "inpaint")
 WIRED_PARAMS = (
     "prompt", "mode", "width", "height", "seed", "model_name",
     "num_steps", "guidance_scale", "negative_prompt",
+    "cpu_vae", "compile",
     "lora_path", "lora_name", "lora_weight",
 )
 
@@ -123,17 +124,11 @@ def build_argv(spec: JobSpec, python: str, script: Path) -> list[str]:
 
     `script` is the resolved absolute worker path — zimage is invoked by file path, not `-m`."""
     p = spec.params
-    # Loom runs zimage RESIDENT on the 16 GB ROCm rig. With diffusers
-    # enable_model_cpu_offload() the zimage-base **VAE decode** costs ~15 min/image — probe
-    # job_b4ae9136: `encode+setup=11.5s denoise=1.0s decode+post=894.1s` — because the
-    # transformer already denoises fast on-GPU during offload, so only the final decode pays
-    # the offload tax (the small VAE ends up on the slow path). Resident keeps the VAE on the
-    # GPU where decode is seconds. Default `no_cpu_offload=True` for the single + batch paths
-    # so all three dispatch routes agree (the warm `--serve` worker is already resident by
-    # default, run_pipeline `_ServeGenerator._load`). emit_argv/build_batch only act on params
-    # that are *present* (catalog defaults aren't injected), so this is where the loom default
-    # lives; an explicit `no_cpu_offload=False` in the request still forces offload.
-    p.setdefault("no_cpu_offload", True)
+    # The full resident zimage pipeline exceeds the 16 GB target once transformer, text encoder,
+    # VAE, and CFG allocations are counted. That starves MIOpen's VAE-convolution workspace and
+    # pushes allocations into shared GPU memory. Default single + batch jobs to model CPU offload;
+    # an explicit `no_cpu_offload=True` remains the opt-in resident mode.
+    p.setdefault("no_cpu_offload", False)
     if p.get("batch_items"):
         return _batch.build_batch_argv(spec, python, script, PIPELINE, _BATCH_INVERSIONS)
     argv: list[str] = [

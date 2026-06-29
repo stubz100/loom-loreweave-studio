@@ -38,6 +38,68 @@ ZIMAGE_MODEL_INFO = {
     },
 }
 
+# AutoencoderKL only switches to tiled decode when the latent is strictly larger than
+# `tile_latent_min_size`. Z-Image declares sample_size=1024, so enable_tiling() alone is a no-op
+# for our exact 1024x1024 target (128x128 latent). Force 512px / 64-latent tiles so this path is
+# genuinely exercised and keeps each MIOpen convolution below the pathological full-frame shape.
+VAE_TILE_SAMPLE_MIN_SIZE = 512
+
+
+def _enable_vae_tiling(vae) -> dict:
+    vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+    tile_latent_min_size = VAE_TILE_SAMPLE_MIN_SIZE // vae_scale_factor
+    vae.enable_tiling()
+    vae.tile_sample_min_size = VAE_TILE_SAMPLE_MIN_SIZE
+    vae.tile_latent_min_size = tile_latent_min_size
+    print(
+        f"[zimage-vae] GPU tiling enabled: sample_tile={VAE_TILE_SAMPLE_MIN_SIZE} "
+        f"latent_tile={tile_latent_min_size}",
+        flush=True,
+    )
+    return {
+        "enabled": True,
+        "tile_sample_min_size": VAE_TILE_SAMPLE_MIN_SIZE,
+        "tile_latent_min_size": tile_latent_min_size,
+    }
+
+
+def _compile_transformer(transformer) -> dict:
+    """Opt-in torch.compile of the DiT (the caller ROCm-gates it). Prefers diffusers'
+    compile_repeated_blocks (fast compile, offload-friendly) over whole-module compile.
+    ZImage's 3D RoPE uses complex ops TorchInductor can't codegen, so fullgraph=False and the
+    realistic gain is ~10% (see kb-zimage denoise-floor). Best-effort: any failure (e.g. no
+    triton-windows/inductor) degrades to eager, never raises."""
+    import os
+
+    # Persistent inductor cache so the one-time ~60s compile amortises across worker processes
+    # (each spawn derives the same stable path). Only touched when actually compiling.
+    if not os.environ.get("TORCHINDUCTOR_CACHE_DIR"):
+        hf_home = os.environ.get("HF_HOME")
+        base = Path(hf_home).parent if hf_home else Path.home()
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(base / "torchinductor_cache")
+    try:
+        import torch._dynamo
+        torch._dynamo.config.cache_size_limit = 64
+    except Exception:  # noqa: BLE001
+        pass
+
+    block_compile = getattr(transformer, "compile_repeated_blocks", None)
+    try:
+        if callable(block_compile):
+            block_compile(fullgraph=False)
+            method = "compile_repeated_blocks"
+        else:
+            transformer.compile()  # nn.Module.compile -> torch.compile in place
+            method = "compile"
+    except Exception as e:  # noqa: BLE001 — inductor/triton may be unavailable; stay eager
+        print(f"[zimage-compile] torch.compile unavailable, running eager: {e}", flush=True)
+        return {"enabled": False, "error": str(e)[:200]}
+
+    cache_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    print(f"[zimage-compile] {method}(fullgraph=False); inductor cache={cache_dir} "
+          f"(first run per shape compiles ~60s, then cached)", flush=True)
+    return {"enabled": True, "method": method, "cache_dir": cache_dir}
+
 
 def run(
     model_name: str = "zimage-turbo",
@@ -49,6 +111,7 @@ def run(
     lora_path: str | None = None,
     lora_name: str = "loom_character",
     lora_weight: float = 1.0,
+    compile_transformer: bool = False,
 ) -> dict:
     """Load the Z-Image pipeline and return it with metadata.
 
@@ -66,6 +129,9 @@ def run(
         lora_path: Optional local LoRA file or directory accepted by Diffusers.
         lora_name: Adapter name registered in the pipeline.
         lora_weight: Runtime adapter scale.
+        compile_transformer: Opt-in torch.compile of the DiT (ROCm-gated here). ~10%
+            faster/step at the cost of a one-time ~60s compile per output shape; best for
+            fixed-size batches. Best-effort — falls back to eager if inductor is unavailable.
 
     Returns dict with keys: pipe, model_info, model_name, device, mode, timings.
     """
@@ -114,10 +180,22 @@ def run(
     if attention_backend is not None:
         pipe.transformer.set_attention_backend(attention_backend)
 
+    vae_tiling = _enable_vae_tiling(pipe.vae)
+
     if cpu_offload:
         pipe.enable_model_cpu_offload()
     else:
         pipe.to(device)
+
+    # torch.compile AFTER offload setup (production uses offload; the two coexist). ROCm/CUDA-gated
+    # — on CPU there's nothing to gain. compile_repeated_blocks marks the blocks lazily, so the
+    # ~60s compile lands on the first stage2 forward, not here.
+    compile_info: dict = {"enabled": False}
+    if compile_transformer:
+        if torch.cuda.is_available():
+            compile_info = _compile_transformer(pipe.transformer)
+        else:
+            print("[zimage-compile] skipped (no CUDA/ROCm device)", flush=True)
 
     timings["pipeline_load_s"] = round(time.time() - t0, 4)
 
@@ -131,6 +209,8 @@ def run(
         "cpu_offload": cpu_offload,
         "dtype": dtype,
         "attention_backend": attention_backend,
+        "vae_tiling": vae_tiling,
+        "compile": compile_info,
         "lora": lora,
         "timings": timings,
     }
@@ -153,12 +233,14 @@ def get_manifest_inputs(
     lora_path: str | None = None,
     lora_name: str = "loom_character",
     lora_weight: float = 1.0,
+    compile_transformer: bool = False,
 ) -> dict:
     return {
         "model_name": model_name,
         "device": device,
         "cpu_offload": cpu_offload,
         "attention_backend": attention_backend,
+        "compile": compile_transformer,
         "mode": mode,
         "lora_path": lora_path,
         "lora_name": lora_name if lora_path else None,
@@ -179,6 +261,8 @@ def get_manifest_outputs(result: dict) -> dict:
         "cpu_offload": result["cpu_offload"],
         "dtype": result["dtype"],
         "attention_backend": result["attention_backend"],
+        "vae_tiling": result["vae_tiling"],
+        "compile": result.get("compile"),
         "lora": result["lora"],
         "timings": result["timings"],
     }

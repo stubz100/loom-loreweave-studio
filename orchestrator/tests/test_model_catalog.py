@@ -161,19 +161,23 @@ def test_flux2_guidance_fixed_flag_is_accurate():
 
 def test_model_size_default_dev_is_512_others_none():
     """M0e Part A: flux.2-dev carries a per-variant 512² size default (it's far faster at low
-    res on 16 GB ROCm); other flux2 models + sd35/zimage have no override → (None, None) so the
-    caller falls back to the pipeline param default. Unknown/None model → (None, None)."""
+    res on 16 GB ROCm); zimage-base carries 768² (the 6B denoise is attention-bound — ~3× faster
+    per step at 768² than 1024²). Other flux2 models + sd35 + zimage-TURBO have no override →
+    (None, None) so the caller falls back to the pipeline param default. Unknown/None → (None, None)."""
     assert mc.model_size_default("flux2", "flux.2-dev") == (512, 512)
     assert mc.model_size_default("flux2", "flux.2-klein-4b") == (None, None)
     assert mc.model_size_default("flux2", "flux.2-klein-base-9b") == (None, None)
     assert mc.model_size_default("sd35", "sd3.5-medium") == (None, None)
     assert mc.model_size_default("zimage", "zimage-turbo") == (None, None)
+    assert mc.model_size_default("zimage", "zimage-base") == (768, 768)
     assert mc.model_size_default("krea2", "krea2-turbo") == (768, 768)
     assert mc.model_size_default("flux2", None) == (None, None)
     assert mc.model_size_default("flux2", "bogus") == (None, None)
     # served on the catalog variant so the UI drawer can advertise it
     dev = mc.find_variant("flux2", "flux.2-dev")
     assert dev["defaults"]["width"] == 512 and dev["defaults"]["height"] == 512
+    base = mc.find_variant("zimage", "zimage-base")
+    assert base["defaults"]["width"] == 768 and base["defaults"]["height"] == 768
 
 
 def test_flux2_angle_directives_served_for_json_tree():

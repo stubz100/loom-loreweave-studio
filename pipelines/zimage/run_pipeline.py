@@ -32,6 +32,7 @@ def run(
     output_dir: str = "src/assets/pics",
     device: str = "cuda",
     cpu_offload: bool = True,
+    cpu_vae: bool = False,
     dtype: str = "bfloat16",
     attention_backend: str | None = None,
     lora_path: str | None = None,
@@ -41,6 +42,7 @@ def run(
     init_image: str | None = None,
     mask_image: str | None = None,
     strength: float | None = None,
+    compile_transformer: bool = False,
 ) -> PipelineManifest:
     """Run the full Z-Image generation pipeline.
 
@@ -55,6 +57,8 @@ def run(
             region).
         cfg_truncation: zimage-base only; fraction of the schedule (0-1) over
             which CFG is applied. <1.0 lets the final steps run unconditional.
+        cpu_vae: Keep denoising on the selected device, but move the final
+            latent and VAE to CPU for decode.
         lora_path: Optional local Diffusers-compatible LoRA file or directory.
         lora_name: Adapter name registered in the pipeline.
         lora_weight: Runtime adapter scale.
@@ -133,7 +137,7 @@ def run(
         "load_pipeline",
         stage1_load_pipeline.get_manifest_inputs(
             model_name, device, cpu_offload, attention_backend, mode,
-            lora_path, lora_name, lora_weight,
+            lora_path, lora_name, lora_weight, compile_transformer,
         ),
     )
     try:
@@ -147,6 +151,7 @@ def run(
             lora_path=lora_path,
             lora_name=lora_name,
             lora_weight=lora_weight,
+            compile_transformer=compile_transformer,
         )
         manifest.end_stage(
             rec,
@@ -167,6 +172,7 @@ def run(
         stage2_generate.get_manifest_inputs(
             prompt, width, height, seed, num_steps, guidance_scale, negative_prompt,
             cfg_normalization, cfg_truncation, mode, init_image, mask_image, strength,
+            cpu_vae,
         ),
     )
     try:
@@ -185,6 +191,7 @@ def run(
             init_image=init_image,
             mask_image=mask_image,
             strength=strength,
+            cpu_vae=cpu_vae,
         )
         manifest.end_stage(
             rec,
@@ -250,7 +257,8 @@ def run(
 # gets the normal per-image PNG + sidecar manifest pair.
 
 _BATCH_SHARED_ONLY = ("mode", "model_name", "dtype", "attention_backend",
-                      "cpu_offload", "device", "lora_path", "lora_name", "lora_weight")
+                      "cpu_offload", "device", "lora_path", "lora_name", "lora_weight",
+                      "compile")
 _BATCH_MODES = ("t2i", "img2img", "inpaint")
 
 
@@ -301,6 +309,7 @@ def _generate_item(s1: dict, *, model_name: str, model_info: dict, defaults: dic
         width = merged.get("width", 1024)
         height = merged.get("height", 1024)
         strength = merged.get("strength")
+        cpu_vae = bool(merged.get("cpu_vae", False))
 
         manifest = PipelineManifest(
             model_name=model_name, prompt=merged["prompt"], seed=seed,
@@ -313,6 +322,7 @@ def _generate_item(s1: dict, *, model_name: str, model_info: dict, defaults: dic
             merged["prompt"], width, height, seed, num_steps, guidance_scale,
             negative_prompt, cfg_normalization, cfg_truncation, mode,
             init_image, mask_image, strength,
+            cpu_vae,
         ))
         s2 = stage2_generate.run(
             pipe=s1["pipe"], prompt=merged["prompt"], width=width, height=height,
@@ -320,6 +330,7 @@ def _generate_item(s1: dict, *, model_name: str, model_info: dict, defaults: dic
             negative_prompt=negative_prompt, cfg_normalization=cfg_normalization,
             cfg_truncation=cfg_truncation, mode=mode,
             init_image=init_image, mask_image=mask_image, strength=strength,
+            cpu_vae=cpu_vae,
         )
         manifest.end_stage(rec, stage2_generate.get_manifest_outputs(s2),
                            stage2_generate.get_manifest_debug(s2))
@@ -432,6 +443,7 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
             lora_path=lora_path,
             lora_name=lora_name,
             lora_weight=lora_weight,
+            compile_transformer=bool(shared.get("compile", False)),
         )
     except Exception as e:
         _skip_rest(0, "pipeline load failed")
@@ -510,6 +522,7 @@ class _ServeGenerator:
             attention_backend=job.get("attention_backend"), mode=mode,
             lora_path=job.get("lora_path"), lora_name=job.get("lora_name", "loom_character"),
             lora_weight=job.get("lora_weight", 1.0),
+            compile_transformer=bool(job.get("compile", False)),
         )
         self.state = {"s1": s1, "model_name": model_name, "model_info": model_info,
                       "defaults": model_info["defaults"], "mode": mode}
@@ -622,6 +635,17 @@ def main():
     parser.add_argument("--output-dir", default="src/assets/pics")
     parser.add_argument("--device", default="cuda", help="Torch device (use 'cuda' for ROCm/HIP too)")
     parser.add_argument("--no-cpu-offload", action="store_true", help="Disable CPU offload")
+    parser.add_argument(
+        "--cpu-vae",
+        action="store_true",
+        help="Decode the final latent with the VAE on CPU (workaround for slow ROCm/MIOpen decode)",
+    )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Opt-in torch.compile of the DiT (~10 percent faster/step; ~60s first-run compile "
+             "per output shape, then cached). ROCm-gated; best for fixed-size batches.",
+    )
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16"])
     parser.add_argument(
         "--attention-backend",
@@ -691,6 +715,7 @@ def main():
         output_dir=args.output_dir,
         device=args.device,
         cpu_offload=not args.no_cpu_offload,
+        cpu_vae=args.cpu_vae,
         dtype=args.dtype,
         attention_backend=args.attention_backend,
         lora_path=args.lora_path,
@@ -700,6 +725,7 @@ def main():
         init_image=args.init_image,
         mask_image=args.mask_image,
         strength=args.strength,
+        compile_transformer=args.compile,
     )
 
 

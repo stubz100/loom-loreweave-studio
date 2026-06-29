@@ -1535,3 +1535,71 @@ still win. **Backend-only**, no worker/`src/pipeline/` touched. +1 regression te
 (`test_single_pipeline_unset_size_uses_catalog_default_not_project_default`: sd35/zimage→1024²,
 flux2→1360×768; explicit top-level + params-channel dims still win). **244 backend tests** (243→+1),
 green. **✅ PUSHED `8d8dd95`.**
+
+---
+
+## zimage-base "15 min/image" — root-caused to the denoise floor; 768² default + torch.compile opt-in — 2026-06-29 22:15 CEDT
+
+Not a P2 trainer milestone — a performance/workflow fix on the casting side, run during P2.
+
+**The chase.** A `zimage-base` t2i at 1024² took many minutes on the 16 GB ROCm rig (gfx1201 / RX
+9070 XT, torch 2.9.1+rocm7.2.1). I spent hours blaming the **VAE decode** (shipped `MIOPEN_FIND_MODE=2`,
+GPU-freed decode, full-frame, a `--cpu-vae` path) — all wrong. **The user caught it:** *"I don't think
+it's the VAE… I think it is the denoising, the 8.23 it/s is misleading."* Correct.
+
+**Root cause = the transformer denoise, and it's a hardware floor.** HIP kernels enqueue
+**asynchronously**; tqdm bars and `callback_on_step_end` fire on host-enqueue, not GPU-compute. The
+probe timed phases **without `torch.cuda.synchronize()`**, so ~700 s of denoise compute drained at the
+next forced sync (inside `vae.decode`) and was misread as "decode = 888 s". One `synchronize()` per
+timestamp fixed the measurement. Synced truth @1024²: **base encode+denoise = 705 s, decode = 2.5 s**;
+turbo 38 s / 2.2 s. The VAE is innocent. The base↔turbo gap is purely denoise (50 steps × CFG ≈ 100
+forwards vs turbo's 9, no CFG).
+
+**Every kernel lever is exhausted** (on-rig sweeps, `scratchpad/zimage_denoise_sweep.py`):
+- Not GTT paging — peak alloc ~12.6 GB, ~15.5 GB free at every resolution.
+- **AOTriton SDPA (the diffusers default) is the FASTEST attention backend** @1024²: default **10.3
+  s/step**; `_native_efficient` 11.9, `_native_flash` 14.5, `native` 14.9, `_native_math` 43.4 (21 GB),
+  `flex` 78.8 (24.7 GB). No swap helps.
+- **`aiter` is DEAD on Windows** — the pip pkg (`0.13.*`) is a pure-python **stub**: no compiled
+  kernels, no `flash_attn_func`; diffusers falls back to native. (User installed it; confirmed hollow.)
+- **`torch.compile` ≈ 10% only** (`compile_repeated_blocks`: 10.3 → 9.1 s/step), capped because
+  ZImage's 3D RoPE uses **complex arithmetic TorchInductor can't codegen** (graph-breaks to eager).
+- ~10 s/step ≈ **27 % MFU** for a 6B CFG forward — a typical Windows-ROCm ceiling, not a config bug.
+
+So the real win is **workflow**: spend fewer tokens (resolution) / fewer steps. 768² ≈ 3× faster/step
+than 1024² (~165 s vs ~500 s for 50 steps); 512² ≈ 7×.
+
+**KB corrected.** `.github/copilot/kb-zimage.md`'s chapter previously claimed *"the VAE decode is the
+bottleneck"* — rewrote it ("Z-Image-Base Slow at 1024² — the Transformer Denoise Floor") with the
+synced measurements, the async-timing lesson, the backend sweep, aiter-dead, compile-marginal, and the
+resolution table. Demoted `MIOPEN_FIND_MODE=2` from "the fix" to "kept (helps the conv workers + cold
+MIOpen find), but it did NOT fix zimage-base." Also fixed the now-contradicted "use native_flash"
+advice earlier in the file (AOTriton-default is fastest; leave it unset). *(Monorepo doc — per the
+user, loom is authoritative, but this is their working zimage KB so the correction belongs there.)*
+
+**Wire #1 — zimage-BASE defaults to 768²** (the user's call). Added `width/height: 768` to the
+`zimage-base` variant `defaults` in `model_catalog.py` — the same `model_size_default()` mechanism
+M0e gave `flux.2-dev` (512²). An UNSET base cast now resolves to 768² (`/generate` main.py:942 +
+drawer placeholder main.py:1593 both read it); explicit dims still win; **turbo keeps 1024²**.
+Extended `test_model_size_default_dev_is_512_others_none` to assert base→(768,768).
+
+**Wire #2 — optional `torch.compile`** (ROCm-gated opt-in). New catalog `compile` flag → adapter
+`WIRED_PARAMS` → worker `--compile`. `stage1_load_pipeline._compile_transformer()` runs AFTER offload
+(they coexist), prefers `compile_repeated_blocks(fullgraph=False)`, sets a **persistent
+`TORCHINDUCTOR_CACHE_DIR`** (derived from `HF_HOME`'s parent → on F:) so the ~60 s compile amortises
+across worker processes, and degrades to eager if inductor/triton is missing (never raises). Threaded
+through `run()` (single), `run_jobs` (batch, added to `_BATCH_SHARED_ONLY` — load-bound), and the
+`--serve` warm path; provenance lands in the load-stage manifest. Best for **fixed-size batches**
+(recompiles per shape).
+
+**Vendoring + tests.** Both loom zimage copies (flat + `multistack/`) edited identically (synced via
+copy, verified byte-identical); the `run_pipeline.py` drift-guard target in the monorepo
+(`src/pipeline/zimage/`) re-vendored so `test_vendored_workers_match_monorepo_source` stays green
+(stage1 is not guarded but synced too, so the monorepo worker stays runnable). **351 orchestrator
+tests green**; all edited files `py_compile`-clean; `emit_argv`/size-default round-trip verified.
+
+**Known wrinkle (not changed):** the `--serve` `_load` comment (`run_pipeline.py` ~L506) still cites
+"denoise was ~16 s" as the reason zimage runs resident in the warm path — that figure is an
+async-blind-era misreading. The resident-default decision may still be right (offload adds real
+shuffle overhead), but the rationale's number is stale; revisit if the warm-path cost is ever
+re-profiled.

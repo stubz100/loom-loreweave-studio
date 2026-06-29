@@ -15,12 +15,23 @@ _STAGE1 = Path(__file__).resolve().parents[2] / "pipelines" / "zimage" / "stage1
 
 
 def _load_stage1(monkeypatch):
+    class FakeVAE:
+        def __init__(self):
+            self.config = SimpleNamespace(block_out_channels=[128, 256, 512, 512])
+            self.use_tiling = False
+            self.tile_sample_min_size = 1024
+            self.tile_latent_min_size = 128
+
+        def enable_tiling(self):
+            self.use_tiling = True
+
     class FakePipe:
         def __init__(self):
             self.load_calls = []
             self.adapter_calls = []
             self.offloaded = False
             self.transformer = SimpleNamespace(set_attention_backend=lambda _value: None)
+            self.vae = FakeVAE()
 
         def load_lora_weights(self, root, **kwargs):
             self.load_calls.append((root, kwargs))
@@ -76,6 +87,12 @@ def test_file_lora_is_loaded_named_weighted_and_hashed(monkeypatch, tmp_path):
     })]
     assert pipe.adapter_calls == [("char01_lw", 0.85)]
     assert pipe.offloaded is True
+    assert pipe.vae.use_tiling is True
+    assert pipe.vae.tile_sample_min_size == 512
+    assert pipe.vae.tile_latent_min_size == 64
+    assert result["vae_tiling"] == {
+        "enabled": True, "tile_sample_min_size": 512, "tile_latent_min_size": 64,
+    }
     assert result["lora"] == {
         "path": str(weight.resolve()), "name": "char01_lw", "weight": 0.85,
         "sha256": hashlib.sha256(b"loom-lora-test").hexdigest(),

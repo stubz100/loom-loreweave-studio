@@ -206,8 +206,14 @@ def _catalog() -> dict:
                  "note": "UNGATED (Apache); 8 NFE distilled, no CFG"},
                 {"id": "zimage-base", "repo_id": "Tongyi-MAI/Z-Image",
                  "gated": False, "supports_negative_prompt": True, "supports_cfg_normalization": True,
-                 "defaults": {"num_steps": 50, "guidance_scale": 4.0},
-                 "note": "UNGATED (Apache); 28–50 steps, supports negatives + cfg-norm"},
+                 "defaults": {"num_steps": 50, "guidance_scale": 4.0, "width": 768, "height": 768},
+                 # The 6B base denoise is attention-bound and super-linear in tokens: ~10s/step at
+                 # 1024² vs ~3.3s at 768² on the 16 GB ROCm rig (~500s vs ~165s for 50 steps). So an
+                 # UNSET base cast defaults to 768² (iterate small, upscale the keeper) — explicit
+                 # dims still win, and turbo (already fast) keeps the 1024² pipeline default. Same
+                 # model_size_default mechanism as flux.2-dev's 512². See kb-zimage denoise-floor.
+                 "note": "UNGATED (Apache); 28–50 steps, supports negatives + cfg-norm; "
+                         "defaults to 768² (denoise floor — upscale after)"},
             ],
             "params": [
                 {"name": "model_name", "flag": "--model-name", "type": "enum", "default": "zimage-turbo"},
@@ -232,6 +238,12 @@ def _catalog() -> dict:
                  "choices": ["native_flash", "math", "flash", "_flash_3"],
                  "note": "on ROCm use native_flash or leave unset; avoid flash/_flash_3"},
                 {"name": "no_cpu_offload", "flag": "--no-cpu-offload", "type": "flag", "default": False},
+                {"name": "cpu_vae", "flag": "--cpu-vae", "type": "flag", "default": False,
+                 "note": "decode on CPU; bypasses the slow Windows ROCm/MIOpen VAE path"},
+                {"name": "compile", "flag": "--compile", "type": "flag", "default": False,
+                 "note": "opt-in torch.compile of the DiT (~10% faster/step; ~60s first-run compile, "
+                         "then cached). ROCm-gated; best for FIXED-SIZE batches (recompiles per shape). "
+                         "See kb-zimage denoise-floor chapter"},
             ],
             "modes": ["t2i", "img2img", "inpaint"],
         },

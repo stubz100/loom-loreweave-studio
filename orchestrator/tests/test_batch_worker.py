@@ -124,22 +124,21 @@ def test_zimage_batch_argv_writes_jobs_file(tmp_path):
     assert jobs["items"][1]["meta"]["coverage_cell"]["shot_size"] == "portrait"
 
 
-def test_zimage_single_argv_defaults_resident(tmp_path):
-    """Probe job_b4ae9136 showed the offloaded zimage-base VAE decode = 894s; loom now runs
-    zimage RESIDENT by default. A single t2i with no explicit offload flag must emit
-    `--no-cpu-offload` (worker `cpu_offload = not args.no_cpu_offload` → resident)."""
+def test_zimage_single_argv_defaults_cpu_offload(tmp_path):
+    """The full resident pipeline exceeds the 16 GB target, so an unset flag keeps the
+    worker's `cpu_offload=True` default by omitting `--no-cpu-offload`."""
     out = tmp_path / "out" / "job_s1"
     out.mkdir(parents=True)
     spec = JobSpec(pipeline="zimage", mode="t2i",
                    params={"prompt": "a hero", "model_name": "zimage-base"},
                    output_dir=out)
     argv = zimage.build_argv(spec, "python", Path("x/zimage/run_pipeline.py"))
-    assert "--no-cpu-offload" in argv and "--jobs-file" not in argv
+    assert "--no-cpu-offload" not in argv and "--jobs-file" not in argv
 
 
-def test_zimage_batch_defaults_resident_without_explicit_flag(tmp_path):
-    """The Stage-B/cast batch path must also default resident — a jobs file with no explicit
-    `no_cpu_offload` still resolves to `shared.cpu_offload = False` (run_jobs reads it)."""
+def test_zimage_batch_defaults_cpu_offload_without_explicit_flag(tmp_path):
+    """The batch path also omits an unset/false inverse flag, so run_jobs uses its
+    `shared.get("cpu_offload", True)` default."""
     out = tmp_path / "out" / "job_s2"
     out.mkdir(parents=True)
     spec = JobSpec(pipeline="zimage", mode="img2img",
@@ -148,13 +147,12 @@ def test_zimage_batch_defaults_resident_without_explicit_flag(tmp_path):
                    output_dir=out)
     zimage.build_argv(spec, "python", Path("x/zimage/run_pipeline.py"))
     jobs = json.loads((out / "jobs.json").read_text(encoding="utf-8"))
-    assert jobs["shared"]["cpu_offload"] is False
+    assert "cpu_offload" not in jobs["shared"]
     assert "no_cpu_offload" not in jobs["shared"]
 
 
-def test_zimage_explicit_offload_still_honored(tmp_path):
-    """The resident default is overridable: an explicit `no_cpu_offload=False` keeps offload
-    (single path emits no `--no-cpu-offload`), so a future OOM escape hatch still works."""
+def test_zimage_explicit_cpu_offload_still_honored(tmp_path):
+    """An explicit false inverse flag keeps CPU offload enabled."""
     out = tmp_path / "out" / "job_s3"
     out.mkdir(parents=True)
     spec = JobSpec(pipeline="zimage", mode="t2i",
@@ -162,6 +160,18 @@ def test_zimage_explicit_offload_still_honored(tmp_path):
                    output_dir=out)
     argv = zimage.build_argv(spec, "python", Path("x/zimage/run_pipeline.py"))
     assert "--no-cpu-offload" not in argv
+
+
+def test_zimage_cpu_vae_flag_is_wired_to_worker(tmp_path):
+    out = tmp_path / "out" / "job_cpu_vae"
+    out.mkdir(parents=True)
+    spec = JobSpec(pipeline="zimage", mode="t2i",
+                   params={"prompt": "a hero", "cpu_vae": True},
+                   output_dir=out)
+
+    argv = zimage.build_argv(spec, "python", Path("x/zimage/run_pipeline.py"))
+
+    assert "--cpu-vae" in argv
 
 
 def test_sd35_batch_argv_translates_slg_flag(tmp_path):

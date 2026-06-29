@@ -1597,6 +1597,8 @@ copy, verified byte-identical); the `run_pipeline.py` drift-guard target in the 
 (`src/pipeline/zimage/`) re-vendored so `test_vendored_workers_match_monorepo_source` stays green
 (stage1 is not guarded but synced too, so the monorepo worker stays runnable). **351 orchestrator
 tests green**; all edited files `py_compile`-clean; `emit_argv`/size-default round-trip verified.
+**✅ PUSHED `11fa6d8`** (loom main, `1c8e1f5..11fa6d8`). *(Monorepo working tree carries the matching
+KB-correction + re-vendored worker, left uncommitted per "ignore the monorepo".)*
 
 **Known wrinkle (not changed):** the `--serve` `_load` comment (`run_pipeline.py` ~L506) still cites
 "denoise was ~16 s" as the reason zimage runs resident in the warm path — that figure is an

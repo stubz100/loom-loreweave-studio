@@ -195,13 +195,25 @@ def run(
     # single run reveals which phase dominates. Defensive: if the pipeline rejects the callback kwarg
     # we retry without it (timing then only covers the whole call).
     import time as _ptime
-    _pb = {"start": _ptime.perf_counter(), "first": None, "last": None}
+    _pb = {"start": _ptime.perf_counter(), "first": None, "last": None, "lat": None, "free": None}
 
     def _probe_cb(_pipe, _step, _ts, _cbk):
         _t = _ptime.perf_counter()
         if _pb["first"] is None:
             _pb["first"] = _t
         _pb["last"] = _t
+        # Capture the LAST denoise latent + the free VRAM at that moment (just before decode).
+        # This isolates why the in-app decode is slow when the standalone VAE-only decode is fast:
+        #   - free_vram tiny  -> MIOpen's conv workspace is starved (offload/memory pressure)
+        #   - lat absmax huge / nonfinite>0 -> the real base latent hits a slow/overflow conv path
+        #     (would explain turbo's same-VAE decode being ~14x faster than base's).
+        if isinstance(_cbk, dict) and _cbk.get("latents") is not None:
+            _pb["lat"] = _cbk["latents"]
+        try:
+            if torch.cuda.is_available():
+                _pb["free"] = torch.cuda.mem_get_info()[0]
+        except Exception:
+            pass
         return _cbk
 
     call_kwargs.setdefault("callback_on_step_end", _probe_cb)
@@ -230,8 +242,20 @@ def run(
     # is still ~minutes with find_mode=2 + vae on cuda, the env var isn't reaching the worker.
     import os as _os
     _vae = getattr(pipe, "vae", None)
+    _extra = ""
+    _lat = _pb.get("lat")
+    if _lat is not None:
+        try:
+            _lf = _lat.detach().float()
+            _nf = int((~torch.isfinite(_lf)).sum().item())
+            _extra += (f" lat[absmax={_lf.abs().max().item():.2e} mean={_lf.mean().item():.2e} "
+                       f"std={_lf.std().item():.2e} nonfinite={_nf}]")
+        except Exception:
+            pass
+    if _pb.get("free") is not None:
+        _extra += f" free_vram_at_decode={_pb['free'] / (1024 ** 3):.2f}GB"
     _diag = (f"MIOPEN_FIND_MODE={_os.environ.get('MIOPEN_FIND_MODE', '(unset)')} "
-             f"vae_device={getattr(_vae, 'device', '?')}")
+             f"vae_device={getattr(_vae, 'device', '?')}{_extra}")
     if _pb["first"] is not None:
         print(f"[zimage-probe] encode+setup={_pb['first'] - _pb['start']:.1f}s "
               f"denoise={_pb['last'] - _pb['first']:.1f}s decode+post={_end - _pb['last']:.1f}s "

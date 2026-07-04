@@ -3102,7 +3102,8 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
   const last = steps[steps.length - 1];
   const canAdd = !last || last.output != null || liveStatus(last) === "done";
   const dead = (s: string) => s === "failed" || s === "canceled";
-  const isI2i = preset === "clean" || preset === "refine";   // plain img2img presets
+  const isI2i = preset === "clean" || preset === "refine"
+    || preset === "stylelock";   // plain img2img presets (stylelock = M2.10 route 3)
   const isUpscale = preset === "upscale";                    // M0e Part C — sd35 tile-CN upscale
   // M0d Part C — flux.2-dev gets the structured-JSON tree (the dev VLM parses JSON); klein/base
   // flux2 + zimage/sd35 use the plain prompt. flux2 takes no negatives.
@@ -3219,9 +3220,16 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
         <div className="pp-add">
           <div className="pp-add-row">
             <select value={preset}
-                    onChange={(e) => setPreset(e.target.value as PostprocStep["preset"])}>
+                    onChange={(e) => {
+                      const p = e.target.value as PostprocStep["preset"];
+                      setPreset(p);
+                      // M2.10 route 3: StyleLock re-imposes the L1 style — flux2 is the drift
+                      // source (422 server-side); default to the preset's sd35.
+                      if (p === "stylelock" && backend === "flux2") setBackend("sd35");
+                    }}>
               <option value="clean">Clean (i2i 0.5)</option>
               <option value="refine">Refine (i2i 0.25)</option>
+              <option value="stylelock" title="re-render toward the L1 style (appended fresh at queue time) — pushes a style-drifted flux2 cell back to the source look; strength 0.2 polish … 0.4 re-interpret">StyleLock 🎨 (i2i 0.3)</option>
               <option value="upscale">Scale ✨ (tile)</option>
               <option value="restore">Restore (GFPGAN)</option>
             </select>
@@ -3231,7 +3239,7 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
                       title="img2img backend family (flux2 = structured-JSON i2i on flux.2-dev)">
                 <option value="zimage">zimage</option>
                 <option value="sd35">sd35</option>
-                <option value="flux2">flux2 ✨</option>
+                {preset !== "stylelock" && <option value="flux2">flux2 ✨</option>}
               </select>
             )}
           </div>

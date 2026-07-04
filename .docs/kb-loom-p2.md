@@ -1256,11 +1256,15 @@ prompting guide (full links in the journal M2.10 entry).
   expansion (zimage/sd35 i2i) keeps the L1 text — their i2i path re-diffuses the styled source.
   Plus: **dev default guidance 4.0 → 3.0** (catalog variant defaults, Dev/JSON sampling preset,
   vendored worker `FLUX2_MODEL_INFO`) — author call ("make it 3 for now").
-- **Parked (available on request):** route 3 — a "StyleLock" chained post-pass (sd35/zimage i2i
-  @ ~0.3 strength with the L1 style prompt applied THERE, pushing cells back toward the source
-  look; ~90 % pre-built via the M0c postproc stack + M2.7 per-cell post_passes). Klein "KV edit"
-  workflows noted as a future stronger-preservation expansion mode. The ≤1024² ref-encode cap
-  stays parked from the perf thread (M2.9 journal).
+- **Route 3 — IMPLEMENTED as an ON-DEMAND postproc preset (author call: never auto-chained):**
+  **"StyleLock 🎨"** joins Clean/Refine/Upscale/Restore in the M0c Inspector stack — an i2i pass
+  (zimage|sd35, default sd35 @ 0.3, variable strength 0.2 polish … 0.4 re-interpret) whose
+  prompt = the source's own prompt + the **L1 style fragment resolved FRESH at queue time**
+  (step param `style_id` pins one; else the active style; 409 when none resolves). flux2 is a
+  rejected backend (422 — it's the drift source the pass corrects). Store schema enum +
+  request Literal extended.
+- **Parked:** Klein "KV edit" workflows as a future stronger-preservation expansion mode; the
+  ≤1024² ref-encode cap from the perf thread (M2.9 journal).
 
 ### Phase A — Training skeleton (prove a LoRA can be made + used on this rig)
 

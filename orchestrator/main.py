@@ -485,7 +485,7 @@ class AddPostprocStepRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     base: str
-    preset: Literal["clean", "refine", "restore", "upscale"] = "clean"
+    preset: Literal["clean", "refine", "restore", "upscale", "stylelock"] = "clean"
     backend: str | None = None
     params: dict = Field(default_factory=dict)
     mask: str | None = None
@@ -2341,6 +2341,11 @@ def create_app() -> FastAPI:
         # H×W, so source→control + a larger size = the upscale. sd35-fixed (SD3-medium tile CN).
         "upscale": {"backend": "sd35", "mode": "cn-inpaint",
                     "params": {"controlnet": "tile", "cn_scale": "0.6", "scale": 2}},
+        # M2.10 route 3 — "StyleLock": an ON-DEMAND i2i pass (author call: never auto-chained)
+        # that re-renders any image with the L1 style applied IN THE PASS — the pass's backend
+        # owns the look, so the text pulls TOWARD the source/L1 style instead of fighting a
+        # reference. Variable strength (0.2 ≈ polish … 0.4 ≈ re-interpret); zimage|sd35 only.
+        "stylelock": {"backend": "sd35", "mode": "img2img", "params": {"strength": 0.3}},
     }
 
     def _producing_job(src: str):
@@ -2388,10 +2393,15 @@ def create_app() -> FastAPI:
         # worker's batch path is t2i/ref only) — handled in the queue endpoint.
         if is_i2i and backend not in ("zimage", "sd35", "flux2"):
             raise HTTPException(422, f"img2img backend must be zimage|sd35|flux2, got {backend!r}")
+        if req.preset == "stylelock" and backend == "flux2":
+            raise HTTPException(422, "StyleLock re-imposes the L1 style — flux2 is the drift "
+                                     "source (M2.10); use zimage or sd35")
         if not is_i2i and req.backend and req.backend != spec["backend"]:
             raise HTTPException(422, f"{req.preset!r} backend is fixed ({spec['backend']})")
         if is_i2i:
             allowed = {"strength", "prompt", "negative_prompt", "model_name"}
+            if req.preset == "stylelock":
+                allowed |= {"style_id"}   # pin a specific L1 style (default: the active one)
             # M0e Part B — an optional OUTPUT SIZE (scale factor + explicit W×H) so a Clean/Refine
             # step can re-diffuse larger = an i2i creative upscale. zimage/sd35 only: flux2 i2i
             # (the M0d dev-JSON re-pose) keeps source dims — its job is edit-in-place, not enlarge.
@@ -2502,6 +2512,16 @@ def create_app() -> FastAPI:
             if not item_prompt:
                 raise HTTPException(422, "this image has no source prompt to re-render from — "
                                          "type a prompt for the clean/refine/upscale step")
+            # M2.10 route 3 — StyleLock: append the L1 style fragment, resolved FRESH at queue
+            # time (style edits count; step param `style_id` pins one, else the active style),
+            # after the content prompt (the R104 placement rule).
+            if step.get("preset") == "stylelock":
+                _sap, frag, _sneg, _ssid = bible.resolve_l1(ws, True, params_in.get("style_id"))
+                if not frag:
+                    raise HTTPException(409, "StyleLock needs an L1 style — add one in "
+                                             "L1 · World › Visual styles first")
+                if frag.lower() not in item_prompt.lower():
+                    item_prompt = f"{item_prompt}, {frag}"
         w, h = _image_dims(src_abs)   # source dims (restore + flux2 i2i preserve these)
         is_flux2 = backend == "flux2"
         if is_flux2:

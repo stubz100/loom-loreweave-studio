@@ -424,3 +424,36 @@ def test_store_mutations_are_thread_safe(client):
         t.join()
     assert not errs
     assert len(postproc.list_stacks(ws)) == 40   # nothing lost to a concurrent write
+
+
+def test_stylelock_appends_the_l1_style_at_queue_time(client):
+    """M2.10 route 3 — StyleLock: an ON-DEMAND i2i preset (author call: never auto-chained)
+    that re-renders any image toward the L1 style — the pass's backend owns the look, so the
+    text pulls TOWARD the source/L1 style. The fragment resolves FRESH at queue time and
+    appends after the content prompt (R104 placement); a flux2 backend -> 422 (it's the
+    drift source this pass exists to correct). `style_id` pins a specific style."""
+    from orchestrator import bible
+    from orchestrator.runner import RUNNER
+    base = _base_image(base="job_sl01/base.png")
+    r = client.post("/postproc/step", json={"base": base, "preset": "stylelock",
+                                            "backend": "flux2"})
+    assert r.status_code == 422
+    r = client.post("/postproc/step", json={"base": base, "preset": "stylelock"})
+    assert r.status_code == 200, r.text
+    step = r.json()["stacks"][0]["steps"][0]
+    assert step["backend"] == "sd35" and step["params"]["strength"] == 0.3
+    client.delete(f"/postproc/step/{step['id']}")
+    sid = bible.add_style(RUNNER.workspace, name="Ink",
+                          fragment="stark ink-wash rendering")["styles"][0]["id"]
+    r = client.post("/postproc/step", json={"base": base, "preset": "stylelock",
+                                            "params": {"style_id": sid, "strength": 0.22}})
+    assert r.status_code == 200, r.text
+    step = r.json()["stacks"][0]["steps"][0]
+    q = client.post(f"/postproc/step/{step['id']}/queue", json={})
+    assert q.status_code == 200, q.text
+    jid = q.json()["stacks"][0]["steps"][0]["job_id"]
+    job = RUNNER.get(jid)
+    p = job["params"]["batch_items"][0]["prompt"]
+    assert p.startswith("a portrait") and p.endswith("stark ink-wash rendering")
+    bi = job["params"]["batch_items"][0]
+    assert bi.get("strength", job["params"].get("strength")) == 0.22   # variable strength rides

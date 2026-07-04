@@ -1920,3 +1920,9 @@ one toggle, in the bottom bar, now stage-aware: **A·Cast** binds the global `ap
 (default ON, Save persists it as before); **B·Expansion** binds `styleOnB` (default OFF — the
 hero already carries the style). The Stage-B bar checkbox is gone; tooltips explain per stage.
 `tsc` + `vite build` clean; backend untouched.
+
+**Addendum 4 — StyleLock target pulldown (2026-07-05 00:40, ✅ PUSHED `74f404b`).** Author ask:
+show WHICH L1 style the pass pushes toward. When StyleLock is the selected preset, the add-step
+row gains a pulldown of all L1 styles — "(active style)" resolves the current default fresh at
+queue time; picking one pins it on the step (`params.style_id`, already server-supported).
+`tsc` + `vite build` clean; backend untouched.

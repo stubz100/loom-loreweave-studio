@@ -1650,5 +1650,5 @@ postproc queue-unwind (409 leaves the job table unchanged) + a 2-thread store ha
 `queue_staged` submit-failure restore (+ re-queue succeeds); cast admission gates on a too-heavy
 lineup member (422, nothing queued); curated refs + training_context carry `style_id` (stage-b
 cell-meta assert added to the zimage warm-cells test). **356 backend green; `tsc` + `vite build`
-clean.** No `src/pipeline/` worker code touched → no re-vendor. ⏭ Push owed at close (hash recorded
-here per convention).
+clean.** No `src/pipeline/` worker code touched → no re-vendor. **✅ PUSHED `780c33d`** (this
+hash-recording line rides the follow-up journal commit, per convention).

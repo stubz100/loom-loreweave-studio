@@ -1902,3 +1902,21 @@ zimage/sd35 i2i re-diffuse the styled source). Trade recorded honestly: with the
 `style_sid` resolves None → kept refs stamp `style_id: null` (truthful — no L1 text applied);
 ticking it back on restores the provenance stamp (flux2 still substitutes the ref directives for
 the text, unconditionally). `tsc` + `vite build` clean; backend untouched.
+
+**Addendum 2 — route 3 "StyleLock" built as an ON-DEMAND preset (2026-07-05 00:34, ✅ PUSHED
+`e951f4b`).** Author call: not auto-chained — an optional step on the M0c Inspector postproc
+stack. `_PP_PRESETS["stylelock"]` = i2i (zimage|sd35, default sd35 @ 0.3, variable strength);
+at queue time the step's prompt = the source's own prompt + the **L1 fragment resolved fresh**
+(`style_id` step param pins one, else the active style; 409 when none resolves) — the pass's
+backend owns the look, so the text pulls TOWARD the source/L1 style. flux2 backend → 422 (the
+drift source the pass corrects; also hidden in the panel's picker for this preset). Store
+schema enum + request `Literal` + `PostprocStep` TS type extended; panel option "StyleLock 🎨
+(i2i 0.3)". Tests +1 → **369 green** (422/defaults/pin-style/fresh-append/strength-rides);
+`tsc` + `vite build` clean. Spec §12 "M2.10" remediations updated (route 3 parked → built).
+
+**Addendum 3 — one stage-aware apply toggle (2026-07-05 00:35, ✅ PUSHED `c44144c`).** Author
+2nd-pass UX: the new Stage-B "L1 style" checkbox DUPLICATED the bottom L1 bar's "apply". Back to
+one toggle, in the bottom bar, now stage-aware: **A·Cast** binds the global `applyStyle`
+(default ON, Save persists it as before); **B·Expansion** binds `styleOnB` (default OFF — the
+hero already carries the style). The Stage-B bar checkbox is gone; tooltips explain per stage.
+`tsc` + `vite build` clean; backend untouched.

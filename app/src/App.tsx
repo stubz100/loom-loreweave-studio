@@ -170,6 +170,11 @@ export default function App() {
   const [castSampling, setCastSampling] = useState("");
   // M0d Part A — flux2 advanced (directive-led) prompting toggle for Stage-B expansion.
   const [advancedPromptB, setAdvancedPromptB] = useState(false);
+  // M2.10 UX (user 2026-07-04): expansion defaults the L1 style OFF — the hero already
+  // carries the style (flux2 assigns the reference's style; zimage/sd35 re-diffuse the
+  // styled source), and a ticked-but-bypassed global toggle read as confusing. Per-run
+  // re-tickable; independent of the cast bar's global applyStyle.
+  const [styleOnB, setStyleOnB] = useState(false);
   // M0d Part C — flux.2-dev structured-JSON prompt tree (t2i cast bar) + its panel toggle.
   const [castJsonTree, setCastJsonTree] = useState<Flux2PromptTree>(emptyFlux2PromptTree);
   const [showJsonTreeA, setShowJsonTreeA] = useState(false);
@@ -1056,8 +1061,8 @@ export default function App() {
       ...(identityOn !== null ? { identity: identityOn } : {}),   // omit = auto (R93)
       ...(stageBPipeline === "flux2" && advancedPromptB ? { advanced_prompt: true } : {}),
       character_clause: characterClause.trim() || undefined,
-      apply_style: applyStyle,
-      ...(genStyleId ? { style_id: genStyleId } : {}),
+      apply_style: styleOnB,   // M2.10 UX: expansion defaults the L1 style OFF (see state)
+      ...(styleOnB && genStyleId ? { style_id: genStyleId } : {}),
       ...(top.width !== undefined ? { width: top.width as number } : {}),
       ...(top.height !== undefined ? { height: top.height as number } : {}),
       ...(top.seed !== undefined ? { base_seed: top.seed as number } : {}),
@@ -1834,6 +1839,11 @@ export default function App() {
                     <input type="checkbox" checked={advancedPromptB}
                            onChange={(e) => setAdvancedPromptB(e.target.checked)} />
                     advanced prompting
+                  </label>
+                  <label className="p-flag" title="M2.10: expansion defaults the L1 style OFF — the hero already carries it (flux2 assigns the reference's style; zimage/sd35 re-diffuse the styled source). Tick to re-append the L1 style text to each cell prompt (and stamp style provenance on kept refs).">
+                    <input type="checkbox" checked={styleOnB}
+                           onChange={(e) => setStyleOnB(e.target.checked)} />
+                    L1 style
                   </label>
                   {advancedPromptB && (
                     <span className="muted" title="flux.2-dev parses structured JSON precisely, so each cell's directive prompt is emitted as a JSON object; klein/base get the labeled directive string">

@@ -2275,6 +2275,7 @@ export default function App() {
               stack={postprocStacks.find((s) => s.base === selBase)}
               jobs={jobs}
               busy={busy}
+              l1Styles={styles?.styles ?? []}
               modelsFor={(b) => (catalog?.[b]?.variants ?? []).map((v) => v.id)}
               angleDirectives={catalog?.flux2?.angle_directives ?? {}}
               onAdd={(preset, backend, params) =>
@@ -3065,10 +3066,11 @@ function StyleDetail({ st, busy, isActive, canDelete, sampleJob, onSave, onDelet
 // Clean/Refine/custom (i2i) + Restore (GFPGAN) steps; each is configured, then queued
 // independently, and records its source → output (the chain). Live status reads the job
 // (the persisted record lags one poll); the "add" gate opens once the tail step is done.
-function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, onQueue, onRemove, onView }: {
+function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives, onAdd, onQueue, onRemove, onView }: {
   stack: PostprocStack | undefined;
   jobs: Record<string, Job>;
   busy: boolean;
+  l1Styles: { id: string; name: string }[];   // StyleLock target pulldown (L1 styles)
   modelsFor: (backend: string) => string[];   // variant ids for an i2i backend (catalog)
   angleDirectives: Record<string, string>;    // M0d Part C — flux.2-dev JSON tree pose presets
   onAdd: (preset: PostprocStep["preset"], backend: string | undefined,
@@ -3079,6 +3081,7 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
 }) {
   const [preset, setPreset] = useState<PostprocStep["preset"]>("clean");
   const [backend, setBackend] = useState("zimage");
+  const [styleId, setStyleId] = useState("");    // StyleLock: pinned L1 style ("" = active)
   const [model, setModel] = useState("");        // "" = the backend's default model
   const [strength, setStrength] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -3127,6 +3130,7 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
         params.prompt = prompt.trim();
       }
       if (!isFlux2 && neg.trim()) params.negative_prompt = neg.trim();   // flux2 = no negatives
+      if (preset === "stylelock" && styleId) params.style_id = styleId;  // pin the target style
     } else if (isUpscale) {
       // tile-CN upscale (sd35-fixed): optional prompt (defaults to the source's) + CN scale.
       if (cnScale.trim()) params.cn_scale = cnScale.trim();
@@ -3144,7 +3148,7 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
     }
     onAdd(preset, isI2i ? backend : undefined, params);   // upscale/restore = preset-fixed backend
     setModel(""); setStrength(""); setPrompt(""); setNeg(""); setBlend("");
-    setScale(""); setOutW(""); setOutH(""); setCnScale("");
+    setScale(""); setOutW(""); setOutH(""); setCnScale(""); setStyleId("");
     setJsonTree(emptyFlux2PromptTree());
   };
 
@@ -3242,6 +3246,13 @@ function PostprocPanel({ stack, jobs, busy, modelsFor, angleDirectives, onAdd, o
                 <option value="zimage">zimage</option>
                 <option value="sd35">sd35</option>
                 {preset !== "stylelock" && <option value="flux2">flux2 ✨</option>}
+              </select>
+            )}
+            {preset === "stylelock" && (
+              <select value={styleId} onChange={(e) => setStyleId(e.target.value)}
+                      title="which L1 style this pass pushes toward — pinned on the step; (active style) resolves the current default fresh at queue time">
+                <option value="">(active style)</option>
+                {l1Styles.map((s) => <option key={s.id} value={s.id}>🎨 {s.name}</option>)}
               </select>
             )}
           </div>

@@ -119,9 +119,6 @@ If a P1-curated character can be trained and then re-generated recognizably via 
   unused. The same trainer engine will train it **when stacking makes it usable — now P5 (R147,
   moved from P6)**.
 - **Muse/SLM creative authoring** (Stage-B prompts, dialogue) → P3/P4.
-- **GraphRAG / retrieval index build.** P2 writes graph-ready facts and manifests, but does not build
-  a vector store, graph database, or retrieval/query layer. That infrastructure is deferred
-  post-v1/P6 (R170).
 - Shots/audio/Flow/Episode → P3+.
 
 ---
@@ -177,14 +174,6 @@ trainer config, checkpoints, samples) — on the **work disk**, governed by the 
 the **two-threshold hard stop** (R96). **Promote-then-manual-cleanup** (R13): on success, copy the
 LoRA + write `lora.manifest.json`, leave temp for a one-click "delete this run's temp".
 
-**Graph-ready, not GraphRAG-built (R170):** P2 should output facts cleanly enough that a later
-GraphRAG index can ingest them directly. `training_context.json` is a compact snapshot of the
-canonical inputs: `asset_id`, `version_id`, class, display name, selected style id, trigger token,
-base family, ref ids + coverage cells + source generation job ids, parent version/LoRA ids when
-relevant, and the readiness summary. `caption_policy.json` records the deterministic caption
-template version, ordered source fields, omitted-empty-field behavior, and trigger-token rule.
-These are CPU-only records written beside the dataset; no retrieval index, graph database, or VLM is
-started in P2.
 
 **Finalize interaction (R51/R60/R119 — Saved ≠ Finalized):** training runs on a **Saved
 (committed) but *unfinalized*** version (R119) — the P1 done-line leaves the version **Saved**, and
@@ -368,10 +357,6 @@ enriches captions + scoring with project context. **None of that is built in P2.
    readiness only. The VLM (and its project context) is a P4 subsystem; building it here would
    re-inflate the phase we just trimmed. If on-model proxy (face-embedding) proves weak, improve the
    *proxy*, don't reach for the VLM.
-5. **Resist pulling GraphRAG into P2.** GraphRAG is promising for project-wide relational retrieval,
-   but it is not needed to train a character LoRA. **Guardrail:** P2 writes graph-ready facts
-   (`training_context.json`, `caption_policy.json`, manifest hashes) and stops there. Retrieval
-   index build/query remains P6/post-v1 (R170).
 6. **Readiness must not block the author.** **Guardrail:** the readiness meter is **advisory** —
    it *recommends*, never *forbids* training (R-philosophy: assist, author decides).
 7. **Don't regress the MVP.** P1's done-line (saved curated profile, no training) must keep working
@@ -1294,7 +1279,17 @@ incrementally) instead of the whole 17-cell set.
   cell share its icon; per-icon re-generate; CellPicker falls back to a text chip for cells
   with no icon yet.
 
-**Sizing:** backend ≈ the rerun endpoint; UI ≈ TrainPanel. Build next session.
+**Status: ✅ BUILT 2026-07-05** (373 backend tests, tsc+vite clean; journal "M2.11"). Backend:
+`StageBRequest.cells` index filter over the always-full deterministic build (422 on empty /
+out-of-range); `bible.pose_key/set_pose_icon/pose_icon_path/list_pose_icons`; endpoints
+`GET /bible/poses` (index-aligned cells + icon presence), `POST /bible/poses/generate` (dedup
+by pose key, 256² flux2 t2i, M0d directive prompts — JSON on dev — neutral subject, one shared
+warm_group, weight/turbo/disk gates), `POST /bible/poses/{key}/icon`, `GET
+/bible/poses/{key}/file`. UI: `PosePicker.tsx` = `PosesPanel` (new L1 · 🕴 Poses rail tab:
+subject/turbo/generate-missing/re-all + live fill via the style-sample client-close pattern) +
+`CellPicker` (Stage-B `▦ cells` button → toggle grid, all/none, count badge, empty-subset guard
+on fire; icons with text-chip fallback). ⏭ On-rig icon-set generation + one subset sweep = the
+author's visual sign-off.
 
 ### Phase A — Training skeleton (prove a LoRA can be made + used on this rig)
 
@@ -1341,7 +1336,7 @@ incrementally) instead of the whole 17-cell set.
    param-window-style `CellPicker` (multi-select) + `StageBRequest.cells` index filter; icons =
    a GENERATED per-cell set (L1-styles pattern) from a new **L1 · Poses** sub-tab — flux2-dev
    advanced JSON @ 256², neutral mannequin subject, cell-keyed + durable bible-side.
-   Design: §12 "M2.11". *(Recorded 2026-07-05; build next.)*
+   Design + status: §12 "M2.11". *(✅ built 2026-07-05; on-rig sign-off owed.)*
 3f. **M2.10 — expansion style fidelity (route 1).** flux2 Stage-B stops restating the L1 style in
    text and instead **assigns the reference's style** (ref-role prompting per BFL guidance) +
    pins identity to the hero; dev default guidance 4.0 → 3.0. Routes 2/3 (StyleLock post-pass,
@@ -1373,8 +1368,6 @@ incrementally) instead of the whole 17-cell set.
 
 - **The VLM / Qwen3-VL online path → P4** (R116): VLM-assisted captioning/scoring + the
   **comprehensive project-wide VLM context** built during L1/L2 authoring. P2 is VLM-free.
-- **GraphRAG / retrieval index → P6/post-v1** (R170): P2 emits structured facts only; it does not
-  build or query a persistent retrieval index.
 - **Video LoRAs** (LTXV/Wan) → later (need video work + larger scratch).
 - **Style LoRA** — **declared only**, trained later (when **multi-LoRA stacking, P5** — R147, moved
   from P6 — makes it usable). P2 does not build a style-LoRA path (R122).
@@ -1447,8 +1440,6 @@ checkpoint" column instead of the default "discard + re-queue/fail" path.
 - Engine: `kb-pipelines01.md` "LoRA Primer" + "Local Pipeline Fit"; `kb-slm.md` (TRL/PEFT pattern);
   `kb-loom-p1.md` §7.1 (dataset recipe + sources); `src/village_ai/models/` (Qwen3-VL on disk).
 - Build dependency: `kb-storyboard01.md` §8.1 item 1 (LoRA flags on zimage/sd35).
-- Retrieval posture: `kb-storyboard01.md` R170 — P2 writes graph-ready facts, while persistent
-  GraphRAG/index/query is deferred.
 - UI preflight: author feedback 2026-06-18 — P1 MVP usable, but shell navigation, L1 density, and
   L2 postprocess workflow need correction before P2/P3 functionality piles onto them.
 - Quantized dev replacement: old-project spike `src/pipeline/flux2_q8` (2026-06-26) proving

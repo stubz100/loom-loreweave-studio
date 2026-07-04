@@ -113,6 +113,25 @@ body {
 }
 .stage-tab.on { background: var(--amber); color: #1a1a1a; border-color: var(--amber); font-weight: 600; }
 
+/* M2.11 — pose icons (L1 · Poses) + the Stage-B CellPicker */
+.poses-panel { display: flex; flex-direction: column; gap: 8px; }
+.poses-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.pose-subject { flex: 1; min-width: 220px; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; font-size: 12px; }
+.pose-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 6px; }
+.pose-tile { position: relative; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0; cursor: pointer; aspect-ratio: 1; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; }
+.pose-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pose-tile.on { border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber) inset; }
+.pose-tile.off { opacity: 0.35; }
+.pose-chip { color: var(--muted); font-size: 10px; padding: 6px; text-align: center; }
+.pose-cap { position: absolute; left: 4px; bottom: 2px; font-size: 9px; color: var(--muted);
+  background: rgba(0,0,0,0.45); border-radius: 3px; padding: 0 4px; }
+.cell-picker { border: 1px solid var(--line); background: var(--panel); border-radius: 6px;
+  padding: 8px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 8px; }
+
 /* Inspector ↻ re-run (2026-07-04 — clone a failed/black sweep cell with optional knobs) */
 .rerun-panel {
   border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px;

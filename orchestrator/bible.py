@@ -9,6 +9,7 @@ atomic-write + schema rules (validated against `story.schema.json`).
 
 from __future__ import annotations
 
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -311,6 +312,56 @@ def style_sample_path(ws: Workspace, style_id: str) -> Path:
     if not p.is_file():
         raise ws_mod.WorkspaceError("sample image file is missing")
     return p
+
+
+# --- M2.11: pose ICONS — generated, cell-keyed, durable (the CellPicker's thumbnails) ---
+# The L1-styles sample pattern, but keyed on the POSE (shot+angle+expression) instead of a
+# style id: recipes sharing a cell share its icon; background is per-sweep noise, not pose
+# identity, so it never enters the key. Files are the truth (no story.json field).
+
+def pose_key(cell: dict) -> str:
+    """Deterministic icon key for a coverage cell — pose only (shot__angle__expression)."""
+    return f"{cell['shot_size']}__{cell['angle']}__{cell['expression']}"
+
+
+def _poses_dir(ws: Workspace) -> Path:
+    return ws.bible_dir / "poses"
+
+
+def list_pose_icons(ws: Workspace) -> dict[str, str]:
+    """key -> filename for every stored pose icon."""
+    pdir = _poses_dir(ws)
+    if not pdir.is_dir():
+        return {}
+    return {p.stem: p.name for p in sorted(pdir.iterdir()) if p.is_file()}
+
+
+def set_pose_icon(ws: Workspace, key: str, *, source_output: str) -> dict:
+    """Persist `source_output` (an out/-relative image from a finished generation) as the
+    pose icon for `key` — copied into `bible/poses/<key>.<ext>` so it survives the source
+    job's deletion (mirrors the style sample). Re-setting overwrites."""
+    if not re.fullmatch(r"[a-z0-9_]+__[a-z0-9_]+__[a-z0-9_]+", key):
+        raise ws_mod.WorkspaceError(f"invalid pose key {key!r}")
+    if ".." in source_output or "\\" in source_output:
+        raise ws_mod.WorkspaceError(f"invalid output {source_output!r}")
+    src = (ws.out_dir / source_output).resolve()
+    if not src.is_relative_to(ws.out_dir.resolve()) or not src.is_file():
+        raise ws_mod.WorkspaceError(f"output {source_output!r} not found in out/")
+    pdir = _poses_dir(ws)
+    pdir.mkdir(parents=True, exist_ok=True)
+    for old in pdir.glob(f"{key}.*"):
+        old.unlink(missing_ok=True)
+    dst = pdir / f"{key}{src.suffix.lower()}"
+    shutil.copy2(src, dst)
+    return list_pose_icons(ws)
+
+
+def pose_icon_path(ws: Workspace, key: str) -> Path:
+    """The on-disk path of a pose icon (for serving); raises if missing."""
+    for p in _poses_dir(ws).glob(f"{key}.*"):
+        if p.is_file():
+            return p
+    raise ws_mod.WorkspaceError(f"pose {key!r} has no icon yet")
 
 
 # --- M8: L1 World — world prose + story spine -------------------------------------

@@ -361,6 +361,48 @@ export function styleSampleUrl(id: string, cacheKey?: string): string {
   return `${orchestratorUrl()}/bible/styles/${encodeURIComponent(id)}/sample/file${q}`;
 }
 
+// --- M2.11: pose icons (L1 · Poses) + the Stage-B CellPicker ----------------------
+
+/** One recipe cell for the CellPicker / Poses tab — index-aligned with Stage-B `cells`. */
+export interface PoseCell {
+  index: number;
+  coverage_cell: CoverageCell;
+  key: string;        // shot__angle__expression — the icon's durable key
+  icon: boolean;      // an icon exists bible-side
+}
+
+export async function getPoseCells(preset: string): Promise<{ preset: string; count: number; cells: PoseCell[] }> {
+  const res = await fetch(`${orchestratorUrl()}/bible/poses?preset=${encodeURIComponent(preset)}`);
+  if (!res.ok) throw new Error(`poses ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+export async function generatePoseIcons(
+  body: { preset: string; subject?: string; turbo?: boolean; force?: boolean },
+): Promise<{ count: number; jobs: { key: string; job_id: string }[] }> {
+  const res = await fetch(`${orchestratorUrl()}/bible/poses/generate`, {
+    method: "POST",
+    headers: { "X-Loom-Token": orchestratorToken(), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`generate icons ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+export async function setPoseIcon(key: string, output: string): Promise<void> {
+  const res = await fetch(`${orchestratorUrl()}/bible/poses/${encodeURIComponent(key)}/icon`, {
+    method: "POST",
+    headers: { "X-Loom-Token": orchestratorToken(), "Content-Type": "application/json" },
+    body: JSON.stringify({ output }),
+  });
+  if (!res.ok) throw new Error(`set icon ${res.status}: ${await res.text()}`);
+}
+
+export function poseIconUrl(key: string, cacheKey?: string): string {
+  const q = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
+  return `${orchestratorUrl()}/bible/poses/${encodeURIComponent(key)}/file${q}`;
+}
+
 // --- M8: L1 World (world prose + global negative + story spine) ------------------
 
 export async function getBible(signal?: AbortSignal): Promise<BibleInfo> {
@@ -697,6 +739,9 @@ export interface StageBRequest {
   /** M0d Part A (flux2) — build each cell prompt from the explicit camera+pose DIRECTIVE
    * form (the loose-pose fix) instead of the flat coverage phrase. flux2-only (gated server-side). */
   advanced_prompt?: boolean;
+  /** M2.11 — fire a SUBSET of the recipe: indices into the deterministic full build
+   * (the CellPicker). Omit = the whole set. */
+  cells?: number[];
 }
 
 /** M7 — video-sketch harvest: one ltxv i2v job from the hero ★ aimed at a target

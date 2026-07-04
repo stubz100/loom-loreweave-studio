@@ -244,6 +244,28 @@ class StyleSampleRequest(BaseModel):
     model: str | None = None
 
 
+class GeneratePoseIconsRequest(BaseModel):
+    """M2.11 — generate the pose ICON set for a recipe (spec §12 "M2.11"): one small flux2
+    t2i per DISTINCT pose cell (shot+angle+expression), neutral subject on a plain
+    background, NO L1 style / refs — the CellPicker's thumbnails. Skips keys that already
+    have an icon unless `force`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    preset: str = recipe.DEFAULT_PRESET
+    subject: str = "a simple wooden mannequin figure, plain light grey background"
+    model_name: str = "flux.2-dev"
+    turbo: bool = False
+    force: bool = False
+    seed: int = 7
+
+
+class PoseIconRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    output: str          # out/-relative image of a finished generation
+
+
 class RerunJobRequest(BaseModel):
     """Re-run ONE terminal job as a fresh queue entry (user 2026-07-04): a failed/NaN-black
     expansion cell is 1 of a generated prompt set — the recipe bar can't re-create just it,
@@ -354,6 +376,9 @@ class StageBRequest(BaseModel):
     # (flux2_prompt) instead of the flat coverage phrase: the loose-pose fix for ref-mode. Only
     # meaningful for flux2 (the UI exposes it there); harmless on zimage/sd35.
     advanced_prompt: bool = False
+    # M2.11 — fire a SUBSET of the recipe (the CellPicker): indices into the deterministically
+    # built FULL recipe. None/omitted = the whole set; [] is a 422 (nothing to fire).
+    cells: list[int] | None = None
 
 
 class CreateVersionRequest(BaseModel):
@@ -770,6 +795,7 @@ def create_app() -> FastAPI:
                                "DELETE /training/staged/{id}",
                                "POST /postproc/step", "POST /postproc/step/{id}/queue",
                                "DELETE /postproc/step/{id}",
+                               "POST /bible/poses/generate", "POST /bible/poses/{key}/icon",
                                "POST /components/fetch", "POST /shutdown"],
             "worker_reap": WORKER_REAP,
             "work_disk_root": str(CONFIG.work_disk_root),
@@ -1260,6 +1286,99 @@ def create_app() -> FastAPI:
         except ws_mod.WorkspaceError as e:
             raise HTTPException(404, str(e))
 
+    # --- M2.11: pose icons (L1 · Poses) — the CellPicker's generated thumbnails ---------
+
+    @app.get("/bible/poses")
+    def get_pose_cells(preset: str = recipe.DEFAULT_PRESET) -> dict:
+        """M2.11 — a recipe's cells for the CellPicker / L1 Poses tab: index-aligned with
+        Stage-B (same deterministic build), each with its pose key + icon presence.
+        Unauthenticated read."""
+        ws = _require_ws()
+        try:
+            # the clause never reaches this surface (cells/keys only) — any non-empty works
+            built = recipe.build_recipe(preset, character_clause="pose", base_seed=0,
+                                        shared_seed=True)
+        except recipe.RecipeError as e:
+            raise HTTPException(422, str(e))
+        icons = bible.list_pose_icons(ws)
+        cells = [{"index": c["index"], "coverage_cell": c["coverage_cell"],
+                  "key": bible.pose_key(c["coverage_cell"]),
+                  "icon": bible.pose_key(c["coverage_cell"]) in icons}
+                 for c in built["cells"]]
+        return {"preset": preset, "count": len(cells), "cells": cells}
+
+    @app.post("/bible/poses/generate")
+    def generate_pose_icons(req: GeneratePoseIconsRequest,
+                            _auth: None = Depends(require_token)) -> dict:
+        """M2.11 — fire one 256² flux2 t2i per DISTINCT pose cell of the recipe (dedup by
+        key; existing icons skipped unless `force`). The M0d directive prompts (JSON on
+        dev — the prompt-adherence bet, and a live test of the directives themselves) on a
+        neutral subject; NO L1 style, no refs. The client sets each finished job's output
+        as the icon (POST /bible/poses/{key}/icon), like the style samples. Token-gated."""
+        ws = _require_ws()
+        try:
+            model_catalog.validate_model("flux2", req.model_name)
+            # cells/keys only — the icon prompts are built below from req.subject directly
+            built = recipe.build_recipe(req.preset, character_clause="pose", base_seed=0,
+                                        shared_seed=True)
+        except (model_catalog.CatalogError, recipe.RecipeError) as e:
+            raise HTTPException(422, str(e))
+        variant = model_catalog.find_variant("flux2", req.model_name)
+        if variant and not components.variant_weights_present(variant):
+            raise HTTPException(412, {"error": f"flux2 model {variant['id']!r} not in cache",
+                                      "repo_id": variant["repo_id"], "gated": variant["gated"],
+                                      "hint": "fetch it first"})
+        if req.turbo:
+            t_ok, t_missing = components.postproc_weights_status("flux2_turbo_lora")
+            if not t_ok:
+                raise HTTPException(412, {"error": "Flux2-Turbo LoRA weight missing",
+                                          "missing": t_missing,
+                                          "hint": "POST /components/fetch?postproc=flux2_turbo_lora"})
+        if GUARD.is_hard_blocked():
+            raise HTTPException(507, f"disk hard-stop — {GUARD.block_reason()}")
+        icons = bible.list_pose_icons(ws)
+        todo: dict[str, dict] = {}
+        for c in built["cells"]:
+            k = bible.pose_key(c["coverage_cell"])
+            if k not in todo and (req.force or k not in icons):
+                todo[k] = c["coverage_cell"]
+        if not todo:
+            return {"count": 0, "jobs": [], "batch_id": None}
+        wg = "poses_" + uuid.uuid4().hex[:8]     # one warm worker serves the whole icon set
+        batch_id = "bat_" + uuid.uuid4().hex[:8]
+        is_dev = req.model_name == "flux.2-dev"
+        jobs = []
+        for i, (k, cov) in enumerate(todo.items()):
+            prompt = flux2_prompt.build_cell_prompt(cov, req.subject, "", as_json=is_dev)
+            params: dict = {"prompt": prompt, "width": 256, "height": 256, "seed": req.seed,
+                            "model_name": req.model_name, "meta": {"pose_key": k}}
+            if req.turbo:
+                params["turbo"] = True
+            jid = RUNNER.submit(pipeline="flux2", mode="t2i", params=params,
+                                batch_id=batch_id, index=i, batch_size=len(todo),
+                                requester_id="bible_poses", warm_group=wg)
+            jobs.append({"key": k, "job_id": jid})
+        LOG.info("pose icons: %d job(s) for preset %s", len(jobs), req.preset)
+        return {"count": len(jobs), "jobs": jobs, "batch_id": batch_id}
+
+    @app.post("/bible/poses/{key}/icon")
+    def put_pose_icon(key: str, req: PoseIconRequest,
+                      _auth: None = Depends(require_token)) -> dict:
+        """Persist a finished generation's output as this pose's icon (durable bible-side
+        copy, survives source-job deletion). Token-gated."""
+        try:
+            return {"icons": bible.set_pose_icon(_require_ws(), key, source_output=req.output)}
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
+    @app.get("/bible/poses/{key}/file")
+    def get_pose_icon_file(key: str):
+        """Serve a pose icon. Unauthenticated read (mirrors style samples)."""
+        try:
+            return FileResponse(bible.pose_icon_path(_require_ws(), key))
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
     @app.get("/bible")
     def get_bible() -> dict:
         """The full L1 World record (style + world prose + spine). Unauthenticated read."""
@@ -1746,6 +1865,18 @@ def create_app() -> FastAPI:
         # repaint the background around the held subject. Each group = ONE batch job. flux2
         # (§11) is ONE `ref` group — every cell is reference-conditioned on the hero.
         cells = built["cells"]
+        # M2.11 — subset firing: the recipe is ALWAYS built in full first (same seed rule, same
+        # prompts), so a subset cell is byte-identical to that cell in a full sweep — datasets
+        # stay coherent when a sweep is assembled incrementally or single poses are re-rolled.
+        if req.cells is not None:
+            want = set(req.cells)
+            if not want:
+                raise HTTPException(422, "cells is empty — omit it to fire the whole recipe")
+            bad = sorted(i for i in want if i < 0 or i >= len(cells))
+            if bad:
+                raise HTTPException(422, f"cell indices out of range for {req.preset!r} "
+                                         f"({len(cells)} cells): {bad}")
+            cells = [c for c in cells if c["index"] in want]
         if is_flux2:
             groups = [("ref", cells, None)]
         elif req.realize == "mixed":
@@ -1770,7 +1901,7 @@ def create_app() -> FastAPI:
         if req.dry_run:
             # Preview with a single-cell argv (a batch argv would write jobs.json into
             # out/); the real run is ONE --jobs-file batch job per realization group.
-            cell0 = built["cells"][0]
+            cell0 = cells[0]   # M2.11: the first SELECTED cell (== built[0] without a subset)
             if is_flux2:
                 p0 = {"prompt": cell0["prompt"], "ref_images": [str(hero_path)],
                       "width": eff_width, "height": eff_height, "seed": cell0["seed"],
@@ -1782,7 +1913,7 @@ def create_app() -> FastAPI:
                       "seed": cell0["seed"], "model_name": model_name, **extra}
                 spec = JobSpec(pipeline=req.pipeline, mode="img2img", params=p0, output_dir=ws.out_dir)
             return {"dry_run": True, "preset": req.preset, "pipeline": req.pipeline,
-                    "planned_jobs": planned, "items": built["target"], "split": split,
+                    "planned_jobs": planned, "items": len(cells), "split": split,
                     "realize": req.realize, "bg_mask": req.bg_mask,
                     "advanced_prompt": built["advanced_prompt"],
                     "json_prompt": built["json_prompt"],

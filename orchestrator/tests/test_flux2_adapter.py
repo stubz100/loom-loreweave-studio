@@ -190,6 +190,39 @@ def test_stage_b_flux2_ref_owns_the_style_not_the_l1_text(client):
     assert "battle-fashion" in r2.json()["first_cell"]["prompt"]  # non-flux2 unchanged
 
 
+def test_stage_b_cells_subset_fires_only_the_selected_indices(client):
+    """M2.11 — the CellPicker contract: `cells` = indices into the FULL deterministically
+    built recipe (same seed rule → a subset cell is byte-identical to that cell in a full
+    sweep). Empty list / out-of-range → 422; a real submit queues exactly the subset."""
+    from orchestrator.runner import RUNNER
+    a = _asset_with_hero(client, RUNNER.workspace, name="Subset")
+    sub = client.post(f"/assets/{a['id']}/stage-b",
+                      json={"pipeline": "flux2", "preset": "npc_lite", "dry_run": True,
+                            "base_seed": 7, "cells": [2, 5]})
+    assert sub.status_code == 200, sub.text
+    body = sub.json()
+    assert body["planned_jobs"] == 2 and body["items"] == 2
+    assert body["first_cell"]["index"] == 2          # the first SELECTED cell, not cell 0
+    assert client.post(f"/assets/{a['id']}/stage-b",
+                       json={"pipeline": "flux2", "preset": "npc_lite", "dry_run": True,
+                             "cells": []}).status_code == 422
+    assert client.post(f"/assets/{a['id']}/stage-b",
+                       json={"pipeline": "flux2", "preset": "npc_lite", "dry_run": True,
+                             "cells": [0, 99]}).status_code == 422
+    r = client.post(f"/assets/{a['id']}/stage-b",
+                    json={"pipeline": "flux2", "preset": "npc_lite", "base_seed": 7,
+                          "cells": [5]})
+    assert r.status_code == 200, r.text
+    (jid,) = r.json()["job_ids"]
+    job = RUNNER.get(jid)
+    from orchestrator import recipe as recipe_mod
+    ref_full = recipe_mod.build_recipe("npc_lite", character_clause="x", base_seed=7,
+                                       shared_seed=True)
+    assert job["coverage_cell"] == ref_full["cells"][5]["coverage_cell"]   # exactly cell 5
+    assert job["stage"] == "B" and job["batch_size"] == 1
+    RUNNER.cancel(jid)
+
+
 def test_stage_b_flux2_dev_defaults_to_512(client):
     """User 2026-06-21: a flux.2-dev Stage-B expansion ran at the 1024² StageBRequest default
     (~4k tokens → tens of minutes). M0e Part A now reaches Stage-B too — an UNSET size resolves

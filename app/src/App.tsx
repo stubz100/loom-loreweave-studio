@@ -107,6 +107,7 @@ import {
 import { log } from "./lib/log";
 import TrainPanel from "./TrainPanel";
 import RerunPanel from "./RerunPanel";
+import { CellPicker, PosesPanel } from "./PosePicker";
 
 // Coverage-cell vocabulary (frozen P1→P2 contract, coverage.py) — drives the Stage-C
 // curation filters (P1-12). Keep in lockstep with the backend vocab.
@@ -158,11 +159,14 @@ export default function App() {
   // M8 — L1 World view toggle (ASSETS bootstrap vs the WORLD authoring surface).
   const [view, setView] = useState<"assets" | "world">("assets");
   // M0b — L1 authoring sub-tab (rail nav for the World workspace): styles / world / spine.
-  const [l1Tab, setL1Tab] = useState<"styles" | "world" | "spine">("styles");
+  const [l1Tab, setL1Tab] = useState<"styles" | "world" | "spine" | "poses">("styles");
   const [applyStyle, setApplyStyle] = useState(true);
   // P1/M3 bootstrap stages (A casting · B expansion · C curation) + their controls.
   const [stage, setStage] = useState<"A" | "B" | "C" | "D">("A");
   const [recipePreset, setRecipePreset] = useState<RecipePreset>("full_coverage");
+  // M2.11 — CellPicker subset (null = whole recipe); reset whenever the preset changes.
+  const [cellSel, setCellSel] = useState<number[] | null>(null);
+  const [showCells, setShowCells] = useState(false);
   const [stageBPipeline, setStageBPipeline] = useState<"zimage" | "sd35" | "flux2">("zimage");
   const [stageBModel, setStageBModel] = useState("");   // "" = the worker default variant
   // M0d Part B — flux2 Sampling preset id ("" = Custom: the hand-set model/steps/guidance).
@@ -1061,6 +1065,7 @@ export default function App() {
       ...(identityOn !== null ? { identity: identityOn } : {}),   // omit = auto (R93)
       ...(stageBPipeline === "flux2" && advancedPromptB ? { advanced_prompt: true } : {}),
       character_clause: characterClause.trim() || undefined,
+      ...(cellSel !== null ? { cells: cellSel } : {}),   // M2.11 — fire a subset only
       apply_style: styleOnB,   // M2.10 UX: expansion defaults the L1 style OFF (see state)
       ...(styleOnB && genStyleId ? { style_id: genStyleId } : {}),
       ...(top.width !== undefined ? { width: top.width as number } : {}),
@@ -1099,6 +1104,10 @@ export default function App() {
 
   const onStageB = () => {
     if (!activeAsset || !hasHero) return;
+    if (cellSel !== null && cellSel.length === 0) {
+      setError("no cells selected — pick at least one in ▦ cells (or choose all)");
+      return;
+    }
     void fireStageB(buildStageBBody());
   };
 
@@ -1535,6 +1544,11 @@ export default function App() {
                       title="premise + characters → stub profiles (R55)">
                 🧬 Story spine
               </button>
+              <button className={`asset-row ${l1Tab === "poses" ? "sel" : ""}`}
+                      onClick={() => setL1Tab("poses")}
+                      title="M2.11 — generated pose icons (256² flux2, neutral mannequin) for the Stage-B cell picker">
+                🕴 Poses
+              </button>
             </>
           )}
         </nav>
@@ -1788,10 +1802,17 @@ export default function App() {
               <label title="coverage-matrix preset (R111): candidate count vs detail">
                 recipe
                 <select value={recipePreset}
-                        onChange={(e) => setRecipePreset(e.target.value as RecipePreset)}>
+                        onChange={(e) => {
+                          setRecipePreset(e.target.value as RecipePreset);
+                          setCellSel(null);   // M2.11: a new recipe resets the subset
+                        }}>
                   {recipePresets.map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
               </label>
+              <button className="ghost" onClick={() => setShowCells((v) => !v)}
+                      title="M2.11 — pick a SUBSET of the recipe's poses to fire (icons from L1 · Poses; text chips until generated)">
+                ▦ cells{cellSel !== null ? ` (${cellSel.length})` : ""}
+              </button>
               <label title="expansion family: zimage/sd35 = img2img sweep from the hero; flux2 = identity-preserving REFERENCE conditioning (hero carried into new poses/scenes — §11)">
                 pipeline
                 <select value={stageBPipeline}
@@ -1927,6 +1948,10 @@ export default function App() {
                 {busy ? "…" : "Generate Dataset ▶"}
               </button>
             </div>
+          )}
+          {activeAsset && stage === "B" && showCells && (
+            <CellPicker preset={recipePreset} sel={cellSel}
+                        onChange={setCellSel} onClose={() => setShowCells(false)} />
           )}
           {activeAsset && stage === "B" && (
             <div className="generate-bar sketch-bar">
@@ -2702,7 +2727,7 @@ function GridCell({
 // story spine (premise + characters that materialize into stub AssetProfiles, R55).
 function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged, onView }: {
   project: ProjectInfo | null;
-  tab: "styles" | "world" | "spine";   // M0b — which L1 sub-tab the rail selected
+  tab: "styles" | "world" | "spine" | "poses";   // M0b rail sub-tab (+ M2.11 poses)
   onError: (e: string) => void;
   onStubCreated: () => void;
   onStylesChanged: () => void;    // tell the parent to reload styles (the L2 bar selector)
@@ -2870,6 +2895,13 @@ function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged,
                   placeholder="# The world…  (markdown)" />
         <button className="proj-btn" disabled={busy}
                 onClick={() => void guard(() => setWorld(worldDraft))}>Save world</button>
+      </section>
+      )}
+
+      {tab === "poses" && (
+      <section className="world-sec">
+        <h3>Pose icons <span className="muted">(M2.11 — the Stage-B cell picker's thumbnails)</span></h3>
+        <PosesPanel onError={onError} />
       </section>
       )}
 

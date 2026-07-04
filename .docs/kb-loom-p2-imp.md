@@ -1891,3 +1891,14 @@ expansion mode, ≤1024² ref-encode cap.
 NOT the L1 text, zimage still does; dev guidance mirrors catalog=preset=worker at 3.0).
 ⏭ Author eyeballs the next dev sweep for style fidelity; if still drifty, route 3 (StyleLock
 post-pass) is the next lever.
+
+**Addendum — early rig validation + toggle UX (2026-07-04 23:10, ✅ PUSHED `b75d86f`).**
+Author reports the first reduced-guidance dev expansion is "already producing much better
+images" — route 1 validating on the rig. UX follow-up (author): a ticked-but-bypassed global
+style toggle read as confusing → **Stage-B now has its own "L1 style" checkbox, default OFF for
+every expansion run** (`styleOnB`, independent of the cast bar's global `applyStyle`). Rationale:
+the hero already carries the style on EVERY expansion path (flux2 assigns the reference's style;
+zimage/sd35 i2i re-diffuse the styled source). Trade recorded honestly: with the toggle off,
+`style_sid` resolves None → kept refs stamp `style_id: null` (truthful — no L1 text applied);
+ticking it back on restores the provenance stamp (flux2 still substitutes the ref directives for
+the text, unconditionally). `tsc` + `vite build` clean; backend untouched.

@@ -1926,3 +1926,34 @@ show WHICH L1 style the pass pushes toward. When StyleLock is the selected prese
 row gains a pulldown of all L1 styles — "(active style)" resolves the current default fresh at
 queue time; picking one pins it on the step (`params.style_id`, already server-supported).
 `tsc` + `vite build` clean; backend untouched.
+
+## M2.11 — expansion cell picker + generated pose icons (started 2026-07-05 01:06, finished 01:23, ✅ PUSHED `dfd6cee`)
+
+**Ask (author):** generate *individual* images from an expansion pose recipe — an openable
+param-style window with every pose of the selected recipe as a small icon, multi-select, fire
+only those. Icons: **generated with the pipeline** (author call, over the SVG-pictogram
+proposal) — flux2-dev advanced prompting on a neutral subject, configured from a 4th L1 tab.
+
+**Built (design + status in spec §12 "M2.11"):**
+- **Subset firing:** `StageBRequest.cells` = indices into the ALWAYS-fully-built recipe (same
+  seed rule → a subset cell is **byte-identical** to that cell in a full sweep, so incremental
+  sweeps + single-pose re-rolls stay dataset-coherent). Empty/out-of-range → 422; dry-run
+  reports the subset (`first_cell` = first *selected*).
+- **Pose icons (the L1-styles sample pattern, pose-keyed):** `bible.pose_key` =
+  `shot__angle__expression` (background is sweep noise, not pose identity — recipes sharing a
+  pose share its icon); durable copies in `bible/poses/<key>.<ext>`; `GET /bible/poses`
+  (index-aligned with Stage-B), `POST /bible/poses/generate` (dedup by key; one **256² flux2
+  t2i** per missing pose — M0d directive prompts, JSON on dev, neutral mannequin subject
+  default, NO L1 style/refs, ONE shared warm_group; weight/turbo/disk gates),
+  `POST /bible/poses/{key}/icon` + `GET …/file` (client closes the loop on job completion,
+  like style samples). `token_required` += the two POSTs.
+- **UI (`PosePicker.tsx`, dedicated file):** `PosesPanel` on the new **L1 · 🕴 Poses** rail tab
+  (preset + subject + turbo, ⚙ Generate missing / ↻ All, live n/N fill via a 3 s job poll) and
+  `CellPicker` on the Stage-B bar's **`▦ cells`** button (icon/text-chip tiles, click-toggle,
+  all/none, count badge on the button, selection resets on preset change, empty-subset guard).
+
+Side benefit recorded in the spec: a wrong-looking icon = a directive bug caught at 256² cost.
+**Tests +4 → 373 green** (subset contract incl. real submit of exactly cell N; index-aligned
+listing; dedup/256²/JSON/meta-key/single-warm-group; durable set→serve→skip-on-regenerate),
+`tsc` + `vite build` clean. ⏭ Author: generate an icon set on the rig + fire one subset sweep
+(= the M2.11 visual sign-off).

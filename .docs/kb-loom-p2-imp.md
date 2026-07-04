@@ -1605,3 +1605,50 @@ KB-correction + re-vendored worker, left uncommitted per "ignore the monorepo".)
 async-blind-era misreading. The resident-default decision may still be right (offload adds real
 shuffle overhead), but the rationale's number is stale; revisit if the warm-path cost is ever
 re-profiled.
+
+---
+
+## M2.8 — MVP-close review + robustness remediations (spec §12 "M2.8"; 2026-07-04)
+
+started: 2026-07-04 ~09:00 (review); finished: 2026-07-04 13:20 (remediations + tests green)
+
+**Part 1 — the review (docs + code).** Full docs-vs-code + core review at the MVP close, before M3
+(scope + verdict in spec §12 "M2.8"): verification gates green at HEAD `f35fc5b` (**351 tests** /
+tsc+vite / cargo), `.docs/` spec+journal verified CURRENT, **foundation sound — no refactor**. Two
+doc drifts fixed same day: **README** (broken `../../.github/copilot/kb-loom-*` links → `.docs/`;
+layout tree missing postproc/training/flux2_prompt/krea2/trainers + 3-of-13 adapters; status block
+ended at "next M2") and the stale **`/version.token_required`** list (+11 newer token-gated
+endpoints). Seven small robustness findings recorded as spec §12 "M2.8" #1–#7.
+
+**Part 2 — the remediations (all 7, same day; spec "M2.8 remediations" carries the designs + the
+three implementation deviations).** Author started the pass (#4 snapshot scans + #6 lineup-max VRAM
+admission landed first); the rest implemented on review:
+- **#1** `runner._drop_warm()` — the two abandoned-warm-worker paths (stdin-write failure,
+  died-without-result) now REAP the proc (terminate if alive → `wait()`; plain kill, no tree-walk —
+  serve workers are single-process) instead of bare-dropping the refs; **`_warm_cancel_job`** = a
+  per-resident-worker kill Job Object registered per-cell in `_cancel_jobs`, so cancel of a warm
+  cell gets the atomic `TerminateJobObject` tree-kill (closed only by `_evict_warm`/`_drop_warm`,
+  never at cell finalize).
+- **#2** the postproc queue endpoint UNWINDS on a mark-queued failure (concurrent step delete):
+  `cancel` + `delete` the just-submitted job before the 409 — no orphan job outside its stack.
+  *(Deviation: unwind instead of the proposed cross-module critical section.)*
+- **#3** store locks — `postproc._STORE_LOCK` (decorator on the 5 mutators), `training._STAGED_LOCK`
+  (stage/delete/queue store ops), `assets._VERSION_LOCK` (ONE module RLock on all 16 record
+  mutators; deviation from per-asset locks). Kills the API-thread ↔ observer-thread lost-update race.
+- **#5** `training.queue_staged` = **claim-then-restore** (pop+persist BEFORE submit → no
+  double-queue; submit failure restores the record); `assets.resolve_version_dir`/`write_version`
+  public helpers replace the `# noqa: SLF001` private reaches; + fixed a latent unknown-asset
+  `TypeError`→500 in `_version_dir_for`.
+- **#7** style provenance — `bible.resolve_l1` returns the **resolved** style id (4-tuple); Stage-B
+  stamps `style_id` on every cell `meta` (flux2-warm + sd35/zimage-warm + cold branches);
+  `_submit_chained` carries it through chained passes; `keep_ref` stores it (`version.schema` +
+  `RefItem`/`OutputMeta` TS types extended); `training_context.json` refs include it. ⚠ Advisory
+  gap: sketch-harvest frames carry no style_id (the ltxv parent has no per-output meta).
+
+**Tests (+5 → 356):** warm die-test now asserts the reap (+ `_procs`/`_cancel_jobs` cleanup);
+postproc queue-unwind (409 leaves the job table unchanged) + a 2-thread store hammer (40/40 stacks);
+`queue_staged` submit-failure restore (+ re-queue succeeds); cast admission gates on a too-heavy
+lineup member (422, nothing queued); curated refs + training_context carry `style_id` (stage-b
+cell-meta assert added to the zimage warm-cells test). **356 backend green; `tsc` + `vite build`
+clean.** No `src/pipeline/` worker code touched → no re-vendor. ⏭ Push owed at close (hash recorded
+here per convention).

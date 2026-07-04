@@ -62,6 +62,8 @@ export interface OutputMeta {
   /** multi (Cast) candidate's sub-pipeline (flux2/sd35/zimage); clean/polish pass name. */
   pipeline?: string;
   pass?: string;
+  /** M2.8 #7: the resolved L1 style a Stage-B cell was generated under (rides keep → RefItem). */
+  style_id?: string | null;
 }
 
 export interface JobResult {
@@ -478,6 +480,8 @@ export interface RefItem {
   pipeline?: string | null;
   method?: string | null;
   seed?: number | null;
+  /** M2.8 #7: the resolved L1 style the source cell was generated under (null = legacy / style off). */
+  style_id?: string | null;
   added_at?: string;
 }
 

@@ -301,3 +301,21 @@ def test_generate_multi_unknown_param_422(client):
         "pipeline": "multi", "prompt": "a hero",
         "params": {"nope": 1}, "dry_run": True})
     assert r.status_code == 422
+
+
+def test_cast_vram_admission_checks_the_max_over_the_lineup(client, monkeypatch):
+    """M2.8 #6 — a Cast fans out into per-pipeline jobs, so admission must gate on the MAX
+    estimate over the selected ideation lineup, not the `multi` placeholder (which was only
+    right by coincidence). A lineup member over budget → 422, nothing queued."""
+    from orchestrator import components
+    from orchestrator import runner as runner_mod
+    from orchestrator.runner import RUNNER
+    monkeypatch.setattr(components, "multi_weights_status", lambda preset: (True, []))
+    monkeypatch.setitem(runner_mod.VRAM_ESTIMATES, "flux2", 99.0)   # a too-heavy lineup member
+    RUNNER.pause()
+    before = set(RUNNER.snapshot())
+    r = client.post("/generate", json={"pipeline": "multi", "prompt": "a hero",
+                                       "num_candidates": 1, "ideation_mode": "fast"})
+    assert r.status_code == 422
+    assert "GB VRAM" in r.text
+    assert set(RUNNER.snapshot()) == before      # admission refused BEFORE any submit

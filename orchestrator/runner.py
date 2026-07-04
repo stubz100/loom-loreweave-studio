@@ -306,6 +306,7 @@ class JobRunner:
         self._warm_proc: subprocess.Popen | None = None
         self._warm_group: str | None = None
         self._warm_pipeline: str | None = None
+        self._warm_cancel_job = None                 # per-worker kill Job Object (win32; M2.8 #1)
         self._warm_idle_since: float | None = None   # when the resident worker went idle (pause/gap)
         self._paused = False
         # Why the queue is paused — "resume" (resume-paused load, R88) | "user" (explicit
@@ -900,7 +901,9 @@ class JobRunner:
         """Tear down the resident warm worker (close stdin → it frees VRAM + exits). Worker-thread
         only. Best-effort kill if it doesn't exit promptly."""
         proc, self._warm_proc, self._warm_group, self._warm_pipeline = self._warm_proc, None, None, None
+        cancel_job, self._warm_cancel_job = self._warm_cancel_job, None
         if proc is None:
+            _close_job(cancel_job)
             return
         try:
             if proc.stdin and not proc.stdin.closed:
@@ -912,8 +915,31 @@ class JobRunner:
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            self._kill_tree(proc)
+            self._kill_tree(proc, job_handle=cancel_job)
+        _close_job(cancel_job)   # worker is down — free the kernel handle (M2.8 #1)
         LOG.info("warm worker evicted")
+
+    def _drop_warm(self) -> None:
+        """Reap an ABANDONED/FAILED warm worker (M2.8 #1) — the stdin-write-failure and
+        died-without-a-result paths, where the old code dropped the `Popen` refs without
+        `wait()`ing (a zombie handle until GC). Not the graceful `_evict_warm` shutdown:
+        here the protocol is already broken, so terminate if still alive, then reap. The
+        serve workers are single-process (in-process generation, no grandchildren), so a
+        plain terminate→wait→kill suffices — no tree-walk needed."""
+        proc, self._warm_proc, self._warm_group, self._warm_pipeline = self._warm_proc, None, None, None
+        cancel_job, self._warm_cancel_job = self._warm_cancel_job, None
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001 - reap best-effort, never fail the cell record
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
+        _close_job(cancel_job)
 
     def _spawn_warm(self, pipeline: str, group: str) -> None:
         adapter = ADAPTERS[pipeline]
@@ -928,6 +954,16 @@ class JobRunner:
             text=True, bufsize=1, encoding="utf-8", errors="replace",
         )
         _assign_to_kill_job(proc)   # die with the orchestrator — never orphan the GPU
+        # Per-worker cancel Job Object (M2.8 #1): cancel of a warm cell now gets the same
+        # atomic TerminateJobObject tree-kill the cold path has (taskkill /T stays the
+        # fallback). ONE handle per resident worker, shared by its cells; OWNED by the warm
+        # lifecycle — registered per-cell in _cancel_jobs while a cell runs, but closed
+        # only in _evict_warm/_drop_warm, never at cell finalize.
+        cancel_job = _create_kill_job()
+        if cancel_job is not None and not _assign_to_job(proc, cancel_job):
+            _close_job(cancel_job)
+            cancel_job = None
+        self._warm_cancel_job = cancel_job
         self._warm_proc, self._warm_group, self._warm_pipeline = proc, group, pipeline
         LOG.info("warm worker spawned (%s, group=%s)", pipeline, str(group)[:24])
 
@@ -958,13 +994,19 @@ class JobRunner:
         spec = {"job_id": job_id, "mode": mode, "output_dir": str(out_dir), **params}
         with self._lock:
             self._procs[job_id] = proc   # cancel kills the warm proc (current cell) via _procs
+            if self._warm_cancel_job is not None:
+                # cancel of THIS cell gets the atomic Job-Object tree-kill (M2.8 #1); the
+                # handle stays owned by the warm lifecycle (popped per-cell, closed on
+                # evict/drop only — never per-cell like the cold path's finalize).
+                self._cancel_jobs[job_id] = self._warm_cancel_job
         try:
             proc.stdin.write(json.dumps(spec) + "\n")
             proc.stdin.flush()
         except (OSError, ValueError) as e:
             with self._lock:
                 self._procs.pop(job_id, None)
-            self._warm_proc = self._warm_group = self._warm_pipeline = None
+                self._cancel_jobs.pop(job_id, None)
+            self._drop_warm()            # reap the broken worker (M2.8 #1 — was a ref drop)
             return {"job_id": job_id, "status": "failed", "error": f"warm worker stdin: {e}"}
         tail: deque[str] = deque(maxlen=60)
         progress_fn = getattr(adapter, "progress", lambda _l: None)
@@ -993,8 +1035,9 @@ class JobRunner:
             pass
         with self._lock:
             self._procs.pop(job_id, None)
-        if result is None:               # worker died (EOF/kill) before a result → drop it, fail cell
-            self._warm_proc = self._warm_group = self._warm_pipeline = None
+            self._cancel_jobs.pop(job_id, None)   # handle owned by the warm lifecycle — no close
+        if result is None:               # worker died (EOF/kill) before a result → reap it, fail cell
+            self._drop_warm()            # wait()/kill the dead proc (M2.8 #1 — was a ref drop)
             result = {"job_id": job_id, "status": "failed",
                       "error": "warm worker ended without a result", "log": "\n".join(tail)}
         return result
@@ -1362,7 +1405,7 @@ class JobRunner:
             seed = spec.get("seed", m.get("seed", pparams.get("seed")))
             if seed is not None:
                 item["seed"] = seed
-            carry = {k: m[k] for k in ("coverage_cell", "method", "index") if k in m}
+            carry = {k: m[k] for k in ("coverage_cell", "method", "index", "style_id") if k in m}
             if not carry and parent.get("coverage_cell"):
                 # M7: a video-sketch parent has no per-output meta (one mp4) — the
                 # sketch's TARGET cell is the job-level field; harvested frames inherit

@@ -34,7 +34,11 @@ and a **proxy-based readiness meter** (no VLM). The VLM (Qwen3-VL) and a project
 > initial Klein-only call). It also **deletes both gated heavyweight repos** (`black-forest-labs/FLUX.2-dev`
 > 166 GB + `mistralai/Mistral-Small-3.2-24B` 90 GB): the ~17 MB dev config+tokenizer are vendored and
 > Klein's VAE re-points to the identical Comfy `flux2-vae`. Klein keeps its Qwen3/Klein loader path
-> (only its VAE weight source moves).
+> (only its VAE weight source moves). **M2.8 added 2026-07-04:** an MVP-close **docs/code consistency +
+> robustness review** (full pass over the P2 docs vs the codebase + the orchestrator/frontend core)
+> before the M3 trainer work — findings + the doc fixes applied recorded in §12 "M2.8"; verdict:
+> foundation sound, **no refactor needed**, a short list of small robustness guardrails carried into
+> M3+.
 
 ---
 
@@ -918,6 +922,255 @@ change (unit-tested with a fake worker); pause leaves done cell-jobs `done` and 
 **Owed (on-rig):** a real klein sweep streams individual tiles that persist across a pause, with the
 model loaded once.
 
+#### M2.8 — MVP-close consistency & robustness review (docs + code)
+
+*Status: **run 2026-07-04** at HEAD `f35fc5b` (clean worktree), before the M3 trainer work. Full pass:
+the P2 docs (spec/journal/README) against the codebase, then the orchestrator core (`runner.py`,
+`main.py`, `training.py`, `postproc.py`, `assets.py`, `workspace.py`), the adapter layer, and the
+frontend (`App.tsx`, `orchestrator.ts`). Verification gates all green: **351 backend tests** via RTK,
+`tsc --noEmit` + `vite build` clean, `cargo check --locked` clean.*
+
+**Verdict: foundation SOUND — no refactor needed before adding M3+.** The spine holds as designed:
+atomic fsync'd writes + refuse-partial reads + schema validation (`workspace.py`), queue corruption
+quarantined (never overwritten), traversal guards on every file-serving path, zip-bomb bounds on
+import, one manifest-as-truth contract across all 13 adapters, and the runner's injected seams
+(disk gate / completion observer / `serve_argv` capability) are exactly what lets new features land
+without touching the core. Frontend is disciplined (token on every mutation, interval cleanup,
+self-terminating reconcile effects).
+
+**Doc alignment (fixed in this pass).** The `.docs/` spec + journal were verified CURRENT through
+HEAD (every spot-checked claim exists in code; the journal's test count matched the real suite
+exactly). Two drifts found + fixed same day:
+- **README.md was stale three ways** — (1) spec/journal links still pointed at the retired monorepo
+  `../../.github/copilot/kb-loom-*` paths (the KBs live in-repo at `.docs/` now); (2) the Layout tree
+  was missing `postproc.py`/`training.py`/`flux2_prompt.py`, the `krea2` pipeline, the whole
+  `trainers/` tree, and listed 3 of 13 adapters; (3) the status block ended at "M1 complete… next
+  M2" though M2 (backend slice)/M2.5/M2.6/M2.7 had landed. All three corrected.
+- **`/version.token_required` (main.py) was stale** — missing 11 newer token-gated endpoints
+  (style sample ×2, unfinalize, delete-asset, delete-output, postproc step ×3, training ×3). Updated.
+
+**Robustness findings — small, contained; guardrails for M3+, none blocking (fix opportunistically,
+ideally before the trainer's promote-on-success adds writers/paths that widen them):**
+1. **Warm-worker zombie on death** (`runner._feed_warm`): a warm worker that dies without a result
+   (EOF, or the stdin-write failure branch) has its `Popen` refs dropped without `wait()`/kill — a
+   zombie handle until GC. Warm procs also never get the per-job cancel Job Object (cancel falls back
+   to `taskkill /T` — works, but not the atomic tree-kill the cold path has).
+2. **Submit-then-mark race** (`POST /postproc/step/{id}/queue`): `RUNNER.submit` fires BEFORE
+   `postproc.mark_queued`; a concurrently-deleted step 409s the endpoint while the GPU job still
+   runs, orphaned from its stack. Swap the order (or unwind on failure).
+3. **No in-process mutex on the JSON stores** (`postproc_stacks.json`, `jobs/staged.json`,
+   `version.json`): load-modify-save with TWO writer threads (FastAPI threadpool + the runner's
+   completion-observer thread) → a rare lost-update is possible. Cheap fix: one module-level
+   `threading.Lock` per store.
+4. **Lock-free `RUNNER.jobs` scans in main.py** (`_producing_job`, the bg-mask provenance scan, the
+   anchor-proof scan) iterate the live dict while the worker mutates it, bypassing the runner's own
+   `snapshot()`. GIL makes it near-safe; it's the one inconsistency in the locking discipline.
+5. **Trainer bookkeeping edges** (`training.py`): `queue_staged` submits before persisting the pop
+   (a persist failure could double-queue on retry), and the module reaches into
+   `assets._find_version`/`_write_version` privates — promote to public helpers when M3 touches this.
+6. **Cast VRAM admission is right by coincidence**: the fan-out checks `estimate_vram("multi")`
+   (14 GB) but submits zimage/sd35/flux2 jobs (11/13/13). Check the max over the ideation lineup to
+   make it safe by construction.
+7. **⚠ Carried provenance gap, close BEFORE M3/M6 write graph-ready facts** (pre-M1 review #3,
+   still open): a kept ref (`assets.keep_ref`) records pipeline/method/seed but **not the resolved
+   L1 `style_id`** — once the source job is pruned, P2-13's `training_context.json` can't name the
+   exact style the corpus was generated under. Small additive field at curation time.
+
+**Monolith policy reaffirmed** (pre-M1 review #4): `App.tsx` (~3.7 k lines) + `main.py` (~2.8 k) are
+complexity pressure, not a contract failure — do NOT refactor them; keep landing new feature families
+in dedicated modules (`training.py`/`postproc.py`/`flux2_prompt.py` already set the pattern; the M3+
+Train panel/endpoints follow it).
+
+#### M2.8 remediations — concrete fixes for the 7 robustness findings
+
+*Added 2026-07-04 (same review pass). Each is **additive and localized** — a small patch that touches
+only the named site, no contract/shape change, no refactor. Sized so M3 can land them as a preparatory
+"robustness pass" (or piecemeal alongside related work). All are **testable without a GPU** via the
+existing no-GPU test patterns (fabricated jobs / fake stores / a stub warm worker).*
+
+**✅ IMPLEMENTED 2026-07-04 (all 7, same day — journal "M2.8 remediations").** Three deliberate
+deviations from the proposals below, decided at implementation review:
+- **#2 — unwind instead of a critical section.** Holding the postproc store lock across
+  `RUNNER.submit` couples two modules' locks for a milliseconds-wide race; the implemented form
+  keeps submit-first and **fully unwinds on a mark failure** (`RUNNER.cancel(jid)` +
+  `RUNNER.delete(jid)` — the job was queued milliseconds ago, so cancel is instant) before
+  re-raising the 409. No orphan, no cross-module lock ordering to reason about.
+- **#3 — ONE module RLock in `assets.py`, not per-asset keyed locks.** Single-user app, mutations
+  are milliseconds — per-asset granularity is complexity without a payoff. An `RLock` (not `Lock`)
+  so a mutator may call the locked `write_version` helper. `postproc.py`/`training.py` got plain
+  module `Lock`s as proposed (decorator `_mutates_store` / explicit `with` blocks).
+- **#1 — plain terminate→wait→kill in `_drop_warm`, not `_kill_tree`.** The `--serve` workers are
+  single-process (in-process generation, no grandchildren), so the reap path needs no tree-walk —
+  and avoiding `taskkill` there keeps the fake-proc tests hermetic. The per-worker cancel Job
+  Object landed as proposed (`_warm_cancel_job`, registered per-cell in `_cancel_jobs`, closed
+  only by `_evict_warm`/`_drop_warm` — never at cell finalize).
+- **#7 route confirmed:** "re-read the version's last-applied style at keep time" was rejected —
+  nothing tracks it durably. Implemented as proposed in the ancestor clause: `bible.resolve_l1`
+  now also returns the **resolved** style id; Stage-B stamps it on every cell's `meta` (warm +
+  cold branches), `_submit_chained` carries it through chained passes, keep stores it, and
+  `training_context.json` includes it per ref. ⚠ Known advisory gap: video-sketch **harvest
+  frames** don't carry a style_id (the ltxv parent has no per-output meta) — acceptable, noted.
+
+**1. Warm-worker zombie on death (`runner.py` `_feed_warm`).** The two branches that drop
+`self._warm_proc` without reaping it (the stdin-write failure at the `except (OSError, ValueError)`
+and the EOF/no-result branch) must `wait()`/kill the abandoned `Popen` first. Extract a tiny helper and
+call it on both drop sites:
+
+```python
+def _drop_warm(self) -> None:
+    """Reap an abandoned/failed warm worker (not the graceful `_evict_warm` shutdown path)."""
+    proc, self._warm_proc, self._warm_group, self._warm_pipeline = \
+        self._warm_proc, None, None, None
+    if proc is None:
+        return
+    try:
+        if proc.poll() is None:
+            self._kill_tree(proc)          # reuse the existing terminate→wait→kill
+    except Exception:
+        pass
+```
+
+Then replace the bare `self._warm_proc = self._warm_group = self._warm_pipeline = None` lines in both
+branches with `self._drop_warm()`. For the **per-job cancel Job Object** gap: in `_spawn_warm`, after
+`_assign_to_kill_job(proc)`, also create a per-job Job Object (`_create_kill_job()`) and store it on
+`self._warm_cancel_job`; when a warm cell-job is canceled, `cancel()` passes that handle to
+`_kill_tree` (same as the cold path) so `TerminateJobObject` is the atomic tree-kill rather than the
+`taskkill /T` fallback. Clear the handle in `_evict_warm`/`_drop_warm`. *(~15 lines; test: a fake
+warm `Popen` whose stdout closes → the drop branch `wait()`s it; cancel of a warm cell passes the
+handle.)*
+
+**2. Submit-then-mark race (`main.py` `POST /postproc/step/{id}/queue`).** Swap the order so the step
+is marked queued **before** the GPU job is submitted; if `submit` then raises, unwind the mark:
+
+```python
+# was: jid = RUNNER.submit(...); then postproc.mark_queued(...)
+try:
+    jid = RUNNER.submit(...)                       # may raise on a hard validation
+    postproc.mark_queued(ws, step_id=step_id, job_id=jid)
+except Exception:
+    # submit failed → nothing was queued; the step stays 'configured' (re-queueable)
+    raise
+# belt-and-suspenders: if mark_queued raises after a successful submit, the job is orphaned from its
+# stack but harmless (a postproc job with no matching step just produces an untracked output tile);
+# log + surface it so the user can delete the tile.
+```
+
+The strict ordering (mark → submit) is rejected here because `mark_queued` needs the `job_id` that
+only `submit` returns, so the **unwind-on-failure** form is the correct one — keep submit-first, but
+guarantee the mark can't be skipped by a concurrent delete. Concretely: hold the step's stack in a
+short critical section (see #3 below) across `submit` + `mark_queued` so a `DELETE /postproc/step`
+can't land between them. *(~5 lines + the lock from #3; test: fire queue + concurrent delete → the
+409 never leaves a running orphan.)*
+
+**3. In-process mutex on the JSON stores (`postproc.py`, `training.py`, `assets.py` `version.json`).**
+Add one module-level `threading.Lock` per store and hold it across every load-modify-save. The three
+writers are `postproc_stacks.json`, `jobs/staged.json`, and per-version `version.json`:
+
+- `postproc.py`: `_STORE_LOCK = threading.Lock()`; wrap every `_load`→mutate→`_save` sequence
+  (add/remove/mark/reconcile/record_result) in `with _STORE_LOCK:`. The functions are already short
+  and call-site-free, so the lock is acquired exactly where the load-modify-save happens.
+- `training.py`: `_STAGED_LOCK = threading.Lock()` around `load_staged`→mutate→`_persist_staged`
+  (stage/delete/queue_staged). Also fixes #5's double-queue window (the pop+persist is now atomic).
+- `assets.py`: a per-asset lock keyed by `asset_id` (a `dict[str, threading.Lock]` guarded by a
+  master lock) held across each `_resolve_version_dir`→mutate→`_write_version`, so two concurrent
+  ops on the **same** version serialize (different assets/versions stay parallel). This covers
+  star/hero/keep/cull/save/finalize/unfinalize/anchor and the `mark_anchor_verified` observer path.
+
+*(~10 lines/each module; test: two threads doing add+remove on the same stack 1k× → both counts
+correct; the staged-queue pop+persist under concurrency leaves no duplicate.)*
+
+**4. Lock-free `RUNNER.jobs` scans (`main.py`).** Route the three lock-free scans through the
+runner's existing `snapshot()` (already lock-held, already used elsewhere) instead of iterating the
+live `RUNNER.jobs` dict:
+
+- `_producing_job(src)` and the two provenance scans (bg-mask + anchor-proof): replace
+  `for j in list(RUNNER.jobs.values())` with `for j in RUNNER.snapshot().values()`. The snapshot is a
+  shallow copy of the dict at call time, so the worker can mutate the live dict freely during the
+  scan. Behavior is identical; only the concurrency discipline changes.
+
+*(~3 one-line edits; test: existing `_producing_job` tests pass unchanged — the snapshot has the same
+contents.)*
+
+**5. Trainer bookkeeping edges (`training.py`).** Two small fixes:
+
+- **Pop-then-submit ordering.** In `queue_staged`, persist the pop **before** calling `runner.submit`,
+  and pass the `job_id` back by writing it onto the (already-popped) record's former location — or
+  simpler: pop → persist → submit; if submit raises, **re-insert** the record and re-raise (so a
+  transient submit failure doesn't double-queue on retry):
+
+  ```python
+  record = data["staged"].pop(staged_id)
+  _persist_staged(ws, data)          # durable: the staged job is "claimed"
+  try:
+      job_id = runner.submit(...)
+  except Exception:
+      data = load_staged(ws)         # re-load (it may have changed) and restore
+      data["staged"][staged_id] = record
+      _persist_staged(ws, data)
+      raise
+  ```
+
+- **Promote the `assets` privates to public helpers.** Add `assets.find_version_dir(ws, asset_id,
+  version_id)` and `assets.write_version(vdir, version)` as thin public wrappers over the existing
+  `_find_version`/`_write_version` (no behavior change — just a public name + docstring), then update
+  `training.py`'s two `# noqa: SLF001` call sites to use them. The privates can stay (other internal
+  callers) or be renamed to the public name; either way the trainer stops reaching across the module
+  boundary.
+
+*(~15 lines + the #3 lock; test: a `queue_staged` whose `runner.submit` raises → the staged record is
+restored and re-queueable.)*
+
+**6. Cast VRAM admission safe by construction (`main.py`).** Replace the single
+`estimate_vram("multi")` check with a check over the **max of the ideation lineup** so it's correct
+regardless of which pipelines the preset fans into:
+
+```python
+if is_multi:
+    lineup = model_catalog.ideation_lineup(req.ideation_mode)
+    est = max((estimate_vram(pl) for pl, _ in lineup), default=estimate_vram("multi"))
+    if est > CONFIG.vram_budget_gb:
+        raise HTTPException(422, f"multi cast needs ~{est} GB VRAM (max over the "
+                                 f"{req.ideation_mode} lineup) > budget {CONFIG.vram_budget_gb} GB")
+else:
+    est = estimate_vram(req.pipeline)
+    ...
+```
+
+Today this yields the same 14 GB (the `fast`/`refined` lineups both include flux2-klein at 13 GB and
+the `"multi"` fallback is 14 GB), but it stays correct if a future lineup adds a heavier pipeline or
+the `"multi"` placeholder estimate is lowered. *(~4 lines; test: a fake lineup with a 20 GB pipeline
+→ 422 even when `estimate_vram("multi")` is low.)*
+
+**7. Provenance gap — record the resolved `style_id` on each kept ref (`assets.py` `keep_ref`).**
+Add a `style_id: str | None` parameter to `keep_ref` and stamp it onto the ref entry alongside
+`pipeline`/`method`/`seed`:
+
+```python
+def keep_ref(ws, asset_id, *, job_id, source_output, coverage_cell, version_id=None,
+             pipeline=None, seed=None, method=None, style_id=None) -> dict:
+    ...
+    entry = {"id": ref_id, "file": dst.name, "coverage_cell": coverage_cell,
+             "source_output": source_output, "job_id": job_id, "pipeline": pipeline,
+             "method": method, "seed": seed, "style_id": style_id,   # ← NEW
+             "added_at": _now()}
+```
+
+The caller (`POST /assets/{id}/refs/keep` in `main.py`) already resolves the effective `style_id`
+(ancestor: the same `style_id` the Stage-B job was generated under — re-read it from the version's
+last-applied style at keep time, or carry it on the job's `params`/`coverage_cell` since Stage-B
+already knows it). `training.py`'s `_write_captions` then includes `style_id` in
+`training_context.json` (it already maps ref fields into the context), closing the gap. Backward-
+compat: a missing `style_id` on older refs stays `null` (advisory-only, like the background axis).
+*(~6 lines in assets.py + ~5 in main.py + ~2 in training.py; test: keep a ref → its entry carries
+the resolved style_id; a re-keep is idempotent; `training_context.json` includes it.)*
+
+**Sizing + sequencing.** All seven together are a **~60-line preparatory pass** (plus tests), touch
+only the named sites, and introduce **no new contract or shape** — each is the smallest change that
+makes the existing behavior robust. Recommended order: **#4 (3 one-liners) → #3 (the locks, which #2
+and #5 build on) → #2 → #5 → #6 → #1 → #7**, landing as a single "M2.9 robustness" commit before M3
+captioning opens its UI. None block M3 if deferred; they just widen the safety margin before the
+trainer's promote-on-success adds its own writers/paths.
+
 ### Phase A — Training skeleton (prove a LoRA can be made + used on this rig)
 
 1. **M1 — training spike (no UI).** Vendor **ai-toolkit**; train **one** `zimage` LoRA from a fixed
@@ -947,6 +1200,12 @@ model loaded once.
    **persistent warm worker** that keeps the model resident across the group (no per-image reload).
    Core-queue change, built in phases (Phase 1 = flux2 Expansion), each journalled + pushed. Design:
    §12 "M2.7 solution design".
+3d. **M2.8 — MVP-close consistency & robustness review (docs + code).** A full docs-vs-code +
+   orchestrator/frontend-core review at the MVP close, before M3: verification gates green
+   (351 tests / tsc+vite / cargo), docs verified current, README + `/version.token_required` drift
+   fixed, and a 7-item list of small robustness guardrails recorded for M3+ (incl. the ⚠ style-id
+   provenance gap to close before M3/M6). Verdict: foundation sound, no refactor. Findings: §12
+   "M2.8".
 
 ### Phase B — Thicken (all VLM-free)
 

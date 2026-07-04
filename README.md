@@ -56,7 +56,7 @@ size/zip-bomb guarded). **M10** — **MVP/P1 acceptance**: the §1 done-line
 (style → cast → hero → expand → curate → save → **reopen**) is locked as an executable no-GPU
 test (`orchestrator/tests/test_acceptance.py`) and the new adapters' contract gaps are recorded
 (journal M10). P1 is declared **functionally complete (2026-06-14)** and the journal is closed
-([`kb-loom-p1-imp.md`](../../.github/copilot/kb-loom-p1-imp.md)); 🟡 the **formal A–H rig sign-off**
+([`kb-loom-p1-imp.md`](.docs/kb-loom-p1-imp.md)); 🟡 the **formal A–H rig sign-off**
 (done-line + chained passes + mixed + identity + restore + video + curation + export/import
 round-trip on the RX 9070 XT) remains the **user's to run** to stamp P1 ACCEPTED, and a **UI-rewire
 pass** is carried forward — neither blocks the move to Phase 2.
@@ -71,51 +71,78 @@ invoked); GPU batch smoke verified.
 > ref set → **template-caption** it (no VLM) → **proxy-readiness** meter → train a **character LoRA**
 > (ai-toolkit default + diffusers-PEFT advanced; zimage first, then sd35) as a **staged** queued job
 > → promote into the version → test-gen reproduces it on-model. **P2-0 is a make-or-break front-gate:**
-> does ai-toolkit train on RX 9070 XT / ROCm at all? Spec: [`kb-loom-p2.md`](../../.github/copilot/kb-loom-p2.md),
-> journal: [`kb-loom-p2-imp.md`](../../.github/copilot/kb-loom-p2-imp.md).
-> **M1 complete (2026-06-21):** ai-toolkit trains Z-Image LoRAs on the RX 9070 XT; the accepted
-> fixed-set preset is 500 steps / rank-alpha 16/16 / 512 px / bf16 / qfloat8 Quanto / AdamW 1e-4,
-> and Loom's Z-Image worker loads the result at inference with recorded adapter provenance. Next:
-> **M2 staged queued trainer skeleton**, including the isolated PEFT runtime and real checkpoint resume.
-Spec:
-> [`kb-loom-p1.md`](../../.github/copilot/kb-loom-p1.md), decisions:
-> [`kb-storyboard01.md`](../../.github/copilot/kb-storyboard01.md) §10.0, journal:
-> [`kb-loom-p1-imp.md`](../../.github/copilot/kb-loom-p1-imp.md) (P0 spine:
-> [`kb-loom-p0.md`](../../.github/copilot/kb-loom-p0.md) / [`kb-loom-p0-imp.md`](../../.github/copilot/kb-loom-p0-imp.md)).
+> does ai-toolkit train on RX 9070 XT / ROCm at all? Spec: [`kb-loom-p2.md`](.docs/kb-loom-p2.md),
+> journal: [`kb-loom-p2-imp.md`](.docs/kb-loom-p2-imp.md).
+> **M0 (UI/workflow reset, a–e) complete:** File-menu + workspace rail, L1 sub-tabs + readable
+> editors, the decoupled project-level **postprocess stack**, flux.2 advanced prompting / sampling
+> presets / dev structured-JSON prompt tree, and low-res-first + creative upscale (dev → 512²
+> default, i2i output size, `Upscale ✨` SD3.5 Tile-ControlNet preset).
+> **M1 complete (2026-06-21):** ai-toolkit trains Z-Image LoRAs on the RX 9070 XT (**P2-0 GO**); the
+> accepted fixed-set preset is 500 steps / rank-alpha 16/16 / 512 px / bf16 / qfloat8 Quanto / AdamW
+> 1e-4, and Loom's Z-Image worker loads the result at inference with recorded adapter provenance.
+> **M2 backend slice complete:** staged trainer records (`jobs/staged.json`, R118 — auto-generate,
+> never auto-queue) + the `zimage_trainer` resumable queue pipeline + deterministic
+> captions/policy/context written at stage time (Train-panel UI + promote-on-success still owed).
+> **M2.5 complete:** `flux.2-dev` re-routed to the Comfy-Org **quantized** split files (t2i/i2i AND
+> batch ref sweeps); **both gated heavyweight repos eliminated** (~51 GB public footprint instead).
+> **M2.6 built:** optional Flux2-Turbo LoRA for low-step dev sweeps (on-rig sign-off owed).
+> **M2.7 complete:** the **warm-worker batch queue** — Cast + Stage-B expansion now submit
+> individual pause-safe cell-jobs serviced by one resident `--serve` worker (model loads once per
+> sweep); `realize="mixed"` is the only remaining cold-batch case. Plus perf root-causing:
+> `MIOPEN_FIND_MODE=2` at startup (Windows-ROCm conv/VAE fix), zimage-base defaulted to 768²
+> (the 1024² denoise floor is hardware), Krea2 Turbo vendored as a fourth t2i generator.
+> **M2.8 (2026-07-04):** MVP-close docs/code consistency + robustness review — findings in
+> [`kb-loom-p2.md`](.docs/kb-loom-p2.md) §12 "M2.8". Next: **M3 template captioning** (review/edit UI).
+> Spec:
+> [`kb-loom-p1.md`](.docs/kb-loom-p1.md), decisions:
+> [`kb-storyboard01.md`](.docs/kb-storyboard01.md) §10.0, journal:
+> [`kb-loom-p1-imp.md`](.docs/kb-loom-p1-imp.md) (P0 spine:
+> [`kb-loom-p0.md`](.docs/kb-loom-p0.md) / [`kb-loom-p0-imp.md`](.docs/kb-loom-p0-imp.md)).
 
 ## Layout
 
 ```
 loom-loreweave-studio/
 ├── models.json        # weight manifest (R160) — what the app expects on disk + where to fetch it
-├── pipelines/         # VENDORED pipeline code, per-phase (R162): zimage + the multi casting stack
+├── .docs/             # phase specs + implementation journals (kb-loom-pN.md / kb-loom-pN-imp.md)
+├── pipelines/         # VENDORED pipeline code, per-phase (R162): zimage + krea2 + the multi stack
 │   ├── _artifact_id.py
-│   ├── zimage/        #   run_pipeline.py + stages + manifest.py (file-path invoked)
+│   ├── zimage/        #   run_pipeline.py + stages + manifest.py (file-path invoked; --serve warm mode)
+│   ├── krea2/         #   Krea 2 Turbo t2i (P2, file-path invoked; 768²/8-step on 16 GB ROCm)
 │   └── multistack/    #   the `multi` casting stack (P1/M2), as a faithful mirror of the
 │       │              #   monorepo's src/pipeline/ + flux2/src/ layout so the self-locating
 │       │              #   stage_runner + `-m pipeline.multi.run_pipeline` resolve UNEDITED:
-│       ├── src/pipeline/   # multi/ + sub-pipelines flux2/ sd35/ zimage/ _img2img/ (+ _artifact_id.py)
-│       └── flux2/src/flux2/ #   the flux2 model lib (`import flux2.util`)
+│       ├── src/pipeline/   # multi/ + sub-pipelines flux2/ sd35/ zimage/ _img2img/ + postproc
+│       │                   # (birefnet · identity · face_restore · frame_harvest) + ltxv
+│       └── flux2/src/flux2/ #   the flux2 model lib (`import flux2.util`; M2.5 quantized-dev loaders)
+├── trainers/          # P2 LoRA training runtime (M1/M2)
+│   ├── ai-toolkit/    #   VENDORED ostris/ai-toolkit snapshot (pinned; LOOM_VENDOR.md = seams/license)
+│   └── loom_zimage_lora.py  # thin queue-facing wrapper: manifest + real checkpoint/resume discovery
 ├── app/               # Tauri 2 + React/TS desktop shell
 │   ├── src/           #   React UI (three-pane shell + job-queue dock + batch grid + project bar)
 │   └── src-tauri/     #   Rust: single-instance, orchestrator sidecar spawn + kill, READY handshake
 └── orchestrator/      # Python FastAPI service (127.0.0.1)
-    ├── main.py        #   app factory + /health /version /generate /jobs /queue /project /disk /components /models /assets (casting·stage-b·refs·save) /outputs
-    ├── runner.py      #   durable, resume-paused single-worker queue, workspace-bound + disk-gated (M4/M5/M6)
+    ├── main.py        #   app factory + /health /version /generate /jobs /queue /project /disk /components /models /assets (casting·stage-b·refs·save) /postproc /training /bible /outputs
+    ├── runner.py      #   durable, resume-paused single-worker queue, workspace-bound + disk-gated (M4/M5/M6) + the M2.7 warm-worker dispatch
     ├── workspace.py   #   bundle I/O: IDs, atomic writes, schema validation, footprint estimator (M5)
     ├── projects.py    #   project lifecycle (create/open/resume) + app-level last-project pointer (M5)
-    ├── bible.py       #   L1 StoryBible — minimal style fragment (P1/M1, R104)
+    ├── bible.py       #   L1 StoryBible — style collection + world + spine (P1/M1+M8, R104)
     ├── assets.py      #   L2 AssetProfile + ProfileVersion records (P1/M1, §3.4)
+    ├── postproc.py    #   project-level postprocess stacks (P2/M0c — clean/refine/restore/upscale)
+    ├── training.py    #   P2/M2 staged LoRA-training records (jobs/staged.json; stage → explicit queue)
     ├── diskguard.py   #   two-measure/two-threshold space guard, continuously polled (M6, §9/R96)
     ├── components.py  #   phase-scoped 3-state launch gate + model-weight presence/fetch (M7, §11/R163)
     ├── logsetup.py    #   central logger → stderr + rotating file (.env LOOM_LOG_LEVEL brief|verbose)
     ├── lineage.py     #   per-output lineage edge → rebuildable lineage/index.json (M5, R98)
-    ├── schemas/       #   JSON Schemas for the P0 records (project/job/manifest/lineage)
+    ├── schemas/       #   JSON Schemas for the records (project/job/manifest/lineage/profile/version/story/postproc)
     ├── config.py      #   port/token + pipeline roots + interpreter + work disk (R101/R103/R72)
-    ├── adapters/      #   one module per pipeline (zimage · multi · sd35) → JobSpec/CompletionRecord
+    ├── adapters/      #   one module per pipeline (zimage · multi · sd35 · flux2 · krea2 · ltxv ·
+    │                  #   birefnet · identity · face_restore · frame_harvest · zimage_trainer
+    │                  #   + _batch helpers) → JobSpec/CompletionRecord
     ├── coverage.py    #   FROZEN P1→P2 coverage-cell vocab + caption builder (P1-16)
     ├── recipe.py      #   Stage-B dataset recipe engine — coverage matrix presets (P1-4, §7.1)
-    ├── model_catalog.py #  all flux2/sd35/zimage variants + every adjustable param (M3; GET /models)
+    ├── flux2_prompt.py #  M0d directive-led (structured) flux2 prompts + dev JSON cell prompts
+    ├── model_catalog.py #  all flux2/sd35/zimage/krea2/ltxv/birefnet variants + every adjustable param (M3; GET /models)
     └── requirements.txt
 ```
 
@@ -128,21 +155,25 @@ A **project** is a folder on the work disk (`<work disk>/<name>/`, default `F:\_
 │   ├── queue.json       # durable, resume-paused job queue
 │   └── logs/<id>.log    # per-job stdout/stderr
 ├── lineage/index.json   # rebuildable lineage edges (requester → job → output → manifest)
-├── _temp/               # job scratch (training temp later)
+├── _temp/               # job scratch + P2 LoRA training runs (lora_<slug>_<ver>_<staged>/)
+├── postproc_stacks.json # project-level postprocess stacks (P2/M0c)
 └── out/<job_id>/        # generated PNG + sidecar manifest
 ```
 
 **Pipeline code is vendored into this repo per-phase** (R162): the P0 worker
-(`zimage`) and the P1/M2 **`multi` casting stack** (`pipelines/multistack/` — `multi`
-plus its `flux2`/`sd35`/`zimage` sub-pipelines and the `flux2` model lib) live in
-`pipelines/` so a clone can generate on its own. `multi` is module-invoked and its
-`stage_runner` self-locates the sub-pipelines + lib by paths relative to its own file,
-so the vendored copy **mirrors the monorepo's `src/pipeline/` + `flux2/src/` layout
-exactly** — no edits to the pipeline code, so it can't drift in logic from the source.
-The orchestrator resolves each pipeline **in-repo first**, falling back to the parent
-monorepo's `src/pipeline/` during dev. Model **weights are never vendored** (R160) —
-they stay external (HF / the parent monorepo's `src/village_ai/models/`) and are
-fetched on demand.
+(`zimage`), the P1/M2 **`multi` casting stack** (`pipelines/multistack/` — `multi`
+plus its `flux2`/`sd35`/`zimage` sub-pipelines, the postproc workers, `ltxv`, and the
+`flux2` model lib), the P2 **`krea2`** worker, and the P2 **trainer runtime**
+(`trainers/ai-toolkit/`) live in-repo so a clone can generate (and train) on its own.
+`multi` is module-invoked and its `stage_runner` self-locates the sub-pipelines + lib
+by paths relative to its own file, so the vendored copy **mirrors the monorepo's
+`src/pipeline/` + `flux2/src/` layout exactly**. A CI guard
+(`test_every_adapter_resolves_without_the_monorepo_fallback`) asserts every adapter +
+the trainer resolve inside this repo, and an MD5 drift-guard keeps the vendored workers
+byte-identical to their monorepo source. The orchestrator resolves each pipeline
+**in-repo first**, falling back to the parent monorepo's `src/pipeline/` during dev.
+Model **weights are never vendored** (R160) — they stay external (HF / the parent
+monorepo's `src/village_ai/models/`) and are fetched on demand.
 
 ## Dev quickstart
 

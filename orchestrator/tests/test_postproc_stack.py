@@ -377,3 +377,50 @@ def test_mask_is_stored_on_the_step(client):
     assert r.status_code == 200, r.text
     step = r.json()["stacks"][0]["steps"][0]
     assert step["mask"] == "job_base01/mask.png" and step["requires_mask"] is True
+
+
+def test_queue_unwinds_the_job_when_the_step_vanished(client, monkeypatch):
+    """M2.8 #2 — the submit-then-mark race: a step deleted between resolve and mark_queued
+    used to 409 while its just-submitted job kept running, orphaned from any stack. Now the
+    endpoint UNWINDS (cancel + delete the queued job) before re-raising the 409 — no orphan."""
+    from orchestrator import postproc
+    from orchestrator import workspace as ws_mod
+    from orchestrator.runner import RUNNER
+    base = _base_image()
+    r = client.post("/postproc/step", json={"base": base, "preset": "clean"})
+    step_id = r.json()["stacks"][0]["steps"][0]["id"]
+    before = set(RUNNER.snapshot())
+
+    def gone(_ws, *, step_id, job_id):  # the concurrent DELETE landed first
+        raise ws_mod.WorkspaceError(f"unknown postproc step {step_id!r}")
+    monkeypatch.setattr(postproc, "mark_queued", gone)
+    q = client.post(f"/postproc/step/{step_id}/queue", json={})
+    assert q.status_code == 409
+    assert set(RUNNER.snapshot()) == before      # the submitted job was fully unwound
+
+
+def test_store_mutations_are_thread_safe(client):
+    """M2.8 #3 — the store is load-modify-save with two writer threads (API threadpool +
+    the runner's completion observer); without the module lock, interleaved add_step calls
+    lose each other's stacks. Deterministic WITH the lock; flaky only if it regresses."""
+    import threading
+    from orchestrator import postproc
+    from orchestrator.runner import RUNNER
+    ws = RUNNER.workspace
+    errs: list[Exception] = []
+
+    def add_many(prefix: str):
+        try:
+            for i in range(20):
+                postproc.add_step(ws, base=f"{prefix}/{i}.png", preset="clean",
+                                  backend="zimage", mode="img2img", params={})
+        except Exception as e:  # noqa: BLE001 - surfaced via the assert below
+            errs.append(e)
+
+    threads = [threading.Thread(target=add_many, args=(p,)) for p in ("job_ta", "job_tb")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errs
+    assert len(postproc.list_stacks(ws)) == 40   # nothing lost to a concurrent write

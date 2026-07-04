@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,11 @@ from . import assets
 from . import coverage
 from . import workspace as ws_mod
 from .workspace import Workspace, new_id
+
+# M2.8 #3: `jobs/staged.json` is load-modify-save with two potential writers (API threadpool
+# calls can overlap) — every store mutation holds this lock so a stage/queue/delete can't
+# lose another's update. Held only around the store ops, never across `runner.submit`.
+_STAGED_LOCK = threading.Lock()
 
 STAGED_SCHEMA_VERSION = 1
 CAPTION_POLICY_ID = "loom-template-caption-v1"
@@ -105,11 +111,12 @@ def list_staged(ws: Workspace) -> dict:
 
 
 def delete_staged(ws: Workspace, staged_id: str) -> dict:
-    data = load_staged(ws)
-    if staged_id not in data["staged"]:
-        raise ws_mod.WorkspaceError(f"staged job {staged_id!r} not found")
-    record = data["staged"].pop(staged_id)
-    _persist_staged(ws, data)
+    with _STAGED_LOCK:
+        data = load_staged(ws)
+        if staged_id not in data["staged"]:
+            raise ws_mod.WorkspaceError(f"staged job {staged_id!r} not found")
+        record = data["staged"].pop(staged_id)
+        _persist_staged(ws, data)
     return {"deleted": True, "staged_id": staged_id, "record": record}
 
 
@@ -123,12 +130,11 @@ def _trigger_from_profile(profile: dict) -> str:
 
 def _version_dir_for(ws: Workspace, asset_id: str, version_id: str | None) -> tuple[Path, dict, dict]:
     detail = assets.get_asset(ws, asset_id)
+    if detail is None:   # M2.8 #5: was an unchecked subscript → TypeError/500 on an unknown id
+        raise ws_mod.WorkspaceError(f"unknown asset {asset_id!r}")
     profile = detail["profile"]
-    vid = assets.resolve_version(ws, asset_id, version_id)
-    found = assets._find_version(ws.asset_dir(profile["asset_class"], profile["slug"]), vid)  # noqa: SLF001
-    if found is None:
-        raise ws_mod.WorkspaceError(f"version {vid!r} is missing or unreadable on disk")
-    return found[0], found[1], profile
+    vdir, version = assets.resolve_version_dir(ws, asset_id, version_id)
+    return vdir, version, profile
 
 
 def _write_captions(vdir: Path, version: dict, profile: dict, trigger_token: str,
@@ -190,6 +196,7 @@ def _write_captions(vdir: Path, version: dict, profile: dict, trigger_token: str
                 "source_output": r.get("source_output"),
                 "job_id": r.get("job_id"),
                 "seed": r.get("seed"),
+                "style_id": r.get("style_id"),   # M2.8 #7 — graph-ready style provenance
             }
             for r in refs
         ],
@@ -215,7 +222,7 @@ def _write_captions(vdir: Path, version: dict, profile: dict, trigger_token: str
         "updated_at": _now(),
     }
     version["trigger_token"] = trigger_token
-    assets._write_version(vdir, version)  # noqa: SLF001
+    assets.write_version(vdir, version)
 
     return {
         "captions": rows,
@@ -433,31 +440,43 @@ def stage_zimage_lora(ws: Workspace, asset_id: str, *, version_id: str | None = 
             "profile_version_id": version["id"],
         },
     }
-    data = load_staged(ws)
-    data["staged"][staged_id] = record
-    _persist_staged(ws, data)
+    with _STAGED_LOCK:
+        data = load_staged(ws)
+        data["staged"][staged_id] = record
+        _persist_staged(ws, data)
     return record
 
 
 def queue_staged(ws: Workspace, staged_id: str, runner) -> dict:
-    data = load_staged(ws)
-    record = data["staged"].get(staged_id)
-    if record is None:
-        raise ws_mod.WorkspaceError(f"staged job {staged_id!r} not found")
+    """Staged → queued. M2.8 #5: **claim-then-restore** — pop + persist the staged record
+    FIRST (the job is durably "claimed", so a retry can never double-queue), then submit;
+    if submit raises, restore the record (re-loaded — the store may have moved) and re-raise
+    so a transient failure leaves the staged job re-queueable."""
+    with _STAGED_LOCK:
+        data = load_staged(ws)
+        record = data["staged"].pop(staged_id, None)
+        if record is None:
+            raise ws_mod.WorkspaceError(f"staged job {staged_id!r} not found")
+        _persist_staged(ws, data)
     job = record["queue_job"]
     batch_id = "trn_" + staged_id.split("_", 1)[-1]
-    job_id = runner.submit(
-        pipeline=job["pipeline"],
-        mode=job["mode"],
-        params=job["params"],
-        batch_id=batch_id,
-        index=0,
-        batch_size=1,
-        requester_id=job.get("requester_id") or "training",
-        profile_version_id=job.get("profile_version_id"),
-        stage=job.get("stage") or "D",
-        resumable=bool(job.get("resumable")),
-    )
-    data["staged"].pop(staged_id)
-    _persist_staged(ws, data)
+    try:
+        job_id = runner.submit(
+            pipeline=job["pipeline"],
+            mode=job["mode"],
+            params=job["params"],
+            batch_id=batch_id,
+            index=0,
+            batch_size=1,
+            requester_id=job.get("requester_id") or "training",
+            profile_version_id=job.get("profile_version_id"),
+            stage=job.get("stage") or "D",
+            resumable=bool(job.get("resumable")),
+        )
+    except Exception:
+        with _STAGED_LOCK:
+            data = load_staged(ws)
+            data["staged"][staged_id] = record
+            _persist_staged(ws, data)
+        raise
     return {"staged_id": staged_id, "queued": True, "job_id": job_id, "batch_id": batch_id}

@@ -47,7 +47,8 @@ def _curated_asset(client, *, n=3):
         name = f"job_p2refs/ref{i}.png"
         (out_dir / f"ref{i}.png").write_bytes(b"\x89PNG\r\n\x1a\n p2")
         names.append(name)
-        meta[name] = {"coverage_cell": {**_CELL, "background": f"room {i}"}, "seed": 100 + i}
+        meta[name] = {"coverage_cell": {**_CELL, "background": f"room {i}"}, "seed": 100 + i,
+                      "style_id": "sty_000000"}   # M2.8 #7 — Stage-B stamps the resolved style
     jid = RUNNER.submit(
         pipeline="zimage", mode="img2img",
         params={"prompt": "dataset", "batch_items": [{}] * n},
@@ -171,3 +172,43 @@ def test_trainer_wrapper_discovers_resume_state(tmp_path):
     assert state["latest_artifact"]["sha256"]
     assert state["final_adapters"][0]["relative_path"] == "loom_char/loom_char.safetensors"
     assert state["optimizer_pt"]["relative_path"] == "loom_char/optimizer.pt"
+
+
+def test_queue_staged_restores_the_record_when_submit_fails(client):
+    """M2.8 #5 — claim-then-restore: the staged record is popped + persisted BEFORE submit
+    (a retry can never double-queue), and a submit failure RESTORES it so the staged job
+    stays re-queueable instead of being lost."""
+    from orchestrator import training
+    from orchestrator.runner import RUNNER
+
+    asset = _curated_asset(client, n=1)
+    staged = client.post(f"/assets/{asset['id']}/lora/zimage/stage", json={}).json()
+    ws = RUNNER.workspace
+
+    class _BoomRunner:
+        def submit(self, **_kw):
+            raise RuntimeError("transient submit failure")
+
+    with pytest.raises(RuntimeError):
+        training.queue_staged(ws, staged["id"], _BoomRunner())
+    assert staged["id"] in training.load_staged(ws)["staged"]   # restored, not lost
+    q = client.post(f"/training/staged/{staged['id']}/queue")   # …and still queueable
+    assert q.status_code == 200, q.text
+
+
+def test_curated_refs_and_training_context_carry_the_style_id(client):
+    """M2.8 #7 — the provenance gap: a kept ref stamps the resolved L1 style id (from the
+    source cell's per-output meta) and `training_context.json` carries it per ref, so the
+    exact style survives source-job pruning (graph-ready for P2-13)."""
+    from orchestrator.runner import RUNNER
+
+    asset = _curated_asset(client)                              # meta carries sty_000000
+    detail = client.get(f"/assets/{asset['id']}").json()
+    assert all(r["style_id"] == "sty_000000" for r in detail["versions"][0]["ref_set"])
+
+    r = client.post(f"/assets/{asset['id']}/lora/zimage/stage", json={})
+    assert r.status_code == 200, r.text
+    ws = RUNNER.workspace
+    vroot = ws.asset_dir("characters", detail["profile"]["slug"]) / "versions" / "v1_base"
+    context = json.loads((vroot / "training_context.json").read_text(encoding="utf-8"))
+    assert all(ref["style_id"] == "sty_000000" for ref in context["refs"])

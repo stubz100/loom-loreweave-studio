@@ -725,28 +725,38 @@ def create_app() -> FastAPI:
             "cors_origins": CONFIG.cors_origins,
             "token_required": ["POST /generate", "POST /jobs/{id}/cancel",
                                "POST /jobs/{id}/stop",
-                               "DELETE /jobs/{id}", "POST /queue/pause",
+                               "DELETE /jobs/{id}", "DELETE /jobs/{id}/output",
+                               "POST /queue/pause",
                                "POST /queue/unpause", "POST /project", "POST /project/open",
                                "POST /project/close",
                                "POST /project/forget", "PUT /bible/style",
                                "POST /bible/styles", "PUT /bible/styles/{id}",
                                "DELETE /bible/styles/{id}", "POST /bible/styles/active",
+                               "POST /bible/styles/{id}/sample",
+                               "DELETE /bible/styles/{id}/sample",
                                "PUT /bible/world",
                                "PUT /bible/spine/premise", "POST /bible/spine/character",
                                "DELETE /bible/spine/character/{cid}",
                                "POST /bible/spine/character/stub",
                                "POST /bible/spine/character/{cid}/resync", "POST /assets",
                                "POST /assets/import", "GET /assets/{id}/export",
+                               "DELETE /assets/{id}",
                                "POST /assets/{id}/casting/star", "POST /assets/{id}/casting/hero",
                                "POST /assets/{id}/stage-b", "POST /assets/{id}/stage-b/matte",
                                "POST /assets/{id}/stage-b/sketch",
                                "POST /assets/{id}/anchor", "POST /assets/{id}/anchor/derive",
                                "POST /assets/{id}/versions",
                                "POST /assets/{id}/versions/{vid}/finalize",
+                               "POST /assets/{id}/versions/{vid}/unfinalize",
                                "POST /assets/{id}/versions/activate",
                                "POST /assets/{id}/refs/keep",
                                "POST /assets/{id}/refs/reject",
                                "POST /assets/{id}/refs/cull", "POST /assets/{id}/save",
+                               "POST /assets/{id}/lora/zimage/stage",
+                               "POST /training/staged/{id}/queue",
+                               "DELETE /training/staged/{id}",
+                               "POST /postproc/step", "POST /postproc/step/{id}/queue",
+                               "DELETE /postproc/step/{id}",
                                "POST /components/fetch", "POST /shutdown"],
             "worker_reap": WORKER_REAP,
             "work_disk_root": str(CONFIG.work_disk_root),
@@ -993,7 +1003,7 @@ def create_app() -> FastAPI:
         # stored but never consulted). **Appended, not prepended** (user decision 2026-06-10,
         # amends R104's wording): the character/user prompt leads — front tokens dominate,
         # and the style mostly restates the look the model already renders.
-        _apply, fragment, global_neg = bible.resolve_l1(ws, req.apply_style, req.style_id)
+        _apply, fragment, global_neg, _sid = bible.resolve_l1(ws, req.apply_style, req.style_id)
         if fragment:
             base["prompt"] = f"{base['prompt']}, {fragment}"
         # L1 global negative (M8) pairs with the fragment under the same gate. Skipped for
@@ -1032,8 +1042,18 @@ def create_app() -> FastAPI:
                     "cwd": str(script.parents[2]), "output_dir": str(ws.out_dir)}
 
         # VRAM admission (§7) — enforce, don't just record (review #2): refuse a job
-        # whose estimate exceeds the budget rather than queueing a guaranteed OOM.
-        est = estimate_vram(req.pipeline)
+        # whose estimate exceeds the budget rather than queueing a guaranteed OOM. A `multi`
+        # cast fans out into per-pipeline zimage/sd35/flux2 jobs, so admit against the MAX
+        # estimate over the selected ideation lineup (M2.8 #6: was right-by-coincidence —
+        # the single `estimate_vram("multi")` placeholder happened to exceed each member,
+        # but a future lineup could add a heavier pipeline and silently OOM). Non-multi
+        # pipelines keep the direct estimate.
+        if is_multi:
+            lineup = model_catalog.ideation_lineup(req.ideation_mode)
+            est = max((estimate_vram(pl) for pl, _ in lineup),
+                      default=estimate_vram("multi"))
+        else:
+            est = estimate_vram(req.pipeline)
         if est > CONFIG.vram_budget_gb:
             raise HTTPException(
                 422, f"{req.pipeline} needs ~{est} GB VRAM > budget {CONFIG.vram_budget_gb} GB — "
@@ -1506,7 +1526,10 @@ def create_app() -> FastAPI:
         # recipe places it LAST: cell fragment → clause → style, user 2026-06-10).
         # L1 gate, single source of truth (M8 review): the fragment weaves into each recipe
         # prompt, the global negative rides the batch params — both under the same gate.
-        _apply, style_fragment, global_neg = bible.resolve_l1(ws, req.apply_style, req.style_id)
+        # `style_sid` = the RESOLVED style id (None when the gate is off) — stamped on every
+        # cell's meta below so curated refs carry which style generated them (M2.8 #7).
+        _apply, style_fragment, global_neg, style_sid = bible.resolve_l1(
+            ws, req.apply_style, req.style_id)
 
         # M0d Part A: directive-led prompts are the flux2 pose fix; gate to flux2 so zimage/sd35
         # keep their flat phrasing. flux.2-dev (Mistral VLM) gets the directives as structured
@@ -1545,7 +1568,7 @@ def create_app() -> FastAPI:
             if req.dry_run:
                 bg_mask_abs = req.bg_mask
             else:
-                src = next((j for j in list(RUNNER.jobs.values())
+                src = next((j for j in RUNNER.snapshot().values()
                             if j.get("pipeline") == "birefnet" and j.get("status") == "done"
                             and j.get("profile_version_id") == vid
                             and req.bg_mask in ((j.get("result") or {}).get("output_names") or [])),
@@ -1629,7 +1652,7 @@ def create_app() -> FastAPI:
                 set_at = (anchor_rec or {}).get("set_at") or ""
                 target = str(anchor_path)
                 proof = next(
-                    (j for j in list(RUNNER.jobs.values())
+                    (j for j in RUNNER.snapshot().values()
                      if j.get("pipeline") == "identity" and j.get("status") == "done"
                      and j.get("profile_version_id") == vid
                      and (j.get("params") or {}).get("anchor_image") == target
@@ -1770,7 +1793,8 @@ def create_app() -> FastAPI:
             for i, c in enumerate(cells):
                 cparams = {"prompt": c["prompt"], "seed": c["seed"], "ref_images": [str(hero_path)],
                            "width": eff_width, "height": eff_height,
-                           "meta": {"coverage_cell": c["coverage_cell"], "method": "ref"}, **extra}
+                           "meta": {"coverage_cell": c["coverage_cell"], "method": "ref",
+                                    **({"style_id": style_sid} if style_sid else {})}, **extra}
                 if model_name:
                     cparams["model_name"] = model_name
                 job_ids.append(RUNNER.submit(
@@ -1791,7 +1815,8 @@ def create_app() -> FastAPI:
                 for c in gcells:
                     cparams = {"prompt": c["prompt"], "seed": c["seed"],
                                "width": eff_width, "height": eff_height,
-                               "meta": {"coverage_cell": c["coverage_cell"], "method": c["method"]},
+                               "meta": {"coverage_cell": c["coverage_cell"], "method": c["method"],
+                                        **({"style_id": style_sid} if style_sid else {})},
                                **extra}
                     cparams["init_image"] = str(hero_path)
                     cparams["strength"] = gstrength
@@ -1811,7 +1836,8 @@ def create_app() -> FastAPI:
             # the recipe method (in mixed it already equals the group; in plain img2img the cell's).
             items = [{"prompt": c["prompt"], "seed": c["seed"],
                       "meta": {"coverage_cell": c["coverage_cell"],
-                               "method": "ref" if gmode == "ref" else c["method"]}}
+                               "method": "ref" if gmode == "ref" else c["method"],
+                               **({"style_id": style_sid} if style_sid else {})}}
                      for c in gcells]
             params = {"prompt": f"[dataset {req.preset} · {len(gcells)} {gmode} cells] {clause}",
                       "width": eff_width, "height": eff_height,
@@ -1973,7 +1999,7 @@ def create_app() -> FastAPI:
         model_name = extra.pop("model_name", None)
         # L1 gate, single source of truth (M8 review). Prompt order (user 2026-06-10):
         # cell fragment leads → clause → motion → style; the global negative rides params.
-        _apply, fragment, global_neg = bible.resolve_l1(ws, req.apply_style, req.style_id)
+        _apply, fragment, global_neg, _sid = bible.resolve_l1(ws, req.apply_style, req.style_id)
         motion = (req.motion_prompt or "").strip() or \
             "slow steady camera, the character turns and moves naturally"
         prompt = ", ".join(p for p in
@@ -2186,7 +2212,8 @@ def create_app() -> FastAPI:
                 ws, asset_id, job_id=req.job_id, source_output=output, coverage_cell=cov,
                 version_id=vid, pipeline=job.get("pipeline"),
                 seed=ometa.get("seed", result.get("seed")),
-                method=ometa.get("method", job.get("mode")))
+                method=ometa.get("method", job.get("mode")),
+                style_id=ometa.get("style_id"))   # M2.8 #7 — the style the cell ran under
         except (ws_mod.WorkspaceError, coverage.CoverageError) as e:
             raise HTTPException(400, str(e))
         LOG.info("curate keep: job %s -> asset %s (%d refs)",
@@ -2277,7 +2304,7 @@ def create_app() -> FastAPI:
         route a postproc OUTPUT into the SAME grid as its source (inherit requester/version),
         so postprocessing a character image lands in that character's grid, a Sandbox image in
         the Sandbox. Best-effort over a snapshot of the job table."""
-        for j in list(RUNNER.jobs.values()):
+        for j in RUNNER.snapshot().values():
             res = j.get("result") or {}
             names = res.get("output_names") or ([res["output_name"]]
                                                 if res.get("output_name") else [])
@@ -2495,6 +2522,12 @@ def create_app() -> FastAPI:
         try:
             return postproc.mark_queued(ws, step_id=step_id, job_id=jid)
         except ws_mod.WorkspaceError as e:
+            # M2.8 #2: the step vanished between resolve and mark (a concurrent DELETE) —
+            # UNWIND the just-submitted job so no orphan runs outside its stack. It was
+            # queued milliseconds ago: cancel makes it terminal, delete removes the entry
+            # (best-effort — if the worker already grabbed it, cancel still stops it).
+            RUNNER.cancel(jid)
+            RUNNER.delete(jid)
             raise HTTPException(409, str(e))
 
     @app.delete("/postproc/step/{step_id}")

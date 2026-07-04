@@ -128,6 +128,7 @@ class _FakeServeProc:
         self.stdout = _FakeStdout(self)
         self.jobs: list[dict] = []
         self.terminated = False
+        self.waited = False
         self._die = die_without_result
 
     def _on_stdin(self, line):
@@ -149,7 +150,7 @@ class _FakeServeProc:
     def poll(self): return None
     def terminate(self): self.terminated = True
     def kill(self): self.terminated = True
-    def wait(self, timeout=None): return 0
+    def wait(self, timeout=None): self.waited = True; return 0
 
 
 @pytest.fixture()
@@ -225,6 +226,10 @@ def test_warm_cell_fails_when_worker_dies_without_result(bound_runner, monkeypat
     j = R.get(jid)
     assert j["status"] == "failed"
     assert R._warm_proc is None            # the dead worker was dropped
+    # M2.8 #1: dropped means REAPED — _drop_warm terminates a still-registered proc and
+    # wait()s it (the old code was a bare ref drop → a zombie handle until GC).
+    assert fakes[0].terminated and fakes[0].waited
+    assert jid not in R._procs and jid not in R._cancel_jobs
 
 
 def test_warm_cell_chains_its_post_passes_on_completion(bound_runner, monkeypatch):

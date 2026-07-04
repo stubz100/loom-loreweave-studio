@@ -51,6 +51,7 @@
           "pipeline": { "type": ["string", "null"] },
           "method": { "type": ["string", "null"] },
           "seed": { "type": ["integer", "null"] },
+          "style_id": { "type": ["string", "null"], "description": "M2.8 #7: the resolved L1 style the source cell was generated under (from the job's per-output meta) — graph-ready provenance for P2-13 training_context; null on legacy refs / style-off runs." },
           "added_at": { "type": "string" }
         }
       }

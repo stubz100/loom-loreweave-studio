@@ -15,9 +15,11 @@ The display name lives in the record; the folder is a slug; references use the s
 
 from __future__ import annotations
 
+import functools
 import json
 import shutil
 import tempfile
+import threading
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +41,24 @@ PROFILE_SCHEMA_VERSION = 1
 ASSET_CLASSES = ("characters", "props", "scenes")
 _VERSION_SUBDIRS = ("casting", "refs", "faces")
 
+# M2.8 #3: profile/version records are load-modify-save and have TWO writer threads — the
+# API threadpool (star/keep/save/finalize/…) and the runner's completion-observer thread
+# (mark_anchor_verified) — so every mutator holds this lock to prevent a lost update.
+# ONE module lock, not per-asset (M2.8 deviation: single-user app, mutations are
+# milliseconds — per-asset granularity is complexity without a payoff). RLock so a mutator
+# may call another locked helper (e.g. write_version) without deadlocking. Reads stay
+# lock-free: atomic writes guarantee a consistent snapshot.
+_VERSION_LOCK = threading.RLock()
+
+
+def _mutates_records(fn):
+    """Serialize a load→modify→save mutation of profile/version records."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _VERSION_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -56,6 +76,7 @@ def _version_dir(ws: Workspace, asset_class: str, slug: str, version_name: str) 
 
 # --- create ---------------------------------------------------------------------
 
+@_mutates_records
 def create_asset(ws: Workspace, *, name: str, asset_class: str = "characters",
                  prompt_template: str = "") -> dict:
     """Create an AssetProfile + a single `v1_base` version (M1 scaffold). `prompt_template`
@@ -120,6 +141,7 @@ def _require_unlocked(version: dict) -> None:
             "R60) — create a new version to change anything")
 
 
+@_mutates_records
 def create_version(ws: Workspace, asset_id: str, *, parent_version_id: str | None = None,
                    name: str | None = None) -> dict:
     """Copy-on-create (R50/R58/R59): a **full deep-duplicate** of ANY prior version
@@ -163,6 +185,7 @@ def create_version(ws: Workspace, asset_id: str, *, parent_version_id: str | Non
     return {"profile": profile, "version": version}
 
 
+@_mutates_records
 def finalize_version(ws: Workspace, asset_id: str,
                      version_id: str | None = None) -> dict:
     """Finalize = pure-intent lock (R60): declare the version done → immutable.
@@ -175,6 +198,7 @@ def finalize_version(ws: Workspace, asset_id: str,
     return _write_version(vdir, version)
 
 
+@_mutates_records
 def unfinalize_version(ws: Workspace, asset_id: str,
                        version_id: str | None = None) -> dict:
     """Unfinalize = UNLOCK a finalized version (user 2026-06-21): re-open it for editing so its
@@ -189,6 +213,7 @@ def unfinalize_version(ws: Workspace, asset_id: str,
     return _write_version(vdir, version)
 
 
+@_mutates_records
 def delete_asset(ws: Workspace, asset_id: str) -> dict:
     """Delete a whole AssetProfile and ALL its versions (refs, casting, faces, anchors) — the
     profile directory `assets/<class>/<slug>/` (user 2026-06-21). Project-level out/ generations
@@ -201,6 +226,7 @@ def delete_asset(ws: Workspace, asset_id: str) -> dict:
     return {"deleted": True, "id": asset_id, "name": profile.get("name")}
 
 
+@_mutates_records
 def set_active_version(ws: Workspace, asset_id: str, version_id: str) -> dict:
     """Switch the profile's active version (the version selector; everything downstream
     — grids, casting, curation, Stage-B — scopes to it). Returns the updated profile."""
@@ -356,6 +382,26 @@ def _write_version(vdir: Path, version: dict) -> dict:
     return version
 
 
+# --- public record helpers (M2.8 #5) — the supported cross-module surface ---------
+# training.py used to reach into `_find_version`/`_write_version` (noqa: SLF001); these
+# thin public wrappers are the sanctioned names so other modules never cross the privacy
+# boundary. Behavior-identical to the privates they wrap.
+
+def resolve_version_dir(ws: Workspace, asset_id: str,
+                        version_id: str | None = None) -> tuple[Path, dict]:
+    """Public: `(version_dir, record)` for the target version (active by default),
+    loaded + schema-validated. Raises `WorkspaceError` on an unknown asset/version or a
+    corrupt-but-registered record."""
+    return _resolve_version_dir(ws, asset_id, version_id)
+
+
+@_mutates_records
+def write_version(vdir: Path, version: dict) -> dict:
+    """Public: schema-validate + atomically persist a version record (lock-held)."""
+    return _write_version(vdir, version)
+
+
+@_mutates_records
 def star_candidate(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
                    version_id: str | None = None, pipeline: str | None = None,
                    seed: int | None = None, starred: bool = True) -> dict:
@@ -402,6 +448,7 @@ def star_candidate(ws: Workspace, asset_id: str, *, job_id: str, source_output: 
     return _write_version(vdir, version)
 
 
+@_mutates_records
 def set_hero(ws: Workspace, asset_id: str, *, candidate_id: str | None,
              version_id: str | None = None) -> dict:
     """Set (or clear, with `candidate_id=None`) the hero ★ among already-recorded casting
@@ -446,6 +493,7 @@ def casting_file_path(ws: Workspace, asset_id: str, file: str,
 
 # --- M4: face anchor (R94) — the chosen face image the identity pass locks to -----
 
+@_mutates_records
 def set_anchor(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
                version_id: str | None = None) -> dict:
     """Pick `source_output` (an out/-relative image from an owned job — ownership is the
@@ -468,6 +516,7 @@ def set_anchor(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
     return _write_version(vdir, version)
 
 
+@_mutates_records
 def clear_anchor(ws: Workspace, asset_id: str, version_id: str | None = None) -> dict:
     """Opt the version out of the face anchor (R93). The copied file is removed too."""
     vdir, version = _resolve_version_dir(ws, asset_id, version_id)
@@ -482,6 +531,7 @@ def clear_anchor(ws: Workspace, asset_id: str, version_id: str | None = None) ->
     return _write_version(vdir, version)
 
 
+@_mutates_records
 def mark_anchor_verified(ws: Workspace, version_id: str, *, anchor_path: str,
                          job_id: str) -> bool:
     """Persist the anchor-verification fact on `version.anchor` (M4 review: the computed
@@ -531,10 +581,11 @@ def anchor_file_path(ws: Workspace, asset_id: str,
 
 # --- Stage-C curation: keep/cull Stage-B outputs → curated ref_set (M3) ----------
 
+@_mutates_records
 def keep_ref(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
              coverage_cell: dict, version_id: str | None = None,
              pipeline: str | None = None, seed: int | None = None,
-             method: str | None = None) -> dict:
+             method: str | None = None, style_id: str | None = None) -> dict:
     """Keep a Stage-B candidate into the version's curated `ref_set` (the future LoRA corpus,
     R107) — the MVP done-line's payload. Idempotent on `source_output`. Each kept image (+ its
     sidecar manifest) is **copied into the version's `refs/` dir** so a Saved version is
@@ -560,9 +611,13 @@ def keep_ref(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
         man = src.with_suffix(".json")
         if man.is_file():
             shutil.copy2(man, rdir / f"{ref_id}.json")
+        # M2.8 #7: `style_id` = the resolved L1 style the source generation ran under
+        # (carried on the job's per-output meta) — graph-ready provenance for P2-13's
+        # training_context, durable even after the source job is pruned. None on legacy
+        # refs / style-off runs (advisory, like the background axis).
         entry = {"id": ref_id, "file": dst.name, "coverage_cell": coverage_cell,
                  "source_output": source_output, "job_id": job_id, "pipeline": pipeline,
-                 "method": method, "seed": seed, "added_at": _now()}
+                 "method": method, "seed": seed, "style_id": style_id, "added_at": _now()}
         ref_set.append(entry)
     # Keeping wins over a stale reject mark (P1-12): un-reject on keep.
     rej = version.get("rejected") or []
@@ -571,6 +626,7 @@ def keep_ref(ws: Workspace, asset_id: str, *, job_id: str, source_output: str,
     return _write_version(vdir, version)
 
 
+@_mutates_records
 def reject_output(ws: Workspace, asset_id: str, *, source_output: str,
                   version_id: str | None = None, rejected: bool = True) -> dict:
     """Mark (or unmark, `rejected=False`) a Stage-B candidate output as **rejected**
@@ -593,6 +649,7 @@ def reject_output(ws: Workspace, asset_id: str, *, source_output: str,
     return _write_version(vdir, version)
 
 
+@_mutates_records
 def remove_ref(ws: Workspace, asset_id: str, *, ref_id: str,
                version_id: str | None = None) -> dict:
     """Cull a kept ref (un-keep): drop it from `ref_set` + delete its copied `refs/` image +
@@ -615,6 +672,7 @@ def remove_ref(ws: Workspace, asset_id: str, *, ref_id: str,
     return _write_version(vdir, version)
 
 
+@_mutates_records
 def save_profile(ws: Workspace, asset_id: str, *, prompt_template: str | None = None,
                  version_id: str | None = None) -> dict:
     """**Save AssetProfile** (R119): persist the version's editable identity clause
@@ -722,6 +780,7 @@ def _free_name(ws: Workspace, asset_class: str, base_name: str) -> tuple[str, st
     raise ws_mod.WorkspaceError(f"too many name collisions importing {base_name!r}")
 
 
+@_mutates_records
 def import_profile(ws: Workspace, zip_path: str | Path) -> dict:
     """Import a bundle as a **brand-new profile** (R67): fresh profile + version ids (so a
     re-import into the SAME project can't cross-link the runner/lineage, which key on the

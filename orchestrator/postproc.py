@@ -16,6 +16,8 @@ produced output by job id.
 
 from __future__ import annotations
 
+import functools
+import threading
 from datetime import datetime, timezone
 
 try:
@@ -31,6 +33,21 @@ LOG = logsetup.get_logger()
 
 _STORE = "postproc_stacks.json"
 _SCHEMA = "postproc_store.schema.json"
+
+# M2.8 #3: the store is load-modify-save and has TWO writer threads — the API threadpool
+# (add/remove/mark/reconcile) and the runner's completion-observer thread (record_result) —
+# so every mutation holds this lock to prevent a lost update. Reads (list/resolve) stay
+# lock-free: the atomic file write guarantees they always see a consistent snapshot.
+_STORE_LOCK = threading.Lock()
+
+
+def _mutates_store(fn):
+    """Serialize a load→modify→save mutation of the project stack store."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _STORE_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 def _now() -> str:
@@ -79,6 +96,7 @@ def list_stacks(ws: Workspace) -> list[dict]:
     return _load(ws)["stacks"]
 
 
+@_mutates_store
 def add_step(ws: Workspace, *, base: str, preset: str, backend: str, mode: str,
              params: dict, mask: str | None = None, requires_mask: bool = False) -> dict:
     """Append a CONFIGURED step to `base`'s stack (source = the prior step's output, or
@@ -106,6 +124,7 @@ def add_step(ws: Workspace, *, base: str, preset: str, backend: str, mode: str,
     return _save(ws, store)
 
 
+@_mutates_store
 def remove_step(ws: Workspace, *, step_id: str) -> dict:
     """Remove the LAST step of its stack (a chain — removing a middle step would orphan the
     sources below it) and prune an emptied stack. Returns the store."""
@@ -129,6 +148,7 @@ def resolve_step(ws: Workspace, step_id: str) -> dict:
     return step
 
 
+@_mutates_store
 def mark_queued(ws: Workspace, *, step_id: str, job_id: str) -> dict:
     """Stamp a step queued + link the firing job (the observer matches on this job_id)."""
     store = _load(ws)
@@ -141,6 +161,7 @@ def mark_queued(ws: Workspace, *, step_id: str, job_id: str) -> dict:
     return _save(ws, store)
 
 
+@_mutates_store
 def reconcile(ws: Workspace, resolve) -> list[dict]:
     """Sync queued/running steps with live job state before returning the stacks — the
     completion observer only fires for SUCCESSFUL jobs, so a step whose job failed, was
@@ -173,6 +194,7 @@ def reconcile(ws: Workspace, resolve) -> list[dict]:
     return store["stacks"]
 
 
+@_mutates_store
 def record_result(ws: Workspace, job_id: str, *, output: str | None, ok: bool) -> bool:
     """Completion-observer side: find the step whose `job_id` matches the finished job and
     record its produced `output` + final status. Best-effort; True when a step was updated.

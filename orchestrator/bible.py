@@ -125,21 +125,23 @@ def list_styles(ws: Workspace) -> dict:
 
 
 def resolve_l1(ws: Workspace, apply_style_req: bool | None,
-               style_id: str | None = None) -> tuple[bool, str, str]:
+               style_id: str | None = None) -> tuple[bool, str, str, str | None]:
     """The L1 style GATE, single source of truth (R104; M8 global negative): returns
-    `(apply, fragment, global_negative)`. `apply_style_req` is the per-gen on/off override —
-    None honors the story-level `style_enabled_default`. `style_id` picks WHICH style (the
-    per-gen selection); None / unknown → the active style. Every generation surface
-    (/generate, Stage-B, sketch) resolves through THIS so the choice is consistent. Both
-    strings are "" when the gate is off."""
+    `(apply, fragment, global_negative, resolved_style_id)`. `apply_style_req` is the
+    per-gen on/off override — None honors the story-level `style_enabled_default`.
+    `style_id` picks WHICH style (the per-gen selection); None / unknown → the active
+    style. Every generation surface (/generate, Stage-B, sketch) resolves through THIS so
+    the choice is consistent. Both strings are "" and the id is None when the gate is off;
+    the RESOLVED id (never the raw request value) is what rides provenance (M2.8 #7 —
+    Stage-B stamps it on each cell's meta → curated refs → training_context)."""
     story = load_story(ws)
     apply = apply_style_req if apply_style_req is not None \
         else bool(story.get("style_enabled_default", True))
     if not apply:
-        return False, "", ""
+        return False, "", "", None
     sty = _find_style(story, style_id) or _active(story)
     return (True, (sty.get("fragment") or "").strip(),
-            (sty.get("global_negative") or "").strip())
+            (sty.get("global_negative") or "").strip(), sty.get("id"))
 
 
 def join_negative(existing: str | None, global_negative: str) -> str | None:

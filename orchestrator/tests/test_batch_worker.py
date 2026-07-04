@@ -351,6 +351,9 @@ def test_stage_b_zimage_cells_are_individual_warm_jobs(client):
         p = job["params"]
         assert "batch_items" not in p                       # individual, not a batch
         assert p["init_image"] and p["meta"]["method"] in ("img2img", "inpaint")
+        # M2.8 #7: every cell's meta carries the RESOLVED L1 style id (default style, gate
+        # default-on) → echoed back per-output → curated refs get style provenance.
+        assert p["meta"]["style_id"] == "sty_000000"
         assert job["coverage_cell"] is not None             # cell metadata on the job (curation)
         groups.add(job["warm_group"])
     assert len(groups) == 1 and next(iter(groups))          # all cells share ONE warm worker

@@ -1840,11 +1840,6 @@ export default function App() {
                            onChange={(e) => setAdvancedPromptB(e.target.checked)} />
                     advanced prompting
                   </label>
-                  <label className="p-flag" title="M2.10: expansion defaults the L1 style OFF — the hero already carries it (flux2 assigns the reference's style; zimage/sd35 re-diffuse the styled source). Tick to re-append the L1 style text to each cell prompt (and stamp style provenance on kept refs).">
-                    <input type="checkbox" checked={styleOnB}
-                           onChange={(e) => setStyleOnB(e.target.checked)} />
-                    L1 style
-                  </label>
                   {advancedPromptB && (
                     <span className="muted" title="flux.2-dev parses structured JSON precisely, so each cell's directive prompt is emitted as a JSON object; klein/base get the labeled directive string">
                       {stageBModel === "flux.2-dev" ? "→ structured JSON (dev)" : "→ directive cells"}
@@ -2125,10 +2120,17 @@ export default function App() {
                                 && applyStyle === (style?.enabled_default ?? true)}>
                 Save
               </button>
+              {/* M2.10 UX (author, 2nd pass): ONE apply toggle, here — stage-aware. A·Cast
+                  binds the global applyStyle (default on, Save persists it); B·Expansion
+                  binds styleOnB (default OFF — the hero already carries the style). */}
               <label className="apply-style"
-                     title="apply the selected style to generation — appended after the character prompt (R104, amended 2026-06-10); Save persists the on/off as the default">
-                <input type="checkbox" checked={applyStyle}
-                       onChange={(e) => setApplyStyle(e.target.checked)} />
+                     title={stage === "B" && activeAsset
+                       ? "apply the L1 style text to expansion cell prompts — OFF by default (the hero already carries the style: flux2 assigns the reference's style, zimage/sd35 re-diffuse the styled source); tick to re-append it + stamp style provenance on kept refs"
+                       : "apply the selected style to generation — appended after the character prompt (R104, amended 2026-06-10); Save persists the on/off as the default"}>
+                <input type="checkbox"
+                       checked={stage === "B" && activeAsset ? styleOnB : applyStyle}
+                       onChange={(e) => (stage === "B" && activeAsset
+                         ? setStyleOnB : setApplyStyle)(e.target.checked)} />
                 apply
               </label>
             </div>

@@ -53,7 +53,7 @@ v1.
 | **Deferred polish** | All **3D** — `trellis2` props/scenery GLBs + the **proxy-miniature depth-ControlNet** route | R128 (moved out of P3) | §3 |
 | | **Effect plugin API** (Python / JS / TS) | R37 | §4 |
 | | **Engine / DCC export** — assets *and* the Flow graph → **Unreal 5.7+ / Blender** | §6.7 | §5 |
-| | **GraphRAG retrieval index** (typed project graph + same `Qwen3-VL-Embedding` model) | R138/R170 | §6 — deferred from P4 |
+| | **GraphRAG retrieval index** (typed project graph + same `Qwen3-VL-Embedding` model) | R138/R170 | §6 — backstop home (deferral lifted 2026-07-05; may land earlier) |
 | | **Video LoRAs** (LTXV / Wan motion) | P2/P4 deferrals | §6 — needs video work + larger scratch |
 | **Flexible overflow** | **Any unforeseen P0–P5 development point** | R165 | §7 — the bucket grows here |
 
@@ -140,8 +140,9 @@ real engine/DCC for downstream production.
 ## 6. Other deferred candidates
 
 - **GraphRAG retrieval index (R138/R170).** P4 shipped *text* project-context (R145) plus a
-  rebuildable typed fact sidecar (`context/project_facts.jsonl`) and deferred the persistent
-  retrieval layer. P6 can build the real GraphRAG stack: ingest typed project facts into a graph,
+  rebuildable typed fact sidecar (`context/project_facts.jsonl`) and left the persistent
+  retrieval layer unbuilt (R170's hard deferral was lifted 2026-07-05 — it may now land earlier
+  than P6). P6 can build the real GraphRAG stack: ingest typed project facts into a graph,
   attach embeddings from the **same `Qwen3-VL-Embedding-8B` model already on disk**, index finalized
   stills/clips/captions/summaries, and expose retrieval to Muse for relational/global questions and
   asset reuse. Example queries: "which shots use Mara before v2?", "which LoRA was trained from this
@@ -229,8 +230,8 @@ This is the mechanism that keeps the alpha gate honest.
 | **R165** | **P5 = alpha (v1) gate; P6 = flexible overflow with no essential deliverables.** The governing rule (§1). |
 | **R128** | All 3D / depth proxies deferred to P6 (supersedes R108's P3 placement). |
 | **R37** | Effect plugin API (Python / JS / TS). |
-| **R138** | Persistent retrieval index deferred (same Qwen3-VL-Embedding model). |
-| **R170** | GraphRAG posture: typed facts in P2/P4 now, persistent graph/vector index + retrieval/query here. |
+| **R138** | Persistent retrieval index later (same Qwen3-VL-Embedding model; deferral lifted 2026-07-05). |
+| **R170** | GraphRAG posture: typed facts in P2/P4 now, persistent graph/vector index + retrieval/query **here at the latest** (deferral lifted 2026-07-05 — may be pulled earlier). |
 | **R147** | Flux2-deep / LTXV-extend-harden / multi-LoRA+style / postproc-expansion moved P6 → **P5** (do not reclaim). |
 
 ---

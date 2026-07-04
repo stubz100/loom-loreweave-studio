@@ -1819,3 +1819,33 @@ the project name (stable space), rendered **only in L2 · Assets with a characte
 (per-asset stages; Sandbox/L1 World never show it). The stage-ctx bar keeps name · version
 selector · +version · finalize/unlock · Export. No CSS changes (`.titlebar` flex + inline-flex
 `.stage-switch` compose as-is). `tsc` + `vite build` clean; backend untouched.
+
+## NaN-black cell: guard + per-cell ↻ re-run (2026-07-04 21:59, ✅ PUSHED `cb022a1`)
+
+**Symptom (author):** warm dev-turbo@4 expansion cell `job_426c7a02` (of the 17-prompt set;
+"three quarter right · face closeup · smile") produced a **100 % black PNG** — pixel-verified
+all-zero — while reporting `ok=True` (probe: healthy 20.9 s/step, decode 1.5 s). Siblings: 7/8
+done cells fine → NOT a config break; one prompt×seed numerically blew up (4-step turbo runs
+nearer the bf16 edge than 8-step; the failure class M2.5 met on dev).
+
+**Root defect = silent success.** M2.5's `_ensure_finite_latents` guard covered only the
+single-run t2i/i2i paths; the **warm serve loop** and the **cold batch loop** decoded NaN
+latents without checking (NaN→0 → black tile, one careless ✓ from a training ref set). Both
+paths now run the guard before decode → the cell/item **fails loudly** with the latent stats.
+No auto-retry (M2.7 policy: a failed cell just fails). Parent re-synced, md5 match.
+
+**Recovery = `POST /jobs/{id}/rerun`** (the author's ask: a sweep cell can't be re-created from
+the recipe bar — the prompt set is generated; only the JOB record holds the cell's exact
+prompt + coverage cell). Clones a TERMINAL (done/failed/canceled) job into a new queue entry —
+same params/batch/stage/warm_group/coverage_cell, `meta.rerun_of` provenance — with
+**catalog-validated overrides** via the existing `validate_params` channel (seed / num_steps /
+guidance / any catalog knob; 422 on unknown keys). Mirrors the /generate turbo-412 + disk-507
+gates; trainer jobs excluded (Stage-D staged records are their re-queue path). Token-gated,
+`token_required` updated. **UI:** `RerunPanel.tsx` (dedicated component, monolith policy) in
+the Inspector on any terminal generation — seed/steps/guidance prefilled from the job's own
+param aliases (`num_steps` vs `num_inference_steps` vs `steps` etc.), blank = keep; the fresh
+tile streams into the same grid. The still-`done` black tile from today is directly
+re-runnable this way (bump the seed), then 🗑 the black one.
+
+**Tests +3 → 367 green** (rerun clone/overrides/provenance; 409/404/422 refusals; serve+batch
+guard source-contract), `tsc` + `vite build` clean.

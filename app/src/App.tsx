@@ -1412,6 +1412,25 @@ export default function App() {
         <span className="project">
           {project?.open ? project.name : <span className="muted">no project</span>}
         </span>
+        {/* CHARACTER BOOTSTRAP stage switch — lives up here because the stage-ctx bar was
+            overflowing (it wrapped under the name/version controls); header space is stable.
+            L2 · Assets only, and only with a character selected (the stages are per-asset). */}
+        {view === "assets" && activeAsset && (
+          <span className="stage-switch">
+            {([["A", "Casting"], ["B", "Expansion"], ["C", "Curation"], ["D", "Train"]] as const).map(
+              ([s, label]) => (
+                <button
+                  key={s}
+                  className={`stage-tab ${stage === s ? "on" : ""}`}
+                  onClick={() => setStage(s)}
+                  title={`Stage ${s} · ${label} — CHARACTER BOOTSTRAP, scoped to ${activeAsset.name}`}
+                >
+                  {s} · {label}
+                </button>
+              ),
+            )}
+          </span>
+        )}
         <span className="spacer" />
         <span className={`status dot-${dot}`}>
           <i className="dot" /> orchestrator: {conn}
@@ -1556,21 +1575,6 @@ export default function App() {
                  title="export this profile + ALL its versions as a portable bundle (.zip, R66)">
                 ⤓ Export
               </button>
-              <span className="muted"> · CHARACTER BOOTSTRAP — </span>
-              <span className="stage-switch">
-                {([["A", "Casting"], ["B", "Expansion"], ["C", "Curation"], ["D", "Train"]] as const).map(
-                  ([s, label]) => (
-                    <button
-                      key={s}
-                      className={`stage-tab ${stage === s ? "on" : ""}`}
-                      onClick={() => setStage(s)}
-                      title={`Stage ${s} · ${label}`}
-                    >
-                      {s} · {label}
-                    </button>
-                  ),
-                )}
-              </span>
             </div>
           )}
           {(!activeAsset || stage === "A") && (

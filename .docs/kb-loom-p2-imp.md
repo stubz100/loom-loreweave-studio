@@ -1702,3 +1702,21 @@ b-prep; this hash line rides the follow-up journal commit). ⏭ **M2.9 closes** 
 runs/greenlights the **P2-10 rig smoke** (§12 "M2.9b" procedure) and (2) eyeballs the Stage-D panel
 (visual sign-off). The d-checklist items stay on the author's ledger, non-blocking. Then: **Phase B
 / M3 template captioning.**
+
+**Addendum — author review nits (2026-07-04 16:46, ✅ PUSHED `c922d0e`).** The author reviewed the
+M2.9 slice and filed 6 non-blocking observations; 4 applied, 2 deferred by the author's own call:
+
+- **Applied:** #2 the Train-panel steps input clamps to the backend bound 1–10000 (on blur + at
+  submit — what's shown is what's sent); #4 `batch_id` derives via
+  `staged_id.removeprefix("stg_")` (no longer assumes the `_`-split shape of `new_id`); #5 an
+  explicit `DELETE /training/staged/{id}` test (200 → durably gone on re-fetch → 404 on repeat)
+  closes the stage/queue/delete triangle; #6 TrainPanel `busy` is per-action (`"stage"` | the
+  staged id) so an in-flight queue no longer disables every other row's buttons.
+- **Deferred (recorded, not owed):** #1 a `?version_id=` server-side filter on
+  `GET /training/staged` — the panel filters client-side, moot at single-user scale, revisit only
+  if staged records ever grow; #3 `stage_zimage_lora` writes `version.json` before the staged
+  record persists — idempotent on re-stage, no data loss, strict ordering not worth the
+  complexity now.
+
+Tests +1 → **361 green**; `tsc` + `vite build` clean. M2.9 close conditions unchanged (P2-10 rig
+smoke + Stage-D visual sign-off).

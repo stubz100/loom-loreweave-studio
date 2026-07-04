@@ -1747,4 +1747,43 @@ copy (md5 match; disk-only — the monorepo is not a git repo), the file added t
 drift guard (`test_batch_worker.py`), and an i2i dtype-contract test added
 (`test_flux2_dev_quantized.py`: encode input follows the AE's dtype, latents leave as bf16, the
 bf16 image cast is gone). Tests +2 → **363 green**. ⏭ The re-run of the stacked Clean job on the
-rig doubles as the owed flux2-i2i E2E check.
+rig doubles as the owed flux2-i2i E2E check. **→ Clean jobs confirmed working on the rig by the
+author (2026-07-04) — the flux2-i2i E2E check is now DONE.**
+
+## flux2 expansion probe — `[flux2-probe]` (2026-07-04 18:11, ✅ PUSHED `a448579`)
+
+**Symptom (author):** a flux2 Stage-B expansion "even with the turbo on" produced no first image
+after ~10 min (process shut down). Author asked for the zimage-base treatment: instrument the
+worker so the next run *records* where the time goes, instead of theorizing.
+
+**What landed — probe lines in the warm `--serve` worker** (the path every flux2 expansion takes;
+`_ServeGenerator` in `run_pipeline.py`), carrying the zimage probe's hard-won rule: HIP is async,
+so every boundary calls `torch.cuda.synchronize()` first or the time lands on the wrong phase.
+Output streams into the cell job's `log_tail` (Inspector) like any worker line:
+
+- `[flux2-probe] warmup stage1=…s {per-model load timings} ref_encode=…s (n_refs/ref_tokens)
+  te_free+flow_to_gpu=…s | model=… cpu_offload=… turbo=… | MIOPEN_FIND_MODE=… free_vram=…` —
+  once per sweep; splits disk load vs ref encode vs the one-time flow-model→GPU migration.
+- `[flux2-probe] denoise begin steps=… img_tokens=… ref_tokens=… W×H free_vram=…` — flushed
+  BEFORE the denoise, so even a killed sweep shows how far it got + how big the sequence was.
+- `[flux2-probe] cell text_encode=…s denoise=…s (N steps, …s/step) decode+save=…s total=…s |
+  free_vram=…` — per cell.
+
+**Two findings recorded en route (the probe surfaces both honestly):**
+1. **Klein ignores `turbo`.** `stage1_load_models.run` only applies the Turbo LoRA on the
+   quantized-dev branch; a Klein request accepts-and-drops the flag (the LoRA is dev-trained).
+   The probe prints `turbo=on(IGNORED — <model> has no turbo path)` so "turbo on" can't imply a
+   speedup that never happened. If the author's sweep ran a Klein variant, turbo did nothing.
+2. **klein-9b oversubscribes the card.** The serve loader parks the WHOLE flow model on the GPU;
+   klein-9b is ~18 GB bf16 on a 16 GB card → ROCm HMM pages it every step (the "fits in 16 GB
+   fully resident" comment is klein-4b-sized). Hypothesis, not yet measured — the probe's
+   `free_vram≈0` + s/step on the re-run will confirm or clear it.
+
+**Read guide for the re-run:** big `stage1`/`flow_to_gpu` = load/migration (one-time, per sweep);
+`denoise begin` printed but no `cell` line for minutes = the denoise itself (check s/step,
+img+ref token counts, free_vram≈0 → paging); huge first-cell `decode+save` with
+`MIOPEN_FIND_MODE=(unset)` = the conv-solver regression back from the dead.
+
+R162: parent re-synced (md5 match) + `flux2/run_pipeline.py` added to the drift guard. Tests +1
+→ **364 green**. ⏭ Author re-runs the expansion (a FEW cells suffice) and reads the first cell's
+log tail; next action follows the numbers.

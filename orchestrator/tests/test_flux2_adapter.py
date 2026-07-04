@@ -253,3 +253,43 @@ def test_capabilities_includes_flux2(client):
     assert "flux2" in caps
     assert caps["flux2"]["present"] is True and caps["flux2"]["modes"] == ["ref", "t2i", "img2img"]
     assert caps["flux2"]["multi_ref"]["via"] == "encode_image_refs"
+
+
+def test_stage_b_turbo_pre_flights_the_turbo_lora_file(client, monkeypatch):
+    """M2.9c: a `turbo`-armed dev sweep needs the SEPARATE ~2.6 GB Flux2-Turbo LoRA file
+    (M2.6) — missing → 412 with the single-file fetch hint (never a mid-sweep worker
+    crash); present → the sweep passes the gate."""
+    from orchestrator import components
+    from orchestrator.runner import RUNNER
+    monkeypatch.setattr(components, "image_model_present", lambda repo_id: True)
+    monkeypatch.setattr(components, "variant_weights_present", lambda v: True)
+    RUNNER.pause()
+    a = _asset_with_hero(client, RUNNER.workspace, name="Turbo412")
+    body = {"pipeline": "flux2", "preset": "npc_lite",
+            "params": {"model_name": "flux.2-dev", "turbo": True}}
+    monkeypatch.setattr(components, "postproc_weights_status",
+                        lambda tool, variant_id=None: (False, [{"id": "flux2-turbo-lora"}]))
+    r = client.post(f"/assets/{a['id']}/stage-b", json=body)
+    assert r.status_code == 412
+    assert "flux2_turbo_lora" in r.text and "Turbo LoRA" in r.text
+    monkeypatch.setattr(components, "postproc_weights_status",
+                        lambda tool, variant_id=None: (True, []))
+    r2 = client.post(f"/assets/{a['id']}/stage-b", json=body)
+    assert r2.status_code == 200, r2.text
+
+
+def test_generate_turbo_pre_flights_the_turbo_lora_file(client, monkeypatch):
+    """M2.9c: same gate on /generate — a turbo-armed single dev run 412s when the LoRA
+    file is missing; without params.turbo the gate never fires."""
+    from orchestrator import components
+    from orchestrator.runner import RUNNER
+    monkeypatch.setattr(components, "variant_weights_present", lambda v: True)
+    monkeypatch.setattr(components, "postproc_weights_status",
+                        lambda tool, variant_id=None: (False, [{"id": "flux2-turbo-lora"}]))
+    RUNNER.pause()
+    r = client.post("/generate", json={"pipeline": "flux2", "prompt": "x", "count": 1,
+                                       "params": {"model_name": "flux.2-dev", "turbo": True}})
+    assert r.status_code == 412 and "flux2_turbo_lora" in r.text
+    r2 = client.post("/generate", json={"pipeline": "flux2", "prompt": "x", "count": 1,
+                                        "params": {"model_name": "flux.2-dev"}})
+    assert r2.status_code == 200, r2.text        # no turbo → the LoRA gate never consulted

@@ -1205,3 +1205,71 @@ export function outputUrl(name: string): string {
   const enc = name.split("/").map(encodeURIComponent).join("/");
   return `${orchestratorUrl()}/outputs/${enc}`;
 }
+
+// --- P2/M2 staged LoRA training (M2.9a — the Stage-D Train panel) -------------------
+// R118 staged-job semantics: staging materializes captions/context/dataset/config +
+// a durable `jobs/staged.json` record but NEVER queues; the explicit queue transition
+// below is the first moment GPU work can start.
+
+/** A staged (not yet queued) LoRA training run — `GET /training/staged` rows. */
+export interface StagedTraining {
+  id: string;
+  kind: string;                       // "zimage_lora_train"
+  status: string;                     // "staged"
+  created_at: string;
+  asset_id: string;
+  asset_name?: string;
+  version_id: string;
+  version_name?: string;
+  trigger_token: string;
+  caption_count: number;
+  caption_policy_hash?: string;
+  captions_hash?: string;
+  context_digest?: string;
+  settings?: Record<string, unknown>; // steps/resolution/rank/alpha/lr (M1-accepted defaults)
+}
+
+export async function getStagedTraining(signal?: AbortSignal):
+    Promise<{ count: number; staged: StagedTraining[] }> {
+  const res = await fetch(`${orchestratorUrl()}/training/staged`, { signal });
+  if (!res.ok) throw new Error(`training/staged ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+/** Stage a Z-Image LoRA run for a character version (writes captions/policy/context/
+ * dataset/train.yaml + the staged record; does NOT queue — R118). */
+export async function stageZimageLora(assetId: string, body: {
+  version_id?: string;
+  trigger_token?: string;
+  steps?: number;
+} = {}): Promise<StagedTraining> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/lora/zimage/stage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`lora stage ${res.status}: ${await res.text()}`);
+  return (await res.json()) as StagedTraining;
+}
+
+/** Staged → queued: the explicit transition that puts the (resumable) trainer job on
+ * the GPU queue. */
+export async function queueStagedTraining(stagedId: string):
+    Promise<{ staged_id: string; queued: boolean; job_id: string; batch_id: string }> {
+  const res = await fetch(`${orchestratorUrl()}/training/staged/${stagedId}/queue`, {
+    method: "POST",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`training queue ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+export async function deleteStagedTraining(stagedId: string):
+    Promise<{ deleted: boolean; staged_id: string }> {
+  const res = await fetch(`${orchestratorUrl()}/training/staged/${stagedId}`, {
+    method: "DELETE",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`training delete ${res.status}: ${await res.text()}`);
+  return await res.json();
+}

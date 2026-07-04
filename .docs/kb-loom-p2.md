@@ -38,7 +38,11 @@ and a **proxy-based readiness meter** (no VLM). The VLM (Qwen3-VL) and a project
 > robustness review** (full pass over the P2 docs vs the codebase + the orchestrator/frontend core)
 > before the M3 trainer work — findings + the doc fixes applied recorded in §12 "M2.8"; verdict:
 > foundation sound, **no refactor needed**, a short list of small robustness guardrails carried into
-> M3+.
+> M3+. **M2.9 added 2026-07-04:** the **Phase A close-out** — everything M1–M2.8 left owed, gathered
+> into one milestone so Phase B (M3 captions → M4 readiness) starts on a clean ledger: (a) the
+> M2-owed **Train panel** (Stage D), (b) the 🔴 **P2-10 queued resume smoke** on the rig, (c) the
+> M2.6 **Turbo-LoRA weight gate**, (d) the consolidated **on-rig sign-off checklist** (author-owned).
+> Scope + status in §12 "M2.9".
 
 ---
 
@@ -1171,6 +1175,54 @@ and #5 build on) → #2 → #5 → #6 → #1 → #7**, landing as a single "M2.9
 captioning opens its UI. None block M3 if deferred; they just widen the safety margin before the
 trainer's promote-on-success adds its own writers/paths.
 
+#### M2.9 — Phase A close-out (the owed items, gathered)
+
+*Added 2026-07-04 (author: "finish the remaining tasks of Phase A first"). Phase A's BUILD work
+(M1–M2.8) is complete; this milestone collects the explicitly-owed leftovers so Phase B opens on a
+clean ledger. Four parts:*
+
+**a — Train panel (Stage D) — the M2-owed `[Train LoRA]` surface. ✅ BUILT 2026-07-04.** A
+dedicated component (`app/src/TrainPanel.tsx` — per the monolith policy, NOT more App.tsx), mounted
+as a fourth **`D · Train`** tab on the bootstrap strip. Surfaces R118 literally: **⚙ Stage** (trigger
+token + steps; requires curated refs, refuses a finalized version) → a **STAGED** list (caption
+count, steps, context digest) with **▶ Add to queue** (the explicit transition — the first moment
+GPU work can start) + **✕ delete**; below it, this version's **trainer jobs** (status/progress/note
+off the normal `/jobs` poll, cancel like any job). Client fns `getStagedTraining`/`stageZimageLora`/
+`queueStagedTraining`/`deleteStagedTraining` + the `StagedTraining` type in `orchestrator.ts`.
+Promote-on-success stays **M6** (the panel says so). ⚠ Visual sign-off owed (M0e pattern).
+
+**b — P2-10 queued resume smoke (the 🔴 WBS row; execution moved here from M2). 🟡 PREPPED —
+the GPU run needs the author's go (no-surprise-GPU, R141).** What's now in place: the M1 isolated
+dependency overlay was LOCATED + verified on the rig
+(`F:\source\repos\stubz-002-tripo-sf\.tmp\ai-toolkit-deps` — peft present, torchao/bitsandbytes
+disabled shims intact), and a new rig-level config default **`LOOM_TRAINER_OVERLAY`**
+(`config.trainer_overlay` → `training.stage_zimage_lora`, explicit request wins) means the Train
+panel needs no path field — set it once in `.env.local`. **Procedure (author runs it, or gives the
+go):**
+1. `.env.local`: `LOOM_TRAINER_OVERLAY=F:\source\repos\stubz-002-tripo-sf\.tmp\ai-toolkit-deps`.
+2. Open the curated project (`loom/stubz001`, char01) → Stage D → **⚙ Stage** with **steps 60**
+   (save_every 50 ⇒ exactly one mid-run checkpoint) → **▶ Add to queue** → unpause.
+3. After the step-50 checkpoint lands (progress ≳ 85%, `step 50/60` in the log), quit the app
+   (graceful R159) — and on a second pass, hard-kill the orchestrator instead (crash branch).
+4. Relaunch → the job must reload **`queued` + paused** with the "recovered (resumable)" note (the
+   R159 resumable branch covers BOTH kill modes).
+5. Unpause → **acceptance:** the wrapper's `[train-preflight]`/`[train-resume]` lines report the
+   discovered step-50 checkpoint + `optimizer.pt`; ai-toolkit resumes **from 50, not 0**; exit 0;
+   trainer manifest `status: completed` + artifact present; timings/hashes recorded in the journal.
+
+**c — Turbo-LoRA weight gate (the M2.6 owed item #4). ✅ BUILT 2026-07-04.** `models.json` gains
+`postproc.flux2_turbo_lora` (**single-`filename`** entry — the split-files repo also hosts the 34 GB
+transformer; never snapshot), mirroring the worker's `scaled_fp8.COMFY_FLUX2_REPO`+`TURBO_LORA_FILE`
+(a drift test imports the vendored module and asserts the pair). `/generate` + `stage_b` pre-flight
+it whenever the request arms `turbo` → **412** with `POST /components/fetch?postproc=flux2_turbo_lora`
+(the generic single-file fetch), never a mid-sweep worker crash.
+
+**d — consolidated on-rig sign-off checklist (author-owned; none block Phase B).** M2.5 quantized-dev
+smoke (t2i JSON 8-step + i2i postproc, manifest `comfy-q8`) · M2.6 turbo quality/speed at 4–6 steps
+vs no-turbo 8 · M2.7 warm sweeps hold flat per-cell + pause→resume keeps tiles + a Cast streams
+individual candidates · M0d/M0e + styles-Pass-2 visual sign-offs · (carried from P1, separate:
+the formal A–H rig acceptance stamp).
+
 ### Phase A — Training skeleton (prove a LoRA can be made + used on this rig)
 
 1. **M1 — training spike (no UI).** Vendor **ai-toolkit**; train **one** `zimage` LoRA from a fixed
@@ -1206,6 +1258,12 @@ trainer's promote-on-success adds its own writers/paths.
    fixed, and a 7-item list of small robustness guardrails recorded for M3+ (incl. the ⚠ style-id
    provenance gap to close before M3/M6). Verdict: foundation sound, no refactor. Findings: §12
    "M2.8".
+3e. **M2.9 — Phase A close-out.** The owed items M1–M2.8 left behind, gathered so Phase B opens on
+   a clean ledger: (a) the M2-owed **Train panel** (Stage D — stage/queue/watch on staged records,
+   R118 surfaced literally; promote stays M6), (b) the 🔴 **P2-10 queued resume smoke** on the rig
+   (overlay located; `LOOM_TRAINER_OVERLAY` rig default; GPU run = author's go), (c) the M2.6
+   **Turbo-LoRA weight gate** (412 + single-file fetch), (d) the consolidated **on-rig sign-off
+   checklist** (author-owned, non-blocking). Scope + procedure: §12 "M2.9".
 
 ### Phase B — Thicken (all VLM-free)
 
@@ -1279,7 +1337,7 @@ flagged — noted for `kb-loom-p4.md`.)
 | P2-6 | Promote + manual cleanup + LoRA management (promote into version; one-click temp cleanup; LoRA list/attach) | M6 | M | 🟢 |
 | P2-7 | Acceptance: P1 char → captioned → readiness ✓ → staged → queued → trained → promoted | M7 | S | 🟢 |
 | P2-9 | **Training VRAM-fit presets** — rank/resolution/batch/grad-accum/precision combos that *fit 16 GB*, pinned **per base model** (`zimage`, `sd35`) | M5 | M | 🟡 *folded from gap* |
-| P2-10 | **Long-job resume-from-checkpoint** — a multi-hour training job survives queue pause/relaunch (R88) by resuming from its last checkpoint, not restarting | M2 | M | 🔴 *folded from gap* |
+| P2-10 | **Long-job resume-from-checkpoint** — a multi-hour training job survives queue pause/relaunch (R88) by resuming from its last checkpoint, not restarting | M2 (build) → **M2.9b (rig smoke)** | M | 🔴 *folded from gap* |
 | P2-11 | **LoRA preview before promote** — sample-gen with the freshly trained LoRA so the author eyeballs it before promoting into the version | M6 | S | 🟢 *folded from gap* |
 | P2-12 | **Training-time ETA in the queue** — an honest running estimate so a multi-hour job doesn't look hung | M2 | S | 🟢 *folded from gap* |
 | P2-13 | **Graph-ready training facts** — write `training_context.json`, `caption_policy_hash`, and `context_digest` into the promoted LoRA manifest; no retrieval index | M3/M6 | S | 🟢 |

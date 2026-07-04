@@ -973,6 +973,17 @@ def create_app() -> FastAPI:
                         "hint": "fetch it first (gated repos need a huggingface.co license "
                                 "accept + HF_TOKEN)",
                     })
+                # M2.9c — the M2.6 Turbo LoRA is a SEPARATE ~2.6 GB file the worker resolves
+                # from cache: gate it when the request arms `turbo` (low-step dev), offering
+                # the single-file fetch instead of dying inside the worker mid-load.
+                if req.pipeline == "flux2" and base.get("turbo"):
+                    t_ok, t_missing = components.postproc_weights_status("flux2_turbo_lora")
+                    if not t_ok:
+                        raise HTTPException(412, {
+                            "error": "Flux2-Turbo LoRA weight missing (params.turbo)",
+                            "missing": t_missing,
+                            "hint": "POST /components/fetch?postproc=flux2_turbo_lora "
+                                    "(single ~2.6 GB file), or drop params.turbo"})
 
         # Stage-B img2img/inpaint inputs (P1/M3): the worker needs a base image (+ a mask for
         # inpaint). init_image/mask_image are out/-relative names; resolve + traversal-guard
@@ -1764,6 +1775,16 @@ def create_app() -> FastAPI:
             raise HTTPException(412, {"error": f"{req.pipeline} model {variant['id']!r} not in cache",
                                       "repo_id": variant["repo_id"], "gated": variant["gated"],
                                       "hint": "fetch it first (gated repos need a HF license + token)"})
+        # M2.9c — a turbo-armed dev sweep needs the separate Turbo LoRA file (M2.6): 412 +
+        # single-file fetch here, never a mid-sweep worker crash (mirrors /generate).
+        if is_flux2 and extra.get("turbo"):
+            t_ok, t_missing = components.postproc_weights_status("flux2_turbo_lora")
+            if not t_ok:
+                raise HTTPException(412, {
+                    "error": "Flux2-Turbo LoRA weight missing (params.turbo)",
+                    "missing": t_missing,
+                    "hint": "POST /components/fetch?postproc=flux2_turbo_lora "
+                            "(single ~2.6 GB file), or drop params.turbo"})
         est = estimate_vram(req.pipeline)
         if est > CONFIG.vram_budget_gb:
             raise HTTPException(422, f"{req.pipeline} needs ~{est} GB VRAM > budget "

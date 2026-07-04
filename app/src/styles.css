@@ -112,6 +112,27 @@ body {
   border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer;
 }
 .stage-tab.on { background: var(--amber); color: #1a1a1a; border-color: var(--amber); font-weight: 600; }
+
+/* Stage D · Train panel (P2/M2.9a — the staged-LoRA surface, R118) */
+.train-panel {
+  border: 1px solid var(--line); background: var(--panel); border-radius: 6px;
+  padding: 10px 12px; margin: 8px 0; display: flex; flex-direction: column; gap: 8px;
+}
+.train-head { font-size: 12px; }
+.train-stage-form { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.train-stage-form label {
+  display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted);
+}
+.train-stage-form input {
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 4px; padding: 4px 6px; width: 150px;
+}
+.train-staged, .train-jobs { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.train-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 6px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2);
+}
+.train-row-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .style-bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .style-label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .style-frag {

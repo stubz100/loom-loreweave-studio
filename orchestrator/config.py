@@ -211,6 +211,15 @@ class Config:
                 or _get("HUGGINGFACE_HUB_TOKEN"))
 
     @property
+    def trainer_overlay(self) -> str | None:
+        """`LOOM_TRAINER_OVERLAY` — the isolated trainer dependency-overlay dir the wrapper
+        prepends to the worker's PYTHONPATH (M1/M2: the shared inference venv deliberately
+        lacks ai-toolkit's deps + PEFT and must never be mutated, R103). The rig-level
+        DEFAULT for staged LoRA runs (M2.9b) — an explicit stage request still wins; unset
+        ⇒ staged runs carry no overlay (fine once M5 declares the runtime properly)."""
+        return _get("LOOM_TRAINER_OVERLAY") or None
+
+    @property
     def active_phases_raw(self) -> str | None:
         """Raw `LOOM_ACTIVE_PHASES` (comma-separated phases the launch gate hard-requires),
         read through the **central loader** (real env > `.env.local` > `.env`) like every

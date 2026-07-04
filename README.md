@@ -273,6 +273,7 @@ token from `.env.local`.
 | `LOOM_PROJECT_DIR` | _(unset)_ | force-open/create a project at startup (tests/CI/GPU-verify) |
 | `LOOM_STATE_DIR` | `<repo>/.loom_state` | **app-level** state (last-project pointer `app.json`) |
 | `LOOM_VRAM_BUDGET_GB` | `16` | VRAM admission budget (RX 9070 XT) |
+| `LOOM_TRAINER_OVERLAY` | _(unset)_ | isolated trainer dependency-overlay dir (PYTHONPATH-prepended by the LoRA trainer wrapper; the shared venv is never mutated, R103) — rig-level default for staged runs (M2.9b); an explicit stage request wins |
 | `LOOM_DISK_POLL_S` | `5` | disk-guard poll cadence (M6, §9) |
 | `LOOM_ACTIVE_PHASES` | `P0,P1` | phases the launch gate hard-requires (comma-sep, M7, §11); P1 adds the L1/L2 record check (no P1 weight yet, so `/generate` stays ungated) |
 | `LOOM_LOG_LEVEL` | `brief` | backend log verbosity: `brief`(INFO) / `verbose`(DEBUG) / level name |

@@ -104,6 +104,7 @@ import {
   type StyleEntry,
 } from "./lib/orchestrator";
 import { log } from "./lib/log";
+import TrainPanel from "./TrainPanel";
 
 // Coverage-cell vocabulary (frozen P1→P2 contract, coverage.py) — drives the Stage-C
 // curation filters (P1-12). Keep in lockstep with the backend vocab.
@@ -158,7 +159,7 @@ export default function App() {
   const [l1Tab, setL1Tab] = useState<"styles" | "world" | "spine">("styles");
   const [applyStyle, setApplyStyle] = useState(true);
   // P1/M3 bootstrap stages (A casting · B expansion · C curation) + their controls.
-  const [stage, setStage] = useState<"A" | "B" | "C">("A");
+  const [stage, setStage] = useState<"A" | "B" | "C" | "D">("A");
   const [recipePreset, setRecipePreset] = useState<RecipePreset>("full_coverage");
   const [stageBPipeline, setStageBPipeline] = useState<"zimage" | "sd35" | "flux2">("zimage");
   const [stageBModel, setStageBModel] = useState("");   // "" = the worker default variant
@@ -1267,7 +1268,8 @@ export default function App() {
     ? refSet.filter((r) => !r.source_output || !jobOutputs.has(r.source_output))
         .map((r) => ({ key: `ref:${r.id}`, refItem: r }))
     : [];
-  const stageCells = stage !== "C" ? cells
+  // Stage D shows the Train panel, not an image grid (trainer jobs render inside it).
+  const stageCells = stage === "D" ? [] : stage !== "C" ? cells
     : [...durableRefCells, ...cells].filter((c) => {
         if (!showRejected && c.output && rejectedSet.has(c.output)) return false;
         const cov = covOf(c);
@@ -1305,6 +1307,16 @@ export default function App() {
   // (mutating controls hidden/disabled, not error-prone).
   const activeVersionLocked =
     versionList.find((v) => v.id === activeAsset?.active_version)?.finalized ?? false;
+
+  // Stage D (M2.9a): this version's trainer jobs, newest first — rendered inside TrainPanel
+  // (queued/running/done with progress + cancel), fed by the same /jobs poll as the grid.
+  const trainJobs = useMemo(
+    () => Object.values(jobs)
+      .filter((j) => j.pipeline === "zimage_trainer"
+                     && j.profile_version_id === activeAsset?.active_version)
+      .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")),
+    [jobs, activeAsset],
+  );
 
   // Keyboard curation (P1-12): arrows move the selection, k = keep, x = toggle reject,
   // space = toggle bulk-select. Stage C only; the grid div is focusable.
@@ -1546,7 +1558,7 @@ export default function App() {
               </button>
               <span className="muted"> · CHARACTER BOOTSTRAP — </span>
               <span className="stage-switch">
-                {([["A", "Casting"], ["B", "Expansion"], ["C", "Curation"]] as const).map(
+                {([["A", "Casting"], ["B", "Expansion"], ["C", "Curation"], ["D", "Train"]] as const).map(
                   ([s, label]) => (
                     <button
                       key={s}
@@ -2125,8 +2137,22 @@ export default function App() {
           )}
           {error && <div className="error">⚠ {error}</div>}
 
+          {activeAsset && stage === "D" && (
+            <TrainPanel
+              assetId={activeAsset.id}
+              assetName={activeAsset.name}
+              versionId={activeAsset.active_version}
+              versionName={versionList.find((v) => v.id === activeAsset.active_version)?.name}
+              versionLocked={activeVersionLocked}
+              refCount={refSet.length}
+              trainJobs={trainJobs}
+              onCancelJob={(id) => void onCancel(id)}
+              onError={setError}
+            />
+          )}
+
           <div className="grid" tabIndex={0} onKeyDown={onGridKey}>
-            {stageCells.length === 0 && (
+            {stageCells.length === 0 && !(activeAsset && stage === "D") && (
               <p className="muted center span">
                 {!activeAsset
                   ? "Fire a batch — results stream in here (the casting-grid embryo)."

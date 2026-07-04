@@ -212,3 +212,17 @@ def test_curated_refs_and_training_context_carry_the_style_id(client):
     vroot = ws.asset_dir("characters", detail["profile"]["slug"]) / "versions" / "v1_base"
     context = json.loads((vroot / "training_context.json").read_text(encoding="utf-8"))
     assert all(ref["style_id"] == "sty_000000" for ref in context["refs"])
+
+
+def test_stage_defaults_the_runtime_overlay_from_config(client, monkeypatch, tmp_path):
+    """M2.9b: `LOOM_TRAINER_OVERLAY` is the rig-level default for the isolated trainer
+    dependency overlay (the shared venv deliberately can't run ai-toolkit, R103) — the
+    Train panel never asks for a path. An explicit stage request still wins."""
+    asset = _curated_asset(client, n=1)
+    ovl = str(tmp_path / "aitk-overlay")
+    monkeypatch.setenv("LOOM_TRAINER_OVERLAY", ovl)
+    staged = client.post(f"/assets/{asset['id']}/lora/zimage/stage", json={}).json()
+    assert staged["queue_job"]["params"]["runtime_overlay"] == ovl
+    explicit = client.post(f"/assets/{asset['id']}/lora/zimage/stage",
+                           json={"runtime_overlay": "X:/explicit-overlay"}).json()
+    assert explicit["queue_job"]["params"]["runtime_overlay"] == "X:/explicit-overlay"

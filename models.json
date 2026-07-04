@@ -73,6 +73,9 @@
     ],
     "sd35_tile_cn": [
       {"id": "sd3-controlnet-tile", "repo_id": "InstantX/SD3-Controlnet-Tile", "probe": "config.json", "gated": false, "pipeline": "sd35", "note": "InstantX SD3 Tile ControlNet (~1.2 GB; Apache-2.0) — the M0e `Upscale ✨` creative-upscale conditioner. Used by the sd35 worker's cn-inpaint mode (--controlnet tile). SD3-MEDIUM family (hidden-dim match), so paired with the sd3.5-medium base; a genuine multi-file repo (config.json + safetensors) → snapshot fetch. The worker already registers the repo in stage1_load_pipeline._CN_REPOS['tile']"}
+    ],
+    "flux2_turbo_lora": [
+      {"id": "flux2-turbo-lora", "repo_id": "Comfy-Org/flux2-dev", "probe": "split_files/loras/Flux2TurboComfyv2.safetensors", "filename": "split_files/loras/Flux2TurboComfyv2.safetensors", "gated": false, "pipeline": "flux2", "note": "Comfy Flux2-Turbo LoRA (~2.6 GB bf16) — the M2.6 step-distillation adapter for low-step `flux.2-dev` sweeps (`turbo` param). Mirrors the worker's scaled_fp8 constants (COMFY_FLUX2_REPO + TURBO_LORA_FILE — a drift test guards the pair). ⚠ `filename` is REQUIRED: the split-files repo also hosts the 34 GB transformer / 17+34 GB TEs — an unrestricted snapshot would pull them all (M2.9c)"}
     ]
   }
 }

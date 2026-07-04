@@ -403,3 +403,19 @@ def test_turbo_lora_maps_every_module_onto_a_bfl_linear():
     assert len(bases) == 170
     assert len(qkv) == 16
     assert all(s == {(0, 6144), (6144, 12288), (12288, 18432)} for s in qkv.values())
+
+
+def test_turbo_lora_weight_entry_mirrors_the_worker_constants():
+    """M2.9c: the `postproc.flux2_turbo_lora` gate entry must point at EXACTLY the file the
+    worker resolves (`scaled_fp8.COMFY_FLUX2_REPO` + `TURBO_LORA_FILE`) — a drift guard, like
+    the ideation-lineup mirror — and must be a single-`filename` fetch (the split-files repo
+    also hosts the 34 GB transformer + TEs; an unrestricted snapshot would pull them all)."""
+    from pipeline.flux2 import scaled_fp8
+    from orchestrator import components
+
+    entries = components.postproc_weights("flux2_turbo_lora")
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["repo_id"] == scaled_fp8.COMFY_FLUX2_REPO
+    assert e["filename"] == scaled_fp8.TURBO_LORA_FILE == e["probe"]
+    assert e["gated"] is False and e["pipeline"] == "flux2"

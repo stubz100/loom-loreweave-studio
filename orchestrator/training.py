@@ -25,6 +25,7 @@ from typing import Any
 from . import assets
 from . import coverage
 from . import workspace as ws_mod
+from .config import CONFIG
 from .workspace import Workspace, new_id
 
 # M2.8 #3: `jobs/staged.json` is load-modify-save with two potential writers (API threadpool
@@ -361,6 +362,10 @@ def stage_zimage_lora(ws: Workspace, asset_id: str, *, version_id: str | None = 
     vdir, version, profile = _version_dir_for(ws, asset_id, version_id)
     if version.get("finalized"):
         raise ws_mod.WorkspaceError("cannot stage LoRA training for a finalized version; unlock or duplicate it first")
+    # M2.9b: default the isolated dependency overlay from rig-level config (the Train
+    # panel doesn't ask for a path; the shared venv can't run ai-toolkit without it).
+    # An explicit request value still wins.
+    runtime_overlay = runtime_overlay or CONFIG.trainer_overlay
     merged_settings = {**DEFAULT_ZIMAGE_SETTINGS, **(settings or {})}
     trigger = (trigger_token or version.get("trigger_token") or _trigger_from_profile(profile)).strip()
     if not re.match(r"^[A-Za-z][A-Za-z0-9_]{2,48}$", trigger):

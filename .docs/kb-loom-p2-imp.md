@@ -1652,3 +1652,49 @@ lineup member (422, nothing queued); curated refs + training_context carry `styl
 cell-meta assert added to the zimage warm-cells test). **356 backend green; `tsc` + `vite build`
 clean.** No `src/pipeline/` worker code touched → no re-vendor. **✅ PUSHED `780c33d`** (this
 hash-recording line rides the follow-up journal commit, per convention).
+
+---
+
+## M2.9 — Phase A close-out (spec §12 "M2.9"; 2026-07-04)
+
+started: 2026-07-04 13:40
+
+**Author call:** finish Phase A's owed items before opening Phase B/M3; gathered as **M2.9 a–d**
+(spec §12 "M2.9" — added same day, with the Phase-A list entry 3e + the P2-10 WBS row re-pointed
+`M2 (build) → M2.9b (rig smoke)`).
+
+**a — Train panel (Stage D) ✅ BUILT.** The M2-owed `[Train LoRA]` surface, as a **dedicated
+component** `app/src/TrainPanel.tsx` (monolith policy — App.tsx only mounts it): the bootstrap strip
+gains a **`D · Train`** tab (stage state `"A"|"B"|"C"` → `+"D"`; Stage D shows the panel, not an
+image grid). Panel = R118 surfaced literally: **⚙ Stage** (trigger token + steps; disabled without
+curated refs / on a finalized version) → **STAGED** rows (trigger, caption count, steps, ctx digest;
+**▶ Add to queue** = the explicit first-GPU-moment transition; **✕** delete) → this version's
+**trainer jobs** (status/progress/note from the normal `/jobs` poll, ✕ cancel; "promote is M6" note).
+`orchestrator.ts`: `StagedTraining` type + `getStagedTraining`/`stageZimageLora`/
+`queueStagedTraining`/`deleteStagedTraining`; new `.train-*` CSS block. ⚠ Visual sign-off owed.
+
+**b — P2-10 queued resume smoke 🟡 PREPPED (GPU run = author's go, R141 no-surprise-GPU).**
+Located + verified the M1 isolated dependency overlay on the rig:
+`F:\source\repos\stubz-002-tripo-sf\.tmp\ai-toolkit-deps` (peft present; torchao/bitsandbytes
+disabled shims intact). ⚙ New rig-level config default **`LOOM_TRAINER_OVERLAY`**
+(`config.trainer_overlay`, central loader env>`.env.local`>`.env`) — `training.stage_zimage_lora`
+falls back to it when the request carries no `runtime_overlay` (explicit wins), so the Train panel
+needs no path field; README env table documents it. Full procedure + acceptance in spec §12 "M2.9b"
+(steps 60 / save_every 50 ⇒ one mid-run checkpoint; BOTH kill modes — graceful + crash — must
+reload `queued`+paused "recovered (resumable)" and resume **from step 50, not 0**).
+
+**c — Turbo-LoRA weight gate ✅ BUILT** (the M2.6 owed item #4). `models.json`
+`postproc.flux2_turbo_lora`: single-`filename` entry (`Comfy-Org/flux2-dev` ·
+`split_files/loras/Flux2TurboComfyv2.safetensors`, ~2.6 GB — NEVER a snapshot: the repo also hosts
+the 34 GB transformer + TEs); `/generate` + `stage_b` **412** when the request arms `turbo` and the
+file isn't cached, hint `POST /components/fetch?postproc=flux2_turbo_lora` (generic single-file
+fetch). Drift-guarded: a test imports the vendored `pipeline.flux2.scaled_fp8` and asserts the
+entry mirrors `COMFY_FLUX2_REPO`+`TURBO_LORA_FILE` exactly.
+
+**d — consolidated on-rig sign-off checklist (author-owned, non-blocking)** — spec §12 "M2.9d":
+M2.5 dev smoke · M2.6 turbo quality/speed · M2.7 warm-sweep pause/flat-per-cell/Cast streaming ·
+M0d/M0e + styles-Pass-2 visuals · (separate, carried from P1: the formal A–H stamp).
+
+**Tests (+4 → 360):** turbo 412 on stage-b AND /generate (present → passes; no `turbo` → gate never
+consulted); the models.json↔worker drift guard; `LOOM_TRAINER_OVERLAY` default (env picked up,
+explicit request wins). Suite green; `tsc` + `vite build` clean.

@@ -164,6 +164,32 @@ def test_stage_b_flux2_dev_advanced_prompt_emits_json_cells(client):
     assert not body2["first_cell"]["prompt"].lstrip().startswith("{")
 
 
+def test_stage_b_flux2_ref_owns_the_style_not_the_l1_text(client):
+    """M2.10 (route 1): flux2 expansion drops the L1 style TEXT from the cell prompt — the
+    hero ref already embodies it, and restating it made dev re-render sweeps in its house
+    interpretation of that style — and instead ASSIGNS the reference's style + pins identity
+    to it (BFL role-assignment). Non-flux2 expansion keeps the L1 text."""
+    from orchestrator import bible, flux2_prompt
+    from orchestrator.runner import RUNNER
+    ws = RUNNER.workspace
+    a = _asset_with_hero(client, ws, name="StyleFid")
+    sid = bible.add_style(ws, name="JoJo",
+                          fragment="bold bizarre battle-fashion anime")["styles"][0]["id"]
+    r = client.post(f"/assets/{a['id']}/stage-b",
+                    json={"pipeline": "flux2", "preset": "npc_lite", "dry_run": True,
+                          "apply_style": True, "style_id": sid})
+    assert r.status_code == 200, r.text
+    p = r.json()["first_cell"]["prompt"]
+    assert "battle-fashion" not in p                              # L1 text dropped
+    assert flux2_prompt.REF_STYLE_DIRECTIVE in p                  # the ref owns the style
+    assert flux2_prompt.REF_PRESERVE_CLAUSE in p                  # identity pinned to the ref
+    r2 = client.post(f"/assets/{a['id']}/stage-b",
+                     json={"pipeline": "zimage", "preset": "npc_lite", "dry_run": True,
+                           "apply_style": True, "style_id": sid})
+    assert r2.status_code == 200, r2.text
+    assert "battle-fashion" in r2.json()["first_cell"]["prompt"]  # non-flux2 unchanged
+
+
 def test_stage_b_flux2_dev_defaults_to_512(client):
     """User 2026-06-21: a flux.2-dev Stage-B expansion ran at the 1024² StageBRequest default
     (~4k tokens → tens of minutes). M0e Part A now reaches Stage-B too — an UNSET size resolves

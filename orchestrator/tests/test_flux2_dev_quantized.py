@@ -64,15 +64,17 @@ def test_dev_variant_points_at_comfy_backend():
 
 
 def test_dev_quantized_defaults_use_stable_low_step_profile():
-    """The Comfy q8 dev path was proven at 8 steps; 50-step full-dev defaults can NaN to black."""
+    """The Comfy q8 dev path was proven at 8 steps; 50-step full-dev defaults can NaN to black.
+    M2.10: guidance default is 3.0 (author call) — 4.0 amplified dev's house-style override of
+    the Stage-B reference; catalog, sampling preset, and worker fallback must agree."""
     dev = next(v for v in mc.CATALOG["flux2"]["variants"] if v["id"] == DEV)
     assert dev["defaults"]["num_steps"] == 8
-    assert dev["defaults"]["guidance"] == 4.0
+    assert dev["defaults"]["guidance"] == 3.0
     preset = next(p for p in mc.flux2_sampling_presets() if p["id"] == "dev")
-    assert preset["num_steps"] == 8 and preset["guidance"] == 4.0
+    assert preset["num_steps"] == 8 and preset["guidance"] == 3.0
 
     from flux2 import util
-    assert util.FLUX2_MODEL_INFO[DEV]["defaults"] == {"guidance": 4.0, "num_steps": 8}
+    assert util.FLUX2_MODEL_INFO[DEV]["defaults"] == {"guidance": 3.0, "num_steps": 8}
     assert util.FLUX2_MODEL_INFO["flux.2-klein-base-4b"]["defaults"]["num_steps"] == 50
     assert util.FLUX2_MODEL_INFO["flux.2-klein-base-9b"]["defaults"]["num_steps"] == 50
 

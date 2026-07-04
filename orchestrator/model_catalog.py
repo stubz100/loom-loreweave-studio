@@ -99,7 +99,10 @@ def _catalog() -> dict:
                 {"id": "flux.2-dev", "repo_id": "Comfy-Org/flux2-dev",
                  "ae_repo_id": "Comfy-Org/flux2-dev", "text_encoder": "Mistral-Small (Comfy fp8/bf16 split, quantized)",
                  "gated": False, "distilled": True, "guidance_fixed": False,
-                 "defaults": {"num_steps": 8, "guidance": 4.0, "width": 512, "height": 512},
+                 # M2.10: dev guidance default 4.0 → 3.0 (author call) — 4.0 is
+                 # prompt-adherence-weighted and amplified dev's house-style override of the
+                 # Stage-B reference; ~3 moderates it (community-corroborated, §12 "M2.10").
+                 "defaults": {"num_steps": 8, "guidance": 3.0, "width": 512, "height": 512},
                  # M2.5: Comfy split-files repo has no model_index.json — gate on the actual files
                  # (the worker resolves these exact paths). fp8 TE is the default-path probe; the
                  # optional bf16 TE is a runtime-resolved advanced opt-in.
@@ -462,7 +465,7 @@ FLUX2_SAMPLING_PRESETS: list[dict] = [
      "num_steps": 40, "guidance": 4.5,
      "note": "strongest adherence; slower + needs cpu-offload on 16 GB"},
     {"id": "dev", "label": "Dev / JSON", "model_name": "flux.2-dev",
-     "num_steps": 8, "guidance": 4.0,
+     "num_steps": 8, "guidance": 3.0,
      "note": "quantized Comfy dev; Mistral-VLM true-JSON prompting; 512² then upscale"},
 ]
 # Attach to the flux2 catalog entry so GET /models serves it alongside variants/params.

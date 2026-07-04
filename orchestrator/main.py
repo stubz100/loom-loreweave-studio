@@ -57,6 +57,7 @@ try:
     from . import coverage
     from . import model_catalog
     from . import recipe
+    from . import flux2_prompt
     from . import training
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
@@ -83,6 +84,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     import coverage  # type: ignore
     import model_catalog  # type: ignore
     import recipe  # type: ignore
+    import flux2_prompt  # type: ignore
     import training  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
@@ -1564,9 +1566,19 @@ def create_app() -> FastAPI:
         # if given, else a freshly-drawn random seed (so an unset seed isn't a fixed 0,1,2…). Every
         # cell shares it; pose/angle/expression are the only things that vary across the dataset.
         eff_seed = req.base_seed if req.base_seed is not None else random.randrange(2**31)
+        # M2.10 (route 1): flux2 expansion is ref-conditioned — the REFERENCE owns the style.
+        # Restating the L1 style as text made dev re-render the hero in its own house
+        # interpretation of that style (the hero already embodies it); the style slot now
+        # ASSIGNS the reference's style and the clause pins identity to it. `style_sid`
+        # provenance still stamps every cell — the intended style arrives VIA the hero.
+        # Non-flux2 (zimage/sd35 i2i) keeps the L1 text: their i2i re-diffuses the styled source.
+        eff_clause, eff_style = clause, style_fragment
+        if is_flux2:
+            eff_clause = ", ".join(p for p in (clause, flux2_prompt.REF_PRESERVE_CLAUSE) if p)
+            eff_style = flux2_prompt.REF_STYLE_DIRECTIVE
         try:
-            built = recipe.build_recipe(req.preset, character_clause=clause,
-                                        style_fragment=style_fragment, base_seed=eff_seed,
+            built = recipe.build_recipe(req.preset, character_clause=eff_clause,
+                                        style_fragment=eff_style, base_seed=eff_seed,
                                         shared_seed=True,
                                         realize=req.realize, advanced_prompt=adv_prompt,
                                         json_prompt=json_prompt)

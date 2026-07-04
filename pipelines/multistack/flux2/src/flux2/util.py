@@ -103,8 +103,8 @@ FLUX2_MODEL_INFO = {
         "params": Flux2Params(),
         "text_encoder_load_fn": _dev_text_encoder_via_quantized,
         "model_path": "FLUX2_MODEL_PATH",
-        "defaults": {"guidance": 4.0, "num_steps": 8},
-        "fixed_params": {},
+        "defaults": {"guidance": 3.0, "num_steps": 8},   # M2.10: 4.0 amplified the house-style
+        "fixed_params": {},                              # override of Stage-B refs; ~3 moderates it
         "guidance_distilled": True,
     },
 }

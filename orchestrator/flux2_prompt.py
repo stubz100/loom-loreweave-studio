@@ -40,6 +40,17 @@ ANGLE_DIRECTIVES: dict[str, str] = {
     "back": "seen from behind, back to the camera, head facing away",
 }
 
+# M2.10 (route 1) — the reference OWNS the style on Stage-B expansion. FLUX.2 takes from a
+# reference exactly what the prompt ASSIGNS to it (BFL: "describe how each input should be
+# used"); restating the L1 style as TEXT outranked the hero's actual rendering, so dev
+# re-rendered sweeps in its house interpretation of that style (author-found; spec §12
+# "M2.10"). The style slot now assigns the reference's style to the whole scene and the
+# subject clause pins identity to the reference — both positive-only (flux2, no negatives).
+REF_PRESERVE_CLAUSE = ("same character as the reference image — keep the reference's face, "
+                       "hair, outfit and proportions")
+REF_STYLE_DIRECTIVE = ("match the exact art style, color palette and rendering of the "
+                       "reference image; keep everything else unchanged")
+
 # coverage SHOT_SIZE value -> explicit framing directive (more concrete than the caption phrase).
 SHOT_DIRECTIVES: dict[str, str] = {
     "face_closeup": "tight face close-up, the head filling the frame",

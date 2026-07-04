@@ -1223,6 +1223,45 @@ vs no-turbo 8 · M2.7 warm sweeps hold flat per-cell + pause→resume keeps tile
 individual candidates · M0d/M0e + styles-Pass-2 visual sign-offs · (carried from P1, separate:
 the formal A–H rig acceptance stamp).
 
+#### M2.10 — expansion style fidelity: the reference owns the style (route 1)
+
+**Problem (author, 2026-07-04).** flux2-dev advanced prompting has excellent *prompt* adherence
+but poor *source-image* adherence on Stage-B expansion: sweeps from an sd35-cast hero come back
+infused with a recognizable flux2 house style — dev follows the (restated) style *text* more
+coherently than the hero image that already embodies it. Wanted: expansion that stays on the
+original image's look while keeping the pose adherence.
+
+**Investigation findings (web research, 2026-07-04).** FLUX.2's reference conditioning works by
+**role assignment via text**: the model takes from a reference exactly what the prompt assigns to
+it, and takes everything unassigned — especially style — from the text (BFL: *"describe how each
+input should be used"*; their canonical multi-ref example: *"Apply the style of image 1 to the
+entire new scene"*). loom's Stage-B prompt was a full generative scene description with the L1
+style clause restated in text (and, for dev, placed in the JSON tree's authoritative `style`
+field) → the model read "identity from the ref, style from me". The community documents the same
+failure as "style blend/flip" and the same fix (explicitly state which image owns the aesthetic;
+*"keep everything else unchanged"* as the anti-drift suffix). Guidance is the secondary lever:
+4.0 is prompt-adherence-weighted; community tests found ~2–3 moderates the imposed look. Sources:
+BFL FLUX.2 prompting guide + image-editing doc (docs.bfl.ml), andreaskuhr.com Flux.2 guide, fal
+FLUX.2 prompt guide, Apatero/RunComfy Klein i2i guides, Stability SD3.5 guide, Tongyi Z-Image
+prompting guide (full links in the journal M2.10 entry).
+
+**Remediations.**
+- **Route 1 — IMPLEMENTED (this milestone):** on flux2 Stage-B expansion the **reference owns the
+  style**: the L1 style TEXT is dropped from the cell prompt (the hero already embodies it) and
+  the style slot instead carries `flux2_prompt.REF_STYLE_DIRECTIVE` ("match the exact art style,
+  color palette and rendering of the reference image; keep everything else unchanged") while the
+  subject clause gains `REF_PRESERVE_CLAUSE` (identity pinned to the reference). Applies to both
+  the labeled (klein) and JSON (dev) forms via the same recipe slots. **`style_sid` provenance
+  still stamps every cell** (M2.8 #7 — the intended style now arrives VIA the hero). Non-flux2
+  expansion (zimage/sd35 i2i) keeps the L1 text — their i2i path re-diffuses the styled source.
+  Plus: **dev default guidance 4.0 → 3.0** (catalog variant defaults, Dev/JSON sampling preset,
+  vendored worker `FLUX2_MODEL_INFO`) — author call ("make it 3 for now").
+- **Parked (available on request):** route 3 — a "StyleLock" chained post-pass (sd35/zimage i2i
+  @ ~0.3 strength with the L1 style prompt applied THERE, pushing cells back toward the source
+  look; ~90 % pre-built via the M0c postproc stack + M2.7 per-cell post_passes). Klein "KV edit"
+  workflows noted as a future stronger-preservation expansion mode. The ≤1024² ref-encode cap
+  stays parked from the perf thread (M2.9 journal).
+
 ### Phase A — Training skeleton (prove a LoRA can be made + used on this rig)
 
 1. **M1 — training spike (no UI).** Vendor **ai-toolkit**; train **one** `zimage` LoRA from a fixed
@@ -1264,6 +1303,10 @@ the formal A–H rig acceptance stamp).
    (overlay located; `LOOM_TRAINER_OVERLAY` rig default; GPU run = author's go), (c) the M2.6
    **Turbo-LoRA weight gate** (412 + single-file fetch), (d) the consolidated **on-rig sign-off
    checklist** (author-owned, non-blocking). Scope + procedure: §12 "M2.9".
+3f. **M2.10 — expansion style fidelity (route 1).** flux2 Stage-B stops restating the L1 style in
+   text and instead **assigns the reference's style** (ref-role prompting per BFL guidance) +
+   pins identity to the hero; dev default guidance 4.0 → 3.0. Routes 2/3 (StyleLock post-pass,
+   Klein KV edit) parked. Problem/findings/remediations: §12 "M2.10".
 
 ### Phase B — Thicken (all VLM-free)
 

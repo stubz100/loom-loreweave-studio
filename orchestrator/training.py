@@ -464,7 +464,7 @@ def queue_staged(ws: Workspace, staged_id: str, runner) -> dict:
             raise ws_mod.WorkspaceError(f"staged job {staged_id!r} not found")
         _persist_staged(ws, data)
     job = record["queue_job"]
-    batch_id = "trn_" + staged_id.split("_", 1)[-1]
+    batch_id = "trn_" + staged_id.removeprefix("stg_")  # keeps batch↔staged traceable
     try:
         job_id = runner.submit(
             pipeline=job["pipeline"],

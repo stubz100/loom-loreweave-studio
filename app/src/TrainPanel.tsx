@@ -36,7 +36,8 @@ export default function TrainPanel({
   const [staged, setStaged] = useState<StagedTraining[]>([]);
   const [trigger, setTrigger] = useState("");
   const [steps, setSteps] = useState("");   // blank → the M1-accepted default (500)
-  const [busy, setBusy] = useState(false);
+  // "stage" or a staged id — only the in-flight action's controls lock, not the whole panel
+  const [busy, setBusy] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -48,34 +49,37 @@ export default function TrainPanel({
   useEffect(() => { void refresh(); }, [refresh, assetId, versionId]);
 
   const mine = staged.filter((s) => s.version_id === versionId);
-  const canStage = !versionLocked && refCount > 0 && !busy;
+  const canStage = !versionLocked && refCount > 0 && busy !== "stage";
 
+  const clampSteps = () => {   // backend bound is 1–10000; keep what's shown = what's sent
+    if (steps.trim()) setSteps(String(Math.min(10000, Math.max(1, Number(steps)))));
+  };
   const onStage = async () => {
-    setBusy(true); onError(null);
+    setBusy("stage"); onError(null);
     try {
       await stageZimageLora(assetId, {
         version_id: versionId,
         trigger_token: trigger.trim() || undefined,
-        steps: steps.trim() ? Number(steps) : undefined,
+        steps: steps.trim() ? Math.min(10000, Math.max(1, Number(steps))) : undefined,
       });
       setTrigger(""); setSteps("");
       await refresh();
-    } catch (e) { onError(String(e)); } finally { setBusy(false); }
+    } catch (e) { onError(String(e)); } finally { setBusy(null); }
   };
   const onQueue = async (stagedId: string) => {
-    setBusy(true); onError(null);
+    setBusy(stagedId); onError(null);
     try {
       await queueStagedTraining(stagedId);   // the job appears via App's normal poll
       await refresh();
-    } catch (e) { onError(String(e)); } finally { setBusy(false); }
+    } catch (e) { onError(String(e)); } finally { setBusy(null); }
   };
   const onDelete = async (stagedId: string) => {
     if (!window.confirm("Delete this staged training run? (Its temp dataset/config stay in _temp/ until cleanup.)")) return;
-    setBusy(true); onError(null);
+    setBusy(stagedId); onError(null);
     try {
       await deleteStagedTraining(stagedId);
       await refresh();
-    } catch (e) { onError(String(e)); } finally { setBusy(false); }
+    } catch (e) { onError(String(e)); } finally { setBusy(null); }
   };
 
   return (
@@ -117,8 +121,9 @@ export default function TrainPanel({
             placeholder="500"
             inputMode="numeric"
             onChange={(e) => setSteps(e.target.value.replace(/[^0-9]/g, ""))}
+            onBlur={clampSteps}
             disabled={!canStage}
-            title="total training steps (M1 accepted 500 for the fixed-set spike)"
+            title="total training steps, 1–10000 (M1 accepted 500 for the fixed-set spike)"
           />
         </label>
         <button className="ghost" onClick={() => void onStage()} disabled={!canStage}
@@ -141,11 +146,11 @@ export default function TrainPanel({
                   {s.context_digest ? ` · ctx ${s.context_digest.slice(0, 8).toLowerCase()}` : ""}
                 </span>
               </span>
-              <button className="ghost" onClick={() => void onQueue(s.id)} disabled={busy}
+              <button className="ghost" onClick={() => void onQueue(s.id)} disabled={busy === s.id}
                       title="add to the GPU queue as a resumable trainer job (the explicit R118 transition)">
                 ▶ Add to queue
               </button>
-              <button className="ghost" onClick={() => void onDelete(s.id)} disabled={busy}
+              <button className="ghost" onClick={() => void onDelete(s.id)} disabled={busy === s.id}
                       title="drop the staged record (no queued/running job is touched)">
                 ✕
               </button>

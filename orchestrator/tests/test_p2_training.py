@@ -214,6 +214,18 @@ def test_curated_refs_and_training_context_carry_the_style_id(client):
     assert all(ref["style_id"] == "sty_000000" for ref in context["refs"])
 
 
+def test_delete_staged_training_removes_the_record(client):
+    """DELETE /training/staged/{id} drops the record durably (the re-fetch reads the
+    persisted store) and 404s on a repeat — closes the stage/queue/delete triangle."""
+    asset = _curated_asset(client, n=1)
+    staged = client.post(f"/assets/{asset['id']}/lora/zimage/stage", json={}).json()
+    r = client.delete(f"/training/staged/{staged['id']}")
+    assert r.status_code == 200, r.text
+    assert r.json()["deleted"] is True
+    assert client.get("/training/staged").json()["count"] == 0
+    assert client.delete(f"/training/staged/{staged['id']}").status_code == 404
+
+
 def test_stage_defaults_the_runtime_overlay_from_config(client, monkeypatch, tmp_path):
     """M2.9b: `LOOM_TRAINER_OVERLAY` is the rig-level default for the isolated trainer
     dependency overlay (the shared venv deliberately can't run ai-toolkit, R103) — the

@@ -1794,9 +1794,17 @@ warmup ≈ **130 s one-time** (TE load 34.4 s · turbo LoRA 3.6 s · ref encode 
 **Bottleneck measured: VRAM oversubscription** — `free_vram=0.00GB` at denoise begin (fp8 dev
 transformer ~18 GB > 16 GB card → HMM re-streams weights per step; real denoise ≥20 s/step while
 the async tqdm bar "finished 8 steps in 1.4 s" — the exact illusion the probe was built for).
-Sequence: img 1024 + **ref 4096 tokens** (the hero ref encodes at the BFL single-ref ~2K² cap →
-80 % of the attention sequence). Candidate lever if steady-state s/step stays paging-bound: cap
-the Stage-B ref encode at ≤1024². **Also settled (author question): AOTriton vs the locally
+Sequence: img 1024 + **ref 4096 tokens** (the 1024² hero ref at flux2's 1-token-per-16px rate —
+the BFL ~2K² single-ref limit is a ceiling, not an upscale → 80 % of the attention sequence).
+Candidate lever if steady-state s/step stays paging-bound: cap the Stage-B ref encode at ≤1024².
+
+**→ RESOLVED (author, same day): dev-turbo at `num_steps=4` ≈ 100 s/warm-cell** (steady state,
+512² ref sweep; first cell still pays the ~130 s warmup) — right on the probe arithmetic
+(4 × ~25 s/step paging floor) and close enough to klein-9b's ~80 s that the author accepted it
+as the **dev expansion operating point**. The ~500 s baseline was 8 steps + first-cell warmup.
+De-facto evidence toward the M2.9d "M2.6 turbo quality/speed" checklist item (author's call to
+stamp it). **Parked, available on request:** the ≤1024² Stage-B ref-encode cap (4096→1024 ref
+tokens; a modest further cut while weight-paging dominates, bigger win on klein ref sweeps). **Also settled (author question): AOTriton vs the locally
 compiled flash-attention (editable `flash_attn` 2.8.4 → `F:\…\flash-attention\`) do NOT clash** —
 AOTriton ships inside the torch ROCm wheel behind `F.scaled_dot_product_attention` (the
 UserWarning is aten picking its good path); the local flash_attn build only runs if explicitly

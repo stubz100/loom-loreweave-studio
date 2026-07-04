@@ -419,3 +419,20 @@ def test_turbo_lora_weight_entry_mirrors_the_worker_constants():
     assert e["repo_id"] == scaled_fp8.COMFY_FLUX2_REPO
     assert e["filename"] == scaled_fp8.TURBO_LORA_FILE == e["probe"]
     assert e["gated"] is False and e["pipeline"] == "flux2"
+
+
+# --- i2i encode dtype contract (user-found rig crash, 2026-07-04) -----------------------
+
+def test_i2i_encode_follows_the_ae_dtype_not_bf16():
+    """A stacked Clean step crashed on the rig: `run_img2img` cast the init image to bf16
+    while the Comfy VAE (M2.5) deliberately loads float32 -> `conv_in` raised "Input type
+    (c10::BFloat16) and bias type (float)". The i2i encode must follow the AE's OWN
+    parameter dtype (exactly like `encode_image_refs`, the proven multi-ref path) and only
+    then hand bf16 latents to the flow model (fp32 latents would trip its matmuls)."""
+    import inspect
+    from pipeline.flux2 import stage3_denoise
+
+    src = inspect.getsource(stage3_denoise.run_img2img)
+    assert "dtype=next(ae.parameters()).dtype" in src            # encode input = AE dtype
+    assert "ae.encode(img_tensor).to(torch.bfloat16)" in src     # latents -> bf16 flow model
+    assert 'img_tensor[None].to(device="cuda", dtype=torch.bfloat16)' not in src  # the bug

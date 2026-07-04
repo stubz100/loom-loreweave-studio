@@ -181,11 +181,15 @@ def run_img2img(
         # 1. Load + preprocess init image -> tensor in [-1, 1].
         img_pil = Image.open(init_image_path).convert("RGB")
         img_tensor = default_prep(img_pil, limit_pixels=None, ensure_multiple=16)
-        img_tensor = img_tensor[None].to(device="cuda", dtype=torch.bfloat16)
+        # Encode in the AE's own dtype — the Comfy VAE is float32 and its conv stack
+        # rejects a bf16 input (mirrors encode_image_refs, which feeds fp32 and only
+        # casts the resulting tokens).
+        img_tensor = img_tensor[None].to(device="cuda", dtype=next(ae.parameters()).dtype)
         prep_h, prep_w = img_tensor.shape[-2:]
 
-        # 2. AE-encode -> latent at /16 spatial, 128 channels (matches noise).
-        z0 = ae.encode(img_tensor)
+        # 2. AE-encode -> latent at /16 spatial, 128 channels (matches noise); bf16 for
+        #    the flow model (fp32 latents would trip its matmuls one call later).
+        z0 = ae.encode(img_tensor).to(torch.bfloat16)
         if z0.dim() == 4 and z0.shape[0] == 1:
             pass
         elif z0.dim() == 3:

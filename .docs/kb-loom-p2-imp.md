@@ -1787,3 +1787,27 @@ img+ref token counts, free_vram≈0 → paging); huge first-cell `decode+save` w
 R162: parent re-synced (md5 match) + `flux2/run_pipeline.py` added to the drift guard. Tests +1
 → **364 green**. ⏭ Author re-runs the expansion (a FEW cells suffice) and reads the first cell's
 log tail; next action follows the numbers.
+
+**→ Probe read on the author's live dev-turbo sweep (same day, ~16:20Z, `loom/stubz001`):**
+warmup ≈ **130 s one-time** (TE load 34.4 s · turbo LoRA 3.6 s · ref encode 14.5 s ·
+**flow→GPU 76.3 s**); `turbo=on(applied)`, `MIOPEN_FIND_MODE=2` — config suspects cleared.
+**Bottleneck measured: VRAM oversubscription** — `free_vram=0.00GB` at denoise begin (fp8 dev
+transformer ~18 GB > 16 GB card → HMM re-streams weights per step; real denoise ≥20 s/step while
+the async tqdm bar "finished 8 steps in 1.4 s" — the exact illusion the probe was built for).
+Sequence: img 1024 + **ref 4096 tokens** (the hero ref encodes at the BFL single-ref ~2K² cap →
+80 % of the attention sequence). Candidate lever if steady-state s/step stays paging-bound: cap
+the Stage-B ref encode at ≤1024². **Also settled (author question): AOTriton vs the locally
+compiled flash-attention (editable `flash_attn` 2.8.4 → `F:\…\flash-attention\`) do NOT clash** —
+AOTriton ships inside the torch ROCm wheel behind `F.scaled_dot_product_attention` (the
+UserWarning is aten picking its good path); the local flash_attn build only runs if explicitly
+imported/selected and NOTHING in the flux2 worker (BFL lib = pure SDPA; Mistral TE = transformers
+sdpa path; pipelines carry no `import flash_attn`) loads it — dormant, no symbol/DLL overlap.
+
+## UI: bootstrap stage switch → titlebar (2026-07-04 18:40, ✅ PUSHED `8e5fdf0`)
+
+Author-reported cramming: the **Cast/Expand/Curate/Train** (A–D) strip had wrapped under the
+character name + versioning controls in the `stage-ctx` bar. Moved into the **header** next to
+the project name (stable space), rendered **only in L2 · Assets with a character selected**
+(per-asset stages; Sandbox/L1 World never show it). The stage-ctx bar keeps name · version
+selector · +version · finalize/unlock · Export. No CSS changes (`.titlebar` flex + inline-flex
+`.stage-switch` compose as-is). `tsc` + `vite build` clean; backend untouched.

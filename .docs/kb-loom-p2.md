@@ -1266,6 +1266,32 @@ prompting guide (full links in the journal M2.10 entry).
 - **Parked:** Klein "KV edit" workflows as a future stronger-preservation expansion mode; the
   ≤1024² ref-encode cap from the perf thread (M2.9 journal).
 
+#### M2.11 — expansion cell picker (fire a SUBSET of a recipe)
+
+**Ask (author, 2026-07-05).** Generate *individual* images from an expansion pose recipe: an
+openable param-style window listing every pose of the selected recipe as a small icon, with
+multi-select/unselect — fire only the chosen cells (e.g. re-roll two poses, or build a sweep
+incrementally) instead of the whole 17-cell set.
+
+**Design.**
+- **Backend:** `StageBRequest` gains optional `cells: list[int]` (recipe cell indices). stage_b
+  builds the FULL recipe deterministically as today (same seed rule, same prompts — a subset of
+  cells is byte-identical to those cells in a full sweep), then submits only the selected
+  indices. Dry-run reports the filtered count. Coverage vocabulary untouched (frozen contract).
+- **UI:** a `CellPicker` panel (dedicated component, monolith policy) opened from the Stage-B
+  bar (like the params window): a grid of the selected recipe's cells, each a small icon +
+  caption, click to toggle, all-on by default; select-all/none; fire = stage-b with `cells`.
+- **Icons — DECISION: deterministic pictograms, NOT the L1-styles approach.** L1-style samples
+  are GPU-generated thumbnails (cost a run, go stale per character); pose cells are vocabulary
+  (frozen coverage contract: 6 angles × 4 shot sizes × expressions), so the icons should be
+  **generated inline-SVG pictograms**: a head+shoulders silhouette rotated per ANGLE (front/¾
+  L/R/profile L/R/back), a framing bracket per SHOT_SIZE (closeup…full-body), an emoji badge
+  per EXPRESSION (😐 🙂 😠 …), background chip when the cell has one. Deterministic from the
+  cell dict, no assets, no GPU, theme-aware. (Optional later: swap in the character's own kept
+  ref per cell as a thumbnail when one exists — the ref_set already keys on coverage_cell.)
+
+**Sizing:** backend ≈ the rerun endpoint; UI ≈ TrainPanel. Build next session.
+
 ### Phase A — Training skeleton (prove a LoRA can be made + used on this rig)
 
 1. **M1 — training spike (no UI).** Vendor **ai-toolkit**; train **one** `zimage` LoRA from a fixed
@@ -1307,6 +1333,9 @@ prompting guide (full links in the journal M2.10 entry).
    (overlay located; `LOOM_TRAINER_OVERLAY` rig default; GPU run = author's go), (c) the M2.6
    **Turbo-LoRA weight gate** (412 + single-file fetch), (d) the consolidated **on-rig sign-off
    checklist** (author-owned, non-blocking). Scope + procedure: §12 "M2.9".
+3g. **M2.11 — expansion cell picker.** Fire a SUBSET of a pose recipe: param-window-style
+   `CellPicker` (recipe cells as deterministic SVG pose pictograms, multi-select) +
+   `StageBRequest.cells` index filter. Design: §12 "M2.11". *(Recorded 2026-07-05; build next.)*
 3f. **M2.10 — expansion style fidelity (route 1).** flux2 Stage-B stops restating the L1 style in
    text and instead **assigns the reference's style** (ref-role prompting per BFL guidance) +
    pins identity to the hero; dev default guidance 4.0 → 3.0. Routes 2/3 (StyleLock post-pass,

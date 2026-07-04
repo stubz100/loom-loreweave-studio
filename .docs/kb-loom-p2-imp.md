@@ -1849,3 +1849,45 @@ re-runnable this way (bump the seed), then 🗑 the black one.
 
 **Tests +3 → 367 green** (rerun clone/overrides/provenance; 409/404/422 refusals; serve+batch
 guard source-contract), `tsc` + `vite build` clean.
+
+## M2.10 — expansion style fidelity: the reference owns the style (2026-07-04 22:52, ✅ PUSHED `6f50f20`)
+
+**Problem (author):** flux2-dev expansion has great prompt adherence but infuses sd35-cast
+sweeps with the dev house style — it follows the restated L1 style *text* more coherently than
+the hero image that already embodies it. Full problem/findings/remediations recorded in **spec
+§12 "M2.10"**; investigation was web research (route 1 = flux2 JSON/ref prompting, route 2 =
+sd35/zimage prompting + refine pass).
+
+**Key finding:** FLUX.2 reference conditioning is **role assignment via text** — the model takes
+from a reference exactly what the prompt assigns to it and takes everything unassigned
+(especially style) from the text (BFL: *"describe how each input should be used"*; *"Apply the
+style of image 1 to the entire new scene"*; community "style blend/flip" + *"keep everything
+else unchanged"* anti-drift suffix; guidance ~2–3 moderates the imposed look vs 4).
+
+**Implemented (route 1, author go):** flux2 Stage-B **drops the L1 style text** from cell
+prompts (the hero already embodies it — restating it handed dev the style authority) and
+substitutes at the recipe slots: subject clause += `flux2_prompt.REF_PRESERVE_CLAUSE` (identity
+pinned to the reference), style slot = `REF_STYLE_DIRECTIVE` (assigns the reference's art
+style/palette/rendering + "keep everything else unchanged"). Covers labeled (klein) AND JSON
+(dev) forms; `style_sid` provenance (M2.8 #7) still stamps every cell — the intended style now
+arrives *via* the hero. Non-flux2 expansion keeps the L1 text (zimage/sd35 i2i re-diffuse the
+styled source). **Dev default guidance 4.0 → 3.0** ("make it 3 for now") in the catalog variant
+defaults + Dev/JSON sampling preset + vendored worker `FLUX2_MODEL_INFO` (BFL-lib mirror is
+intentionally ahead of the stale monorepo copy — unchanged practice). **Parked:** route 3
+"StyleLock" chained post-pass (sd35/zimage i2i @ ~0.3 + L1 text applied there), Klein KV-edit
+expansion mode, ≤1024² ref-encode cap.
+
+**Sources:** [BFL prompting guide](https://docs.bfl.ml/guides/prompting_guide_flux2) ·
+[BFL image editing](https://docs.bfl.ml/flux_2/flux2_image_editing) ·
+[andreaskuhr Flux.2 guide](https://andreaskuhr.com/en/the-flux2-guide.html) ·
+[fal FLUX.2 prompt guide](https://fal.ai/learn/devs/flux-2-prompt-guide) ·
+[Apatero Klein i2i](https://www.apatero.com/blog/flux-2-klein-image-editing-guide) ·
+[RunComfy Klein KV edit](https://www.runcomfy.com/comfyui-workflows/flux-2-klein-9b-kv-image-edit-in-comfyui-precision-prompt-editing) ·
+[SD3.5 guide (MonAI)](https://wiki.monai.art/en/tutorials/prompting_SD3-5) ·
+[Stability SD3.5 via Civitai](https://civitai.com/articles/8846/stabilityai-has-released-an-sd35-prompting-guide) ·
+[Z-Image official prompting guide](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/discussions/8).
+
+**Tests +1 → 368 green** (stage-b dry-run contract: flux2 prompt carries the ref directives and
+NOT the L1 text, zimage still does; dev guidance mirrors catalog=preset=worker at 3.0).
+⏭ Author eyeballs the next dev sweep for style fidelity; if still drifty, route 3 (StyleLock
+post-pass) is the next lever.

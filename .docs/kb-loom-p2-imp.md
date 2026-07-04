@@ -1720,3 +1720,31 @@ M2.9 slice and filed 6 non-blocking observations; 4 applied, 2 deferred by the a
 
 Tests +1 → **361 green**; `tsc` + `vite build` clean. M2.9 close conditions unchanged (P2-10 rig
 smoke + Stage-D visual sign-off).
+
+## flux2 i2i dtype fix — user-found rig crash (2026-07-04 17:19, ✅ PUSHED `246f42f`)
+
+**Symptom:** a stacked **Clean** postproc step in `loom/stubz001` (flux2 i2i) crashed at
+`ae.encode(img_tensor)` → `encoder.conv_in`: *"Input type (c10::BFloat16) and bias type (float)
+should be the same"*.
+
+**Root cause — an M0d↔M2.5 dtype collision.** `run_img2img` (M0d Part C-i2i) cast the init image
+to **bf16**, correct against the gated BFL VAE it was written for. M2.5's gated-repo elimination
+re-pointed the VAE to Comfy's `flux2-vae.safetensors`, **deliberately float32** (the policy
+comment sits at the `load_comfy_vae` call: fp32 required for ref/i2i encode; bf16-latent *decode*
+is fine via promotion in `inv_normalize`). t2i and multi-ref were adapted (BFL's
+`encode_image_refs` feeds fp32 and casts only the resulting *tokens* to bf16) — the single-image
+i2i path kept its bf16 cast, and flux2-i2i had not run on the rig since the swap (it sat on the
+owed flux2-rig-E2E ledger). This stacked Clean job was its first real execution.
+
+**Fix (2 lines, mirrors the proven ref path):** encode input →
+`dtype=next(ae.parameters()).dtype` (robust if the VAE dtype ever changes); latents →
+`ae.encode(...).to(torch.bfloat16)` for the bf16 flow model (fp32 latents would trip its matmuls
+one call later).
+
+**Sync + guards:** `stage3_denoise.py` turned out to be the **only** drifted flux2 worker file —
+its M2.5 NaN-guard edits had missed the monorepo parent sync. Parent re-synced from the vendored
+copy (md5 match; disk-only — the monorepo is not a git repo), the file added to the R162 md5
+drift guard (`test_batch_worker.py`), and an i2i dtype-contract test added
+(`test_flux2_dev_quantized.py`: encode input follows the AE's dtype, latents leave as bf16, the
+bf16 image cast is gone). Tests +2 → **363 green**. ⏭ The re-run of the stacked Clean job on the
+rig doubles as the owed flux2-i2i E2E check.

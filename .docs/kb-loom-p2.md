@@ -1281,14 +1281,18 @@ incrementally) instead of the whole 17-cell set.
 - **UI:** a `CellPicker` panel (dedicated component, monolith policy) opened from the Stage-B
   bar (like the params window): a grid of the selected recipe's cells, each a small icon +
   caption, click to toggle, all-on by default; select-all/none; fire = stage-b with `cells`.
-- **Icons — DECISION: deterministic pictograms, NOT the L1-styles approach.** L1-style samples
-  are GPU-generated thumbnails (cost a run, go stale per character); pose cells are vocabulary
-  (frozen coverage contract: 6 angles × 4 shot sizes × expressions), so the icons should be
-  **generated inline-SVG pictograms**: a head+shoulders silhouette rotated per ANGLE (front/¾
-  L/R/profile L/R/back), a framing bracket per SHOT_SIZE (closeup…full-body), an emoji badge
-  per EXPRESSION (😐 🙂 😠 …), background chip when the cell has one. Deterministic from the
-  cell dict, no assets, no GPU, theme-aware. (Optional later: swap in the character's own kept
-  ref per cell as a thumbnail when one exists — the ref_set already keys on coverage_cell.)
+- **Icons — DECISION (author, overriding the SVG-pictogram proposal): GENERATED icon set, the
+  L1-styles pattern.** flux2-dev advanced prompting is the house prompt-adherence champion —
+  use it to render the icons: a **4th L1 · World sub-tab "Poses"** (rail pattern per M0b, next
+  to Visual Styles / World / Story Spine) where the author picks a recipe preset and fires a
+  one-time icon-set generation — **flux2-dev advanced (JSON) prompting @ 256²** (≈256 img
+  tokens → seconds/cell warm), turbo few-step, one image per coverage cell using the SAME
+  directive-led cell prompts, on a **neutral basic subject** (configurable clause, default e.g.
+  "a simple wooden mannequin figure"; stickman/santa work too), plain background, NO L1 style,
+  NO refs. Icons are **cell-keyed** and stored durably bible-side (like style samples:
+  `<project>/bible/poses/<cell_key>.png`, served via a bible endpoint) so recipes sharing a
+  cell share its icon; per-icon re-generate; CellPicker falls back to a text chip for cells
+  with no icon yet.
 
 **Sizing:** backend ≈ the rerun endpoint; UI ≈ TrainPanel. Build next session.
 
@@ -1333,9 +1337,11 @@ incrementally) instead of the whole 17-cell set.
    (overlay located; `LOOM_TRAINER_OVERLAY` rig default; GPU run = author's go), (c) the M2.6
    **Turbo-LoRA weight gate** (412 + single-file fetch), (d) the consolidated **on-rig sign-off
    checklist** (author-owned, non-blocking). Scope + procedure: §12 "M2.9".
-3g. **M2.11 — expansion cell picker.** Fire a SUBSET of a pose recipe: param-window-style
-   `CellPicker` (recipe cells as deterministic SVG pose pictograms, multi-select) +
-   `StageBRequest.cells` index filter. Design: §12 "M2.11". *(Recorded 2026-07-05; build next.)*
+3g. **M2.11 — expansion cell picker + pose icons.** Fire a SUBSET of a pose recipe:
+   param-window-style `CellPicker` (multi-select) + `StageBRequest.cells` index filter; icons =
+   a GENERATED per-cell set (L1-styles pattern) from a new **L1 · Poses** sub-tab — flux2-dev
+   advanced JSON @ 256², neutral mannequin subject, cell-keyed + durable bible-side.
+   Design: §12 "M2.11". *(Recorded 2026-07-05; build next.)*
 3f. **M2.10 — expansion style fidelity (route 1).** flux2 Stage-B stops restating the L1 style in
    text and instead **assigns the reference's style** (ref-role prompting per BFL guidance) +
    pins identity to the hero; dev default guidance 4.0 → 3.0. Routes 2/3 (StyleLock post-pass,

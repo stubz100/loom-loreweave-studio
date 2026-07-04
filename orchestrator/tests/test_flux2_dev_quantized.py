@@ -436,3 +436,18 @@ def test_i2i_encode_follows_the_ae_dtype_not_bf16():
     assert "dtype=next(ae.parameters()).dtype" in src            # encode input = AE dtype
     assert "ae.encode(img_tensor).to(torch.bfloat16)" in src     # latents -> bf16 flow model
     assert 'img_tensor[None].to(device="cuda", dtype=torch.bfloat16)' not in src  # the bug
+
+
+def test_serve_and_batch_paths_guard_non_finite_latents():
+    """User-found 2026-07-04: a warm expansion cell decoded a NaN latent into a
+    silently-'ok' BLACK image — M2.5's `_ensure_finite_latents` guard covered only the
+    single-run paths. Both the serve loop and the cold batch loop must refuse to decode a
+    non-finite latent, so the cell/item FAILS loudly (and can be POST /jobs/{id}/rerun-ed)
+    instead of poisoning Stage-C curation."""
+    import inspect
+    from pipeline.flux2 import run_pipeline
+
+    serve_src = inspect.getsource(run_pipeline._ServeGenerator.generate)
+    assert "_ensure_finite_latents" in serve_src
+    batch_src = inspect.getsource(run_pipeline.run_jobs)
+    assert "_ensure_finite_latents" in batch_src

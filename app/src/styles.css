@@ -113,6 +113,18 @@ body {
 }
 .stage-tab.on { background: var(--amber); color: #1a1a1a; border-color: var(--amber); font-weight: 600; }
 
+/* Inspector ↻ re-run (2026-07-04 — clone a failed/black sweep cell with optional knobs) */
+.rerun-panel {
+  border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px;
+  font-size: 12px; display: flex; flex-direction: column; gap: 6px;
+}
+.rerun-form { display: flex; gap: 6px; align-items: flex-end; flex-wrap: wrap; }
+.rerun-form label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 10px; }
+.rerun-form input {
+  width: 84px; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; font-size: 11px;
+}
+
 /* Stage D · Train panel (P2/M2.9a — the staged-LoRA surface, R118) */
 .train-panel {
   border: 1px solid var(--line); background: var(--panel); border-radius: 6px;

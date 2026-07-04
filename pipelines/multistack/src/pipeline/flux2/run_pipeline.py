@@ -436,6 +436,8 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
                     x = denoise_cfg(model, x, x_ids, ctx, ctx_ids, timesteps=timesteps,
                                     guidance=guidance, img_cond_seq=ref_tokens,
                                     img_cond_seq_ids=ref_ids)
+                # same NaN guard as the serve path — the item fails, the batch continues
+                stage3_denoise._ensure_finite_latents(x, "batch denoise")
                 s4 = stage4_decode.run(ae=ae, x=x, x_ids=x_ids, output_path=output_path)
             manifest_path.write_text(_json.dumps({
                 "kind": "flux2_item", "model_name": model_name, "mode": mode,
@@ -642,6 +644,11 @@ class _ServeGenerator:
                    img_cond_seq=s["ref_tokens"], img_cond_seq_ids=s["ref_ids"])
             _probe_sync()
             t_dn = time.perf_counter() - _t
+            # M2.5's NaN guard covered only the single-run paths — a warm cell decoded a
+            # non-finite latent into a silently-"ok" BLACK image (user-found 2026-07-04).
+            # Fail the CELL loudly instead: run_serve catches per-job, the cell shows
+            # failed with the latent stats, and the author /rerun-s it.
+            stage3_denoise._ensure_finite_latents(x, "serve denoise")
             # --- decode (AE + flow both stay GPU-resident across the group) ---
             _t = time.perf_counter()
             s4 = stage4_decode.run(ae=s["ae"], x=x, x_ids=x_ids, output_path=out_path)

@@ -242,6 +242,17 @@ class StyleSampleRequest(BaseModel):
     model: str | None = None
 
 
+class RerunJobRequest(BaseModel):
+    """Re-run ONE terminal job as a fresh queue entry (user 2026-07-04): a failed/NaN-black
+    expansion cell is 1 of a generated prompt set — the recipe bar can't re-create just it,
+    but the job record holds its exact prompt + coverage cell. `params` = optional
+    catalog-validated overrides (seed / num_steps / guidance / …) for the retry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    params: dict | None = None
+
+
 class StageZImageLoraRequest(BaseModel):
     """P2/M2 — prepare a Z-Image LoRA trainer job as a STAGED record.
 
@@ -724,7 +735,7 @@ def create_app() -> FastAPI:
             "models_dir": str(CONFIG.models_dir),
             "cors_origins": CONFIG.cors_origins,
             "token_required": ["POST /generate", "POST /jobs/{id}/cancel",
-                               "POST /jobs/{id}/stop",
+                               "POST /jobs/{id}/stop", "POST /jobs/{id}/rerun",
                                "DELETE /jobs/{id}", "DELETE /jobs/{id}/output",
                                "POST /queue/pause",
                                "POST /queue/unpause", "POST /project", "POST /project/open",
@@ -2719,6 +2730,59 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"{output!r} is not an output of job {job_id!r}")
         GUARD.refresh()
         return {"job_id": job_id, "output": output, "outcome": res}
+
+    @app.post("/jobs/{job_id}/rerun")
+    def rerun_job(job_id: str, req: RerunJobRequest,
+                  _auth: None = Depends(require_token)) -> dict:
+        """Clone a TERMINAL job into a new queue entry — same prompt/coverage cell/batch,
+        `meta.rerun_of` provenance — with optional catalog-validated param overrides. The
+        recovery path for a failed or NaN-black sweep cell (user 2026-07-04: the other 16
+        cells of the set are fine; only this one needs another roll, maybe with new knobs).
+        404 unknown · 409 not terminal · 422 trainer/bad override · 507 disk hard-stop."""
+        src = RUNNER.get(job_id)
+        if src is None:
+            raise HTTPException(404, f"job {job_id!r} not found")
+        if src.get("status") not in ("done", "failed", "canceled"):
+            raise HTTPException(409, f"job {job_id!r} is {src.get('status')!r} — only a "
+                                     "terminal (done/failed/canceled) job can be re-run")
+        if src.get("resumable") or src.get("pipeline") == "zimage_trainer":
+            raise HTTPException(422, "trainer jobs re-queue from their staged record "
+                                     "(Stage D), not /rerun")
+        import copy as _copy
+        params = _copy.deepcopy(src.get("params") or {})
+        try:
+            overrides = model_catalog.validate_params(src["pipeline"], src["mode"],
+                                                      req.params or {})
+        except model_catalog.CatalogError as e:
+            raise HTTPException(422, str(e))
+        params.update(overrides)
+        meta = params.get("meta")
+        params["meta"] = {**(meta if isinstance(meta, dict) else {}), "rerun_of": job_id}
+        # Same admission gates as /generate for the bits that can change between runs:
+        # the Turbo LoRA file (M2.9c — never die inside the worker mid-load) + disk.
+        if src.get("pipeline") == "flux2" and params.get("turbo"):
+            t_ok, t_missing = components.postproc_weights_status("flux2_turbo_lora")
+            if not t_ok:
+                raise HTTPException(412, {
+                    "error": "Flux2-Turbo LoRA weight missing (params.turbo)",
+                    "missing": t_missing,
+                    "hint": "POST /components/fetch?postproc=flux2_turbo_lora "
+                            "(single-file fetch), or re-run without turbo"})
+        if GUARD.is_hard_blocked():
+            raise HTTPException(507, f"disk hard-stop — {GUARD.block_reason()}; "
+                                     "free space or raise the project size cap")
+        new_job = RUNNER.submit(
+            pipeline=src["pipeline"], mode=src["mode"], params=params,
+            batch_id=src.get("batch_id") or "bat_" + uuid.uuid4().hex[:8],
+            index=src.get("index") or 0, batch_size=src.get("batch_size") or 1,
+            requester_id=src.get("requester_id") or "sandbox",
+            profile_version_id=src.get("profile_version_id"),
+            stage=src.get("stage"), coverage_cell=src.get("coverage_cell"),
+            post_passes=list(src.get("post_passes") or []),
+            warm_group=src.get("warm_group"),
+        )
+        LOG.info("rerun %s -> %s (overrides=%s)", job_id, new_job, sorted(overrides))
+        return {"job_id": new_job, "rerun_of": job_id, "overrides": overrides}
 
     @app.get("/capabilities")
     def capabilities() -> dict:

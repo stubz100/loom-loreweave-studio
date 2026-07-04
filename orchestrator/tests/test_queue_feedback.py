@@ -230,3 +230,55 @@ def test_cancel_job_object_fells_tree():
                        capture_output=True, text=True)
     assert str(grandchild_pid) not in q.stdout, "grandchild survived TerminateJobObject"
     _close_job(job)
+
+
+# --- POST /jobs/{id}/rerun (user 2026-07-04: recover a failed/NaN-black sweep cell) -----
+
+def _finish(jid: str, status: str = "done") -> None:
+    from orchestrator.runner import RUNNER
+    RUNNER.jobs[jid]["status"] = status
+    RUNNER.jobs[jid]["result"] = {"ok": status == "done"}
+
+
+def test_rerun_clones_a_terminal_cell_with_overrides(client):
+    """The cell's prompt/coverage cell exist ONLY on the job record (a sweep is a generated
+    prompt set — the recipe bar can't re-create one cell): /rerun clones everything, applies
+    catalog-validated overrides, and stamps `meta.rerun_of` provenance."""
+    from orchestrator.runner import RUNNER
+    RUNNER.pause()
+    jid = RUNNER.submit(
+        pipeline="flux2", mode="ref",
+        params={"prompt": "closeup smile", "seed": 140003712, "num_steps": 4,
+                "guidance": 4.0, "turbo": False,
+                "meta": {"coverage_cell": {"angle": "three quarter right"}}},
+        batch_id="bat_sweep", index=5, batch_size=17,
+        requester_id="ver_x", profile_version_id="ver_x", stage="B", warm_group="wg1",
+    )
+    _finish(jid)
+    r = client.post(f"/jobs/{jid}/rerun", json={"params": {"seed": 7, "num_steps": 6}})
+    assert r.status_code == 200, r.text
+    new = RUNNER.get(r.json()["job_id"])
+    assert new["status"] == "queued" and new["pipeline"] == "flux2" and new["mode"] == "ref"
+    p = new["params"]
+    assert p["prompt"] == "closeup smile"                 # the un-recreatable part carried
+    assert p["seed"] == 7 and p["num_steps"] == 6         # overrides applied
+    assert p["guidance"] == 4.0 and p["turbo"] is False   # everything else untouched
+    assert p["meta"]["rerun_of"] == jid                   # provenance
+    assert p["meta"]["coverage_cell"] == {"angle": "three quarter right"}
+    assert new["batch_id"] == "bat_sweep" and new["stage"] == "B"
+    assert new["warm_group"] == "wg1" and new["profile_version_id"] == "ver_x"
+    RUNNER.cancel(new["id"])   # leave the singleton clean
+
+
+def test_rerun_refuses_nonterminal_unknown_and_bad_overrides(client):
+    from orchestrator.runner import RUNNER
+    (jid,) = _submit_queued(1)
+    assert client.post(f"/jobs/{jid}/rerun", json={}).status_code == 409   # still queued
+    assert client.post("/jobs/job_nope/rerun", json={}).status_code == 404
+    _finish(jid, "failed")
+    r = client.post(f"/jobs/{jid}/rerun", json={"params": {"bogus_knob": 1}})
+    assert r.status_code == 422, r.text                    # catalog-validated overrides
+    r = client.post(f"/jobs/{jid}/rerun", json={})
+    assert r.status_code == 200, r.text                    # no overrides = exact re-roll
+    assert RUNNER.get(r.json()["job_id"])["params"]["meta"]["rerun_of"] == jid
+    RUNNER.cancel(r.json()["job_id"])

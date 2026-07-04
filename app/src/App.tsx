@@ -3,6 +3,7 @@ import {
   cancelJob,
   castingUrl,
   refUrl,
+  rerunJob,
   closeProject,
   createAsset,
   createProject,
@@ -105,6 +106,7 @@ import {
 } from "./lib/orchestrator";
 import { log } from "./lib/log";
 import TrainPanel from "./TrainPanel";
+import RerunPanel from "./RerunPanel";
 
 // Coverage-cell vocabulary (frozen P1→P2 contract, coverage.py) — drives the Stage-C
 // curation filters (P1-12). Keep in lockstep with the backend vocab.
@@ -344,6 +346,20 @@ export default function App() {
       if (selected === cellKey || selected === job.id) setSelected(null);
     } catch (e) {
       log.error("delete failed:", e);
+      setError(String(e));
+    }
+    void refreshJobs();
+  };
+
+  // ↻ re-run one terminal cell (user 2026-07-04): clone the job — same prompt/coverage
+  // cell/batch — with optional knob overrides; the new tile streams into the grid.
+  const onRerunJob = async (jobId: string, params: Record<string, unknown>) => {
+    setError(null);
+    try {
+      const r = await rerunJob(jobId, params);
+      log.info("rerun:", jobId, "->", r.job_id);
+    } catch (e) {
+      log.error("rerun failed:", e);
       setError(String(e));
     }
     void refreshJobs();
@@ -2231,6 +2247,14 @@ export default function App() {
             </>
           )}
           {selJob && <Inspector job={selJob} output={selOutput} />}
+          {/* ↻ re-run (2026-07-04): any terminal generation — the recovery path for a
+              failed/NaN-black sweep cell that can't be re-created from the recipe bar. */}
+          {selJob && project?.open
+            && ["done", "failed", "canceled"].includes(selJob.status)
+            && selJob.pipeline !== "zimage_trainer" && (
+            <RerunPanel job={selJob} busy={busy}
+                        onRerun={(p) => void onRerunJob(selJob.id, p)} />
+          )}
           {/* M0c — inline postprocess stack BELOW the selected image. PROJECT-level: works on
               ANY done image (Sandbox or any character, any pipeline) — not videos. */}
           {selJob && project?.open && selJob.status === "done"

@@ -1147,6 +1147,21 @@ export async function cancelJob(id: string): Promise<void> {
   if (!res.ok && res.status !== 409) throw new Error(`cancel ${res.status}`);
 }
 
+/** Re-run a terminal job as a NEW queue entry (same prompt/coverage cell/batch;
+ * `meta.rerun_of` provenance). `params` = optional catalog-validated overrides
+ * (seed/num_steps/guidance/…) — the recovery path for a failed or NaN-black sweep cell. */
+export async function rerunJob(
+  jobId: string, params?: Record<string, unknown>,
+): Promise<{ job_id: string; rerun_of: string }> {
+  const res = await fetch(`${orchestratorUrl()}/jobs/${encodeURIComponent(jobId)}/rerun`, {
+    method: "POST",
+    headers: { "X-Loom-Token": orchestratorToken(), "Content-Type": "application/json" },
+    body: JSON.stringify({ params: params && Object.keys(params).length ? params : null }),
+  });
+  if (!res.ok) throw new Error(`rerun ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
 /** Fetch a single job by id (Pass 2: the L1 style preview polls its sample-gen job). Returns
  * null if the job is gone (deleted/pruned). */
 export async function getJob(id: string): Promise<Job | null> {

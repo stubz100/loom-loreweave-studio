@@ -1976,3 +1976,15 @@ table cell · §6 body · R138 + R170 rows — P6 keeps the deliverable as backs
 parent line ("R1–R170") stays valid; the P2 pre-M1 "resist pulling GraphRAG into P2" journal
 guidance stays as history. No scope was re-planned: no phase was ASSIGNED the index build — the
 gate is simply open (that scheduling call is the author's, when wanted).
+
+**→ Scheduled (author, same session, 2026-07-05 01:49): SPIKE in P2, IMPLEMENTATION in P4
+alongside the embedding model (R137).** Second sweep (15 sites across
+`kb-storyboard01.md`/`kb-loom-p4.md`/`kb-loom-p6.md`): the R170 row now names the assignment;
+R138/R145 + both phase-table cells + the `graph_index/` tree comment re-pointed; P4 §13.3 is
+now "GraphRAG in P4" (milestone placement decided when P4 opens); P6's deliverable row/section
+marked MOVED OUT (its §6 stack description stays as P4's reference). New P2 spec entry
+**3h. "M2.12 — GraphRAG retrieval-index SPIKE"**: a small local graph/vector index over P2's
+graph-ready artifacts (lineage, bible styles/poses, ref_set coverage/style ids,
+training_context) answering relational queries; **non-gating** (R170: never blocks the
+done-line or training); sequencing at the author's call — naturally after M4 readiness, whose
+queries it overlaps.

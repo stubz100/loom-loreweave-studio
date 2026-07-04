@@ -1337,6 +1337,13 @@ author's visual sign-off.
    a GENERATED per-cell set (L1-styles pattern) from a new **L1 · Poses** sub-tab — flux2-dev
    advanced JSON @ 256², neutral mannequin subject, cell-keyed + durable bible-side.
    Design + status: §12 "M2.11". *(✅ built 2026-07-05; on-rig sign-off owed.)*
+3h. **M2.12 — GraphRAG retrieval-index SPIKE (author 2026-07-05; R170 amended).** Feasibility +
+   shape for the persistent index **P4 implements alongside the embedding model** (R137): a small
+   local graph/vector index over P2's graph-ready artifacts (lineage edges, bible styles/poses,
+   `ref_set` coverage_cell/style_id, `training_context.json`) answering a handful of relational
+   queries ("which curated refs used style X?", "which cells lack a kept ref?"). **Non-gating**
+   (R170: never blocks the P2 done-line or training); sequencing at the author's call —
+   naturally after M4 readiness, whose queries it overlaps.
 3f. **M2.10 — expansion style fidelity (route 1).** flux2 Stage-B stops restating the L1 style in
    text and instead **assigns the reference's style** (ref-role prompting per BFL guidance) +
    pins identity to the hero; dev default guidance 4.0 → 3.0. Routes 2/3 (StyleLock post-pass,

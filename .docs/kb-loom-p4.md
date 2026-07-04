@@ -370,7 +370,7 @@ tool for "is this generated frame actually on-model?", not "ask the generative V
   big to share; **Q8 is the pick**, and **more compact Qwen variants** can be pulled from HF if more
   headroom/faster load is wanted. The embedding/reranker still get a **ROCm can-run check** (P4-13b).
 - **The embedding model *is* the future GraphRAG/vector retrieval model (§13/R138/R170)** — so
-  on-model scoring and the deferred retrieval index use the **same model family**.
+  on-model scoring and the retrieval index use the **same model family** (author 2026-07-05: the index is implemented HERE in P4, after a P2 spike).
 - **Queue-serialized, never concurrent (R141):** vision is a **queued AI job** — generative-VLM
   **or** embedding **or** trainer **or** a gen job, never two at once; the single worker enforces it.
 - **v1 priorities (R137):** **caption enrichment + on-model scoring first** (they retro-improve
@@ -417,7 +417,7 @@ GraphRAG once the compact digest is no longer enough:
 - **A single generative model (R144) is what makes this clean** — one prefix to cache and refresh,
   not one per role.
 
-### 13.3 Scaling past the context window — GraphRAG later (R170)
+### 13.3 Scaling past the context window — GraphRAG in P4 (R170; spike in P2)
 
 - v1 keeps the **digest compact** so it fits comfortably. When a task needs deep detail ("rewrite
   *this* scene"), loom appends only the **relevant** records on top of the digest.
@@ -429,7 +429,7 @@ GraphRAG once the compact digest is no longer enough:
   - graph/community summaries for broad questions like "where does this character's red-hair version
     appear?" or "which LoRAs/refs/shots are stale relative to the current canon?"
 
-  Only the *stored graph/vector index + retrieval/query layer* sits outside P4's own plan (R138/R170 — the post-v1 deferral was lifted 2026-07-05: it may land whenever useful, P6 backstop), and it
+  Only the *stored graph/vector index + retrieval/query layer* is now IN P4's plan (R138/R170 — author 2026-07-05: implemented here alongside the embedding model, shaped by a P2 spike; detailed milestone placement when P4 opens), and it
   reuses the same embedding model family. **v1 = compact text digest + typed fact sidecar; later =
   digest + GraphRAG detail.**
 
@@ -567,7 +567,7 @@ GraphRAG once the compact digest is no longer enough:
 | **R144** | **One generative model for v1.** `Qwen3-VL-4B-Instruct` Q8 serves **all** generative roles (dispatch/tool-calling + creative/dialogue + vision describe/judge) — light, fast, one resident context; **dissolves the cross-model-context problem**. Only the **retrieval** model (`Qwen3-VL-Embedding-8B` Q8; Reranker optional/later) is separate → **two models v1**. Registry stays modular (R4) for a heavier creative model later (§11). |
 | **R145** | **Context management = text is memory, KV is cache.** `project_context.json` (compact digest, dirty-flag rebuilt from canonical records) is the **durable system of record** — it survives the unload-before-every-job rule. The **KV-cache is only a prefix-reuse speed layer** (invalidated when the digest changes), never the memory. Scaling: compact digest v1 + typed fact sidecar → GraphRAG for task-relevant detail later (= the deferred index, R138/R170) (§13). |
 | **R146** | **Shot ownership is 1:1; binding = sole ownership** (reconciles R23+R134). Every L3 shot is owned by **exactly one** Flow node; **binding** attaches an *unbound* shot (or re-selects a version of this node's own shot) and **transfers sole ownership** — **never a shared/reusable reference**. Reuse elsewhere = a **duplicated** node-owned shot. Keeps undo/lineage/P5-picker unambiguous (§4/§5). |
-| **R170** | **GraphRAG posture.** P4 writes `project_facts.jsonl` as a rebuildable typed fact sidecar, but does **not** build the persistent graph/vector retrieval index. The hard post-v1/P6 deferral was **lifted by the author 2026-07-05** (the index may be built when useful; P6 = backstop); P4's own plan is unchanged — it makes the future index cheap and reliable to build. |
+| **R170** | **GraphRAG posture.** P4 writes `project_facts.jsonl` as a rebuildable typed fact sidecar, but does **not** build the persistent graph/vector retrieval index. **Author 2026-07-05: P2 hosts a SPIKE; P4 IMPLEMENTS the persistent index alongside the embedding model (R137)** — milestone placement decided when P4 opens. |
 
 **Still open:** none for P4. R134–R146 plus R170 settle round-19 + AI-execution + model/context,
 ownership, and the GraphRAG boundary;
@@ -628,7 +628,7 @@ path (handrefiner). **P4-8b is the keystone**: getting AI onto the single-GPU qu
   **R123** (staged jobs), and **R134–R145** (round-19 + follow-ups — binding, minimal variables,
   agent stage-only, two-tool vision, text-context, per-node storage; **R141–R143** AI-as-queue-job /
   idle-only / no-ad-hoc-voicing; **R144** one generative model; **R145** text-is-memory/KV-is-cache);
-  **R170** GraphRAG posture (typed facts now; index deferral lifted 2026-07-05 — P6 backstop).
+  **R170** GraphRAG posture (typed facts now; spike P2, index implemented P4 — author 2026-07-05).
 - Research (round-19, Q4): Qwen3-VL-Embedding/Reranker [arXiv 2601.04720] (two-stage retrieval);
   VLM-as-judge — IQAGPT [arXiv 2312.15663], "Compact VLMs as in-context judges" [arXiv 2507.20156],
   VisCE² [arXiv 2402.17969]. **Models on disk as Q8 (4B ~4.8 GB / Embedding-8B ~7.5 GB / Reranker-8B

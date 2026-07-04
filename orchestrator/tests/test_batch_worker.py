@@ -47,6 +47,9 @@ MONOREPO = Path(__file__).resolve().parents[4]
     # and the fp32-VAE i2i dtype fix (2026-07-04) was where that lapse surfaced
     ("flux2/stage3_denoise.py",
      ["pipelines/multistack/src/pipeline/flux2/stage3_denoise.py"]),
+    # post-M2.9: the flux2 worker entry (serve loop + [flux2-probe] instrumentation)
+    ("flux2/run_pipeline.py",
+     ["pipelines/multistack/src/pipeline/flux2/run_pipeline.py"]),
 ])
 def test_vendored_workers_match_monorepo_source(rel, copies):
     """The batch mode landed in the monorepo first (R162); every vendored copy must be a

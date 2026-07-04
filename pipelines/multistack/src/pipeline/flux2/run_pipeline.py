@@ -475,6 +475,28 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
 SERVE_RESULT_PREFIX = "[serve-result] "
 
 
+def _probe_sync() -> None:
+    """HIP/CUDA is async — kernels complete when *synced*, not when enqueued, so every
+    [flux2-probe] boundary syncs first or the time lands on the wrong phase (the zimage
+    probe once misattributed ~700 s of denoise to "decode" exactly this way)."""
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _probe_free_gb() -> str:
+    """Free VRAM — ~0 during a sweep means the flow model oversubscribed the card and ROCm
+    HMM is paging it per step (the memory-pressure signal the zimage probe carried too)."""
+    try:
+        if torch.cuda.is_available():
+            return f"{torch.cuda.mem_get_info()[0] / (1024 ** 3):.2f}GB"
+    except Exception:  # noqa: BLE001
+        pass
+    return "n/a"
+
+
 class _ServeGenerator:
     """Lazy-loads the flow model + AE (+ ref) + TE from the FIRST job and keeps the flow model + AE
     GPU-resident; each `generate(job)` produces one image. For the dev (`cpu_offload`) model only the
@@ -503,24 +525,32 @@ class _ServeGenerator:
         # GPU<->CPU per cell for the cheap text encode; the flow model is NEVER migrated per cell (that
         # round-trip thrashed HMM and made each cell progressively slower than the last).
         self.cpu_offload = bool(job.get("cpu_offload", True))
+        turbo_req = bool(job.get("turbo"))
+        _t = time.perf_counter()
         s1 = stage1_load_models.run(
             model_name=model_name, device=self.device, cpu_offload=self.cpu_offload,
             fp8_matmul=job.get("fp8_matmul", "auto"),
             text_encoder_variant=job.get("text_encoder"),
-            turbo=bool(job.get("turbo")),
+            turbo=turbo_req,
         )
+        _probe_sync()
+        t_stage1 = time.perf_counter() - _t
         info = FLUX2_MODEL_INFO[model_name]
         enc = s1["text_encoder"]
         # refs are encoded with the AE (small, GPU-resident) — never the flow model — so this is
         # safe under offload while the flow model is still parked on CPU.
         ref_tokens = ref_ids = None
         ref_paths = list(job.get("ref_images") or [])
+        _t = time.perf_counter()
         if job.get("mode") == "ref" and ref_paths:
             with torch.no_grad():
                 refs = [Image.open(p).convert("RGB") for p in ref_paths]
                 ref_tokens, ref_ids = encode_image_refs(s1["ae"], refs)
                 if ref_tokens is not None:
                     ref_tokens, ref_ids = ref_tokens.to(torch_device), ref_ids.to(torch_device)
+        _probe_sync()
+        t_ref = time.perf_counter() - _t
+        _t = time.perf_counter()
         if self.cpu_offload:
             # free the TE, then move the flow model onto the GPU ONCE and keep it resident for the
             # whole group. generate() only shuttles the (small) TE per cell; the flow model is not
@@ -528,6 +558,23 @@ class _ServeGenerator:
             enc.cpu()
             torch.cuda.empty_cache()
             s1["model"].to(torch_device)
+        _probe_sync()
+        t_mig = time.perf_counter() - _t
+        # Turbo honesty: stage1 only APPLIES the Turbo LoRA on the quantized-dev branch — a
+        # Klein request accepts-and-ignores the flag, so record that instead of letting
+        # "turbo on" imply a speedup that never happened.
+        turbo_note = "off"
+        if turbo_req:
+            turbo_note = ("on(applied)" if model_name == stage1_load_models.QUANTIZED_DEV_MODEL
+                          else f"on(IGNORED — {model_name} has no turbo path)")
+        import os as _os
+        print(f"[flux2-probe] warmup stage1={t_stage1:.1f}s {s1.get('timings') or {}} "
+              f"ref_encode={t_ref:.1f}s (n_refs={len(ref_paths)} "
+              f"ref_tokens={int(ref_tokens.shape[1]) if ref_tokens is not None else 0}) "
+              f"te_free+flow_to_gpu={t_mig:.1f}s | model={model_name} "
+              f"cpu_offload={self.cpu_offload} turbo={turbo_note} | "
+              f"MIOPEN_FIND_MODE={_os.environ.get('MIOPEN_FIND_MODE', '(unset)')} "
+              f"free_vram={_probe_free_gb()}", flush=True)
         self.state = {
             "model": s1["model"], "ae": s1["ae"], "enc": enc,
             "distilled": info.get("guidance_distilled", True), "defaults": info.get("defaults", {}),
@@ -565,6 +612,7 @@ class _ServeGenerator:
             # --- text encode --- under offload the TE rides onto the GPU for the (cheap) encode, then
             # is freed; the flow model stays GPU-resident (HMM pages it), so it is never the per-cell
             # 34 GB migration that used to thrash the sweep.
+            _t = time.perf_counter()
             if self.cpu_offload:
                 s["enc"].to(torch_device)
             c = s["enc"]([job["prompt"]]).to(torch.bfloat16)
@@ -574,6 +622,8 @@ class _ServeGenerator:
             if self.cpu_offload:
                 s["enc"].cpu()
                 torch.cuda.empty_cache()     # reclaim the TE's room; the flow model stays on the GPU
+            _probe_sync()
+            t_txt = time.perf_counter() - _t
             # --- denoise (flow model already resident on the GPU) ---
             g = torch.Generator(device=self.device).manual_seed(int(seed))
             noise = torch.randn((1, 128, height // 16, width // 16), generator=g,
@@ -581,10 +631,26 @@ class _ServeGenerator:
             x, x_ids = batched_prc_img(noise)
             timesteps = get_schedule(num_steps, x.shape[1])
             dn = denoise if s["distilled"] else denoise_cfg
+            # `begin` is flushed BEFORE the denoise so a killed/stuck sweep still shows how far
+            # it got and how big the sequence was (img + ref tokens both ride the attention).
+            n_ref_tok = int(s["ref_tokens"].shape[1]) if s["ref_tokens"] is not None else 0
+            print(f"[flux2-probe] denoise begin steps={num_steps} img_tokens={int(x.shape[1])} "
+                  f"ref_tokens={n_ref_tok} {width}x{height} free_vram={_probe_free_gb()}",
+                  flush=True)
+            _t = time.perf_counter()
             x = dn(s["model"], x, x_ids, ctx, ctx_ids, timesteps=timesteps, guidance=guidance,
                    img_cond_seq=s["ref_tokens"], img_cond_seq_ids=s["ref_ids"])
+            _probe_sync()
+            t_dn = time.perf_counter() - _t
             # --- decode (AE + flow both stay GPU-resident across the group) ---
+            _t = time.perf_counter()
             s4 = stage4_decode.run(ae=s["ae"], x=x, x_ids=x_ids, output_path=out_path)
+            _probe_sync()
+            t_dec = time.perf_counter() - _t
+        print(f"[flux2-probe] cell text_encode={t_txt:.1f}s denoise={t_dn:.1f}s "
+              f"({num_steps} steps, {t_dn / max(1, num_steps):.1f}s/step) "
+              f"decode+save={t_dec:.1f}s total={time.time() - t0:.1f}s | "
+              f"free_vram={_probe_free_gb()}", flush=True)
         return {"job_id": job.get("job_id"), "status": "ok", "output_path": str(out_path),
                 "seed": seed, "width": s4["width"], "height": s4["height"],
                 "duration_s": round(time.time() - t0, 3), "meta": job.get("meta"), "error": None}

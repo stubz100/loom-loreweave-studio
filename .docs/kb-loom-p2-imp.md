@@ -1697,4 +1697,8 @@ M0d/M0e + styles-Pass-2 visuals · (separate, carried from P1: the formal A–H 
 
 **Tests (+4 → 360):** turbo 412 on stage-b AND /generate (present → passes; no `turbo` → gate never
 consulted); the models.json↔worker drift guard; `LOOM_TRAINER_OVERLAY` default (env picked up,
-explicit request wins). Suite green; `tsc` + `vite build` clean.
+explicit request wins). Suite green; `tsc` + `vite build` clean. **✅ PUSHED `3e9dfbd`** (a+c+d +
+b-prep; this hash line rides the follow-up journal commit). ⏭ **M2.9 closes** when the author (1)
+runs/greenlights the **P2-10 rig smoke** (§12 "M2.9b" procedure) and (2) eyeballs the Stage-D panel
+(visual sign-off). The d-checklist items stay on the author's ledger, non-blocking. Then: **Phase B
+/ M3 template captioning.**

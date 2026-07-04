@@ -1957,3 +1957,22 @@ Side benefit recorded in the spec: a wrong-looking icon = a directive bug caught
 listing; dedup/256²/JSON/meta-key/single-warm-group; durable set→serve→skip-on-regenerate),
 `tsc` + `vite build` clean. ⏭ Author: generate an icon set on the rig + fire one subset sweep
 (= the M2.11 visual sign-off).
+
+## R170 amended — GraphRAG index deferral LIFTED (author, 2026-07-05 01:44, ✅ PUSHED `0c800e1`)
+
+**Author decision:** the R170 rule that kept the **persistent GraphRAG/retrieval index build**
+out of scope (post-v1/P6) is removed — the index may now be built as soon as it is useful. The
+author's edit deleted the R170 row from `kb-storyboard01.md`; per the decision-record's own
+convention (amend, never hole the numbering — ~20 cross-refs cite R170, incl. the round-28
+index), the row was **restored as amended**: GraphRAG-style posture unchanged (typed facts +
+stable IDs + graph/vector retrieval; P2/P4 keep writing graph-ready artifacts), **deferral
+lifted**, **P6 = backstop home**, still must never block LoRA training or alpha.
+
+**Consistency sweep (12 sites, forward-looking spec text only — journal history untouched):**
+`kb-storyboard01.md` (amended R170 row · R138 + R145 rows · P6 phase-table cell · project-tree
+`graph_index/` comment), `kb-loom-p4.md` (§13.3 body · §19 R170 row · §20 summary — P4's own
+plan unchanged: it makes the index cheap, doesn't build it), `kb-loom-p6.md` (deferred-work
+table cell · §6 body · R138 + R170 rows — P6 keeps the deliverable as backstop). `kb-loom-p2.md`
+parent line ("R1–R170") stays valid; the P2 pre-M1 "resist pulling GraphRAG into P2" journal
+guidance stays as history. No scope was re-planned: no phase was ASSIGNED the index build — the
+gate is simply open (that scheduling call is the author's, when wanted).

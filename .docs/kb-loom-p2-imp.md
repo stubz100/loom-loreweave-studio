@@ -1988,3 +1988,21 @@ graph-ready artifacts (lineage, bible styles/poses, ref_set coverage/style ids,
 training_context) answering relational queries; **non-gating** (R170: never blocks the
 done-line or training); sequencing at the author's call — naturally after M4 readiness, whose
 queries it overlaps.
+
+## M2.11 addendum — per-icon ↻ re-run + 🗑 delete (2026-07-05 16:11, ✅ PUSHED `9311902`)
+
+**Author (on-rig):** batch icon runs each missed a few cells, and filling the gaps with more
+batches left ODD characters mixed into the set (each batch renders its own mannequin
+interpretation). Fix = per-icon control:
+
+- **`GeneratePoseIconsRequest.keys`** — generate exactly these pose keys; regeneration is
+  implied for them (the skip-existing rule doesn't apply); unknown keys 422. **Seed nuance:**
+  batch runs use the fixed set-seed (7) for consistency, so a same-seed re-run would reproduce
+  the same odd render — the UI's per-tile **↻** sends ONE key + a **fresh random seed**.
+- **`DELETE /bible/poses/{key}/icon`** (`bible.delete_pose_icon`) — the cell falls back to a
+  text chip; 404 when none. `token_required` += the DELETE.
+- **UI:** hover a tile in L1 · Poses → **↻** (re-roll just this icon; disabled while its job is
+  pending) and **🗑** (delete). Batch buttons unchanged.
+
+Tests +1 → **374 green** (keys-subset regenerates-despite-icon w/ caller's seed · unknown-key
+422 · delete → listing off/file 404/repeat 404); `tsc` + `vite build` clean.

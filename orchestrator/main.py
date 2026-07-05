@@ -253,6 +253,9 @@ class GeneratePoseIconsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     preset: str = recipe.DEFAULT_PRESET
+    # per-icon re-run (author 2026-07-05): only these pose keys — implies regeneration for
+    # them (the skip-existing rule doesn't apply); unknown keys 422. None = the whole recipe.
+    keys: list[str] | None = None
     subject: str = "a simple wooden mannequin figure, plain light grey background"
     model_name: str = "flux.2-dev"
     turbo: bool = False
@@ -796,6 +799,7 @@ def create_app() -> FastAPI:
                                "POST /postproc/step", "POST /postproc/step/{id}/queue",
                                "DELETE /postproc/step/{id}",
                                "POST /bible/poses/generate", "POST /bible/poses/{key}/icon",
+                               "DELETE /bible/poses/{key}/icon",
                                "POST /components/fetch", "POST /shutdown"],
             "worker_reap": WORKER_REAP,
             "work_disk_root": str(CONFIG.work_disk_root),
@@ -1337,11 +1341,21 @@ def create_app() -> FastAPI:
         if GUARD.is_hard_blocked():
             raise HTTPException(507, f"disk hard-stop — {GUARD.block_reason()}")
         icons = bible.list_pose_icons(ws)
-        todo: dict[str, dict] = {}
+        by_key = {}
         for c in built["cells"]:
-            k = bible.pose_key(c["coverage_cell"])
-            if k not in todo and (req.force or k not in icons):
-                todo[k] = c["coverage_cell"]
+            by_key.setdefault(bible.pose_key(c["coverage_cell"]), c["coverage_cell"])
+        todo: dict[str, dict] = {}
+        if req.keys is not None:
+            # per-icon re-run: exactly these keys, existing icons regenerated (fresh seed =
+            # the caller's lever — the set default 7 would reproduce the same odd render)
+            bad = sorted(set(req.keys) - set(by_key))
+            if bad:
+                raise HTTPException(422, f"unknown pose key(s) for {req.preset!r}: {bad}")
+            todo = {k: by_key[k] for k in dict.fromkeys(req.keys)}
+        else:
+            for k, cov in by_key.items():
+                if req.force or k not in icons:
+                    todo[k] = cov
         if not todo:
             return {"count": 0, "jobs": [], "batch_id": None}
         wg = "poses_" + uuid.uuid4().hex[:8]     # one warm worker serves the whole icon set
@@ -1368,6 +1382,15 @@ def create_app() -> FastAPI:
         copy, survives source-job deletion). Token-gated."""
         try:
             return {"icons": bible.set_pose_icon(_require_ws(), key, source_output=req.output)}
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
+    @app.delete("/bible/poses/{key}/icon")
+    def delete_pose_icon(key: str, _auth: None = Depends(require_token)) -> dict:
+        """Remove one stored pose icon (the cell shows as a text chip again; re-generate it
+        individually via POST /bible/poses/generate {keys:[key]}). Token-gated."""
+        try:
+            return {"icons": bible.delete_pose_icon(_require_ws(), key)}
         except ws_mod.WorkspaceError as e:
             raise HTTPException(404, str(e))
 

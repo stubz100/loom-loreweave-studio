@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PoseCell,
+  deletePoseIcon,
   generatePoseIcons,
   getJob,
   getPoseCells,
@@ -90,6 +91,22 @@ export function PosesPanel({ onError }: { onError: (m: string) => void }) {
       setPending((prev) => [...prev, ...r.jobs]);
     } catch (e) { onError(String(e)); }
   };
+  // per-icon re-run (author 2026-07-05: batch fills leave odd characters): ONE key, with a
+  // FRESH random seed — the set's fixed seed would reproduce the same odd render.
+  const fireOne = async (key: string) => {
+    try {
+      const r = await generatePoseIcons({ preset, subject: subject.trim() || undefined,
+                                          turbo, keys: [key],
+                                          seed: Math.floor(Math.random() * 2 ** 31) });
+      setPending((prev) => [...prev, ...r.jobs]);
+    } catch (e) { onError(String(e)); }
+  };
+  const dropOne = async (key: string) => {
+    try {
+      await deletePoseIcon(key);
+      void refresh(preset);
+    } catch (e) { onError(String(e)); }
+  };
 
   const have = cells.filter((c) => c.icon).length;
   return (
@@ -123,7 +140,24 @@ export function PosesPanel({ onError }: { onError: (m: string) => void }) {
         </span>
       </div>
       <div className="pose-grid">
-        {cells.map((c) => <PoseTile key={c.index} cell={c} cacheKey={cacheKey} />)}
+        {cells.map((c) => (
+          <div className="pose-wrap" key={c.index}>
+            <PoseTile cell={c} cacheKey={cacheKey} />
+            <div className="pose-acts">
+              <button className="ghost" onClick={() => void fireOne(c.key)}
+                      disabled={pending.some((p) => p.key === c.key)}
+                      title="re-generate JUST this icon with a fresh random seed (the batch seed would reproduce the same render)">
+                ↻
+              </button>
+              {c.icon && (
+                <button className="ghost" onClick={() => void dropOne(c.key)}
+                        title="delete this icon (back to a text chip; ↻ to redo it)">
+                  🗑
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

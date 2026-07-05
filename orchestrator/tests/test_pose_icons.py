@@ -98,3 +98,33 @@ def test_set_icon_is_durable_and_served_and_skipped_on_regenerate(client, monkey
     assert all(j["key"] != key for j in g["jobs"])
     for j in g["jobs"]:
         RUNNER.cancel(j["job_id"])
+
+
+def test_per_icon_rerun_and_delete(client, monkeypatch):
+    """Author 2026-07-05: batch fills left odd characters in the set — re-run ONE key
+    (`keys=[k]` regenerates even when an icon exists, with the caller's seed — the batch
+    seed would reproduce the same render; unknown key 422) and DELETE one icon (back to a
+    text chip; 404 when none)."""
+    from orchestrator import components
+    from orchestrator.runner import RUNNER
+    RUNNER.pause()
+    monkeypatch.setattr(components, "variant_weights_present", lambda _v: True)
+    ws = RUNNER.workspace
+    out = ws.out_dir / "job_pi02"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "i.png").write_bytes(b"\x89PNG\r\n\x1a\n x")
+    key = client.get("/bible/poses", params={"preset": "npc_lite"}).json()["cells"][0]["key"]
+    client.post(f"/bible/poses/{key}/icon", json={"output": "job_pi02/i.png"})
+    r = client.post("/bible/poses/generate",
+                    json={"preset": "npc_lite", "keys": [key], "seed": 123})
+    assert r.status_code == 200, r.text
+    assert [j["key"] for j in r.json()["jobs"]] == [key]     # exactly the one, icon or not
+    jid = r.json()["jobs"][0]["job_id"]
+    assert RUNNER.get(jid)["params"]["seed"] == 123          # fresh-seed lever honored
+    RUNNER.cancel(jid)
+    assert client.post("/bible/poses/generate",
+                       json={"preset": "npc_lite", "keys": ["nope__x__y"]}).status_code == 422
+    d = client.delete(f"/bible/poses/{key}/icon")
+    assert d.status_code == 200 and key not in d.json()["icons"]
+    assert client.get(f"/bible/poses/{key}/file").status_code == 404
+    assert client.delete(f"/bible/poses/{key}/icon").status_code == 404

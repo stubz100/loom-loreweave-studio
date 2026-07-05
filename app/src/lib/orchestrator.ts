@@ -378,7 +378,8 @@ export async function getPoseCells(preset: string): Promise<{ preset: string; co
 }
 
 export async function generatePoseIcons(
-  body: { preset: string; subject?: string; turbo?: boolean; force?: boolean },
+  body: { preset: string; subject?: string; turbo?: boolean; force?: boolean;
+          keys?: string[]; seed?: number },
 ): Promise<{ count: number; jobs: { key: string; job_id: string }[] }> {
   const res = await fetch(`${orchestratorUrl()}/bible/poses/generate`, {
     method: "POST",
@@ -396,6 +397,14 @@ export async function setPoseIcon(key: string, output: string): Promise<void> {
     body: JSON.stringify({ output }),
   });
   if (!res.ok) throw new Error(`set icon ${res.status}: ${await res.text()}`);
+}
+
+export async function deletePoseIcon(key: string): Promise<void> {
+  const res = await fetch(`${orchestratorUrl()}/bible/poses/${encodeURIComponent(key)}/icon`, {
+    method: "DELETE",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`delete icon ${res.status}: ${await res.text()}`);
 }
 
 export function poseIconUrl(key: string, cacheKey?: string): string {

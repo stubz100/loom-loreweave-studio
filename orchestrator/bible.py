@@ -356,6 +356,17 @@ def set_pose_icon(ws: Workspace, key: str, *, source_output: str) -> dict:
     return list_pose_icons(ws)
 
 
+def delete_pose_icon(ws: Workspace, key: str) -> dict:
+    """Remove one stored pose icon (the cell shows as a text chip again). Raises if none."""
+    hit = False
+    for p in _poses_dir(ws).glob(f"{key}.*"):
+        p.unlink(missing_ok=True)
+        hit = True
+    if not hit:
+        raise ws_mod.WorkspaceError(f"pose {key!r} has no icon")
+    return list_pose_icons(ws)
+
+
 def pose_icon_path(ws: Workspace, key: str) -> Path:
     """The on-disk path of a pose icon (for serving); raises if missing."""
     for p in _poses_dir(ws).glob(f"{key}.*"):

@@ -131,6 +131,12 @@ body {
   background: rgba(0,0,0,0.45); border-radius: 3px; padding: 0 4px; }
 .cell-picker { border: 1px solid var(--line); background: var(--panel); border-radius: 6px;
   padding: 8px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 8px; }
+.pose-wrap { position: relative; }
+.pose-wrap .pose-acts {
+  position: absolute; top: 2px; right: 2px; display: none; gap: 2px;
+}
+.pose-wrap:hover .pose-acts { display: flex; }
+.pose-acts .ghost { padding: 0 4px; font-size: 11px; background: rgba(0,0,0,0.55); }
 
 /* Inspector ↻ re-run (2026-07-04 — clone a failed/black sweep cell with optional knobs) */
 .rerun-panel {

@@ -2234,6 +2234,6 @@ cross-version guard, 400 empty/finalized, GET open on finalized) · adapter scor
 (run_score exists, mode dispatch, with_swapper=False, no inswapper fetch in score,
 centroid pass, no images)); `tsc` + `vite build` clean; identity md5 drift row green
 (parent + vendored in sync). ⚠ On-rig (when stable): one real 🔬 scan sanity check —
-buffalo_l is already on the rig from P1 identity use. ⏭ **M5 — train options + sd35 +
+buffalo_l is already on the rig from P1 identity use. **✅ PUSHED `2cc32a2`.** ⏭ **M5 — train options + sd35 +
 PEFT** (opens with the sd35 ROCm spike front-gate — GPU, rig-blocked; the no-GPU parts
 build first).

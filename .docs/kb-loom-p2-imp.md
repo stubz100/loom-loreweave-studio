@@ -2007,7 +2007,7 @@ interpretation). Fix = per-icon control:
 Tests +1 → **374 green** (keys-subset regenerates-despite-icon w/ caller's seed · unknown-key
 422 · delete → listing off/file 404/repeat 404); `tsc` + `vite build` clean.
 
-## Resize ⤢ (Lanczos) postproc preset — M0e Part D (2026-07-12 11:55–12:25, ✅ PUSHED `<hash-tbd>`)
+## Resize ⤢ (Lanczos) postproc preset — M0e Part D (2026-07-12 11:55–12:25, ✅ PUSHED `601f931`)
 
 **User:** `job_26ee632d` (a 1024²→512² "downscale" of `job_2afa1041`) came back with distorted,
 blurred lines/shapes — "can we pick different models for scaling?" **Diagnosis (job record):** the

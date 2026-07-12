@@ -19,14 +19,15 @@ models.json `postproc.identity`; the buffalo_l detector pack auto-downloads on f
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from . import _batch
 from .base import CompletionRecord, JobSpec
 
 PIPELINE = "identity"
-SUPPORTED_MODES = ("lock",)
-WIRED_MODES = ("lock",)
+SUPPORTED_MODES = ("lock", "score")
+WIRED_MODES = ("lock", "score")
 WIRED_PARAMS = ("anchor_image", "batch_items", "min_det_score", "model_name")
 
 
@@ -58,10 +59,13 @@ def capabilities(roots: list[Path]) -> dict:
 
 
 def build_argv(spec: JobSpec, python: str, script: Path) -> list[str]:
-    """Write `<out>/inputs.json` (anchor + items + tunables) and return the argv."""
+    """Write `<out>/inputs.json` (mode + anchor + items + tunables) and return the argv.
+    `anchor_image` is required for lock; OPTIONAL for score (R120 centroid fallback)."""
     p = spec.params
+    anchor = p.get("anchor_image") if spec.mode == "score" else p["anchor_image"]
     payload = {
-        "anchor": str(p["anchor_image"]),
+        "mode": spec.mode,
+        "anchor": str(anchor) if anchor else None,
         "min_det_score": p.get("min_det_score", 0.5),
         "model_name": p.get("model_name") or "inswapper-128",
         "items": p["batch_items"],
@@ -73,12 +77,70 @@ def build_argv(spec: JobSpec, python: str, script: Path) -> list[str]:
             "--output-dir", str(spec.output_dir)]
 
 
+_SCORE_ITEM = re.compile(r"^\[item (\d+)/(\d+)\]")
+
+
 def make_progress(params: dict):
-    """Real per-item fraction off the announced `  Image:` lines (batch machinery)."""
-    return _batch.make_batch_progress(len(params.get("batch_items") or []) or 1)
+    """lock: per-item fraction off the `  Image:` lines (batch machinery). score emits NO
+    image lines by design — its fraction reads the `[item i/n]` progress prints (the
+    runner calls `make_progress(params)`, so the submitter mirrors the mode into params)."""
+    if params.get("mode") != "score":
+        return _batch.make_batch_progress(len(params.get("batch_items") or []) or 1)
+
+    def _progress(line: str) -> float | None:
+        s = line.strip()
+        m = _SCORE_ITEM.match(s)
+        if m:
+            done, total = int(m.group(1)), max(1, int(m.group(2)))
+            return min(0.10 + 0.88 * done / total, 0.98)
+        if "[stage1] Pipeline loaded" in s:
+            return 0.10
+        if "[batch-done]" in s:
+            return 0.99
+        return None
+
+    return _progress
 
 
 collect_output = _batch.collect_image_line
+
+
+def _parse_score_result(returncode: int, stdout: str, stderr: str,
+                        manifest_path: Path) -> CompletionRecord:
+    """Score runs produce NO images by design — ok = exit 0 + a completed/stopped manifest
+    with ≥1 scored item; the per-ref scores live in the manifest (the harvest endpoint
+    reads it via `manifest_path`), and `outputs_meta` mirrors them for the job record."""
+    status: str | None = None
+    counts: dict | None = None
+    meta: list[dict] = []
+    error: str | None = None
+    duration_s: float | None = None
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        status = data.get("status")
+        duration_s = data.get("total_duration_s")
+        counts = {"count": data.get("count", 0), "ok": data.get("ok", 0),
+                  "failed": data.get("failed", 0), "skipped": data.get("skipped", 0),
+                  "status": status}
+        for it in data.get("items") or []:
+            if it.get("status") == "ok":
+                m = dict(it.get("meta") or {})
+                m.setdefault("index", it.get("index"))
+                meta.append(m)
+        if status == "failed":
+            error = f"score failed: {data.get('failed', 0)} failed / {data.get('count', 0)} items"
+    except (json.JSONDecodeError, OSError) as e:
+        error = f"batch manifest unreadable: {e}"
+    ok = returncode == 0 and status in ("completed", "stopped") and bool(meta)
+    if not ok and error is None:
+        error = f"worker exited {returncode}" if returncode else "score run scored no items"
+    return CompletionRecord(
+        ok=ok, returncode=returncode, outputs=[],
+        manifest_path=str(manifest_path), duration_s=duration_s,
+        manifest_status=status, error=error,
+        stderr_tail=(stdout or stderr or "")[-1500:],
+        outputs_meta=meta, batch=counts,
+    )
 
 
 def parse_result(
@@ -87,9 +149,15 @@ def parse_result(
     stderr: str,
     output_dir: Path,
 ) -> CompletionRecord:
-    """Batch-manifest-as-truth via the shared parser (`identity_batch_<ts>.json`)."""
+    """Batch-manifest-as-truth via the shared parser (`identity_batch_<ts>.json`);
+    score-mode manifests route to the no-outputs score parser."""
     bm = _batch.find_batch_manifest(output_dir, PIPELINE)
     if bm is not None:
+        try:
+            if json.loads(bm.read_text(encoding="utf-8")).get("mode") == "score":
+                return _parse_score_result(returncode, stdout, stderr, bm)
+        except (json.JSONDecodeError, OSError):
+            pass   # unreadable → the shared parser reports it uniformly
         return _batch.parse_batch_result(returncode, stdout, stderr, bm)
     return CompletionRecord(
         ok=False, returncode=returncode, outputs=[],

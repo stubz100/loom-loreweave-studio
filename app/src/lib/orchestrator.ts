@@ -1349,6 +1349,63 @@ export async function deleteStagedTraining(stagedId: string):
   return await res.json();
 }
 
+// --- P2/M4: proxy readiness meter (advisory, R14) -----------------------------------
+
+export interface ReadinessTier {
+  status: string;                       // ok | warn | info | not_run
+  [k: string]: unknown;
+}
+
+export interface Readiness {
+  asset_id: string;
+  version_id: string;
+  computed_at: string;
+  persisted_at?: string | null;
+  coverage: ReadinessTier & {
+    score: number; ref_count: number; distinct_cells: number;
+    axes: Record<string, { present: Record<string, number>; missing: string[] }>;
+  };
+  dupes: ReadinessTier & { extras: number; duplicate_groups: string[][]; ratio: number };
+  captions: ReadinessTier & { count: number; edited: number; missing_trigger: string[] };
+  on_model: ReadinessTier & {
+    mode?: string; mean_cos?: number | null; outliers?: string[];
+    scored?: number; faces?: number; job_id?: string;
+  };
+  advisory: { status: string; recommended: boolean; reasons: string[] };
+}
+
+/** Live readiness view (recomputed fresh; on_model = last persisted scan). Read-only. */
+export async function getReadiness(assetId: string, versionId?: string): Promise<Readiness> {
+  const q = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/readiness${q}`);
+  if (!res.ok) throw new Error(`readiness ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+/** Queue the on-model scan: one identity `score` job (CPU embeddings; no images). */
+export async function queueReadinessEmbed(assetId: string, versionId?: string):
+    Promise<{ job_id: string; ref_count: number; anchor: boolean }> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/readiness/embed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ version_id: versionId }),
+  });
+  if (!res.ok) throw new Error(`readiness embed ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+/** Persist readiness.json (+ version.readiness_status); jobId harvests a done scan. */
+export async function persistReadiness(assetId: string, versionId?: string, jobId?: string):
+    Promise<Readiness> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/readiness`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ version_id: versionId, job_id: jobId }),
+  });
+  if (!res.ok) throw new Error(`readiness persist ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
 // --- P2/M3: caption review/edit (the override layer) -------------------------------
 
 export interface CaptionRow {

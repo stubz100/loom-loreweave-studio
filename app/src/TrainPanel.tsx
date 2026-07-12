@@ -11,11 +11,16 @@ import { useCallback, useEffect, useState } from "react";
 import {
   CaptionsResponse,
   Job,
+  Readiness,
   StagedTraining,
   clearCaptionOverride,
   deleteStagedTraining,
   getCaptions,
+  getJob,
+  getReadiness,
   getStagedTraining,
+  persistReadiness,
+  queueReadinessEmbed,
   queueStagedTraining,
   setCaptionOverride,
   stageZimageLora,
@@ -54,6 +59,10 @@ export default function TrainPanel({
   const [capsOpen, setCapsOpen] = useState(false);
   const [caps, setCaps] = useState<CaptionsResponse | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // M4 readiness meter (advisory): live view + the on-model scan poll.
+  const [readyOpen, setReadyOpen] = useState(false);
+  const [ready, setReady] = useState<Readiness | null>(null);
+  const [scanJob, setScanJob] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -74,6 +83,37 @@ export default function TrainPanel({
     setCaps(null); setDrafts({});
     if (capsOpen) void loadCaptions();
   }, [capsOpen, loadCaptions]);
+
+  const loadReadiness = useCallback(async () => {
+    try {
+      setReady(await getReadiness(assetId, versionId));
+    } catch (e) { onError(String(e)); }
+  }, [assetId, versionId, onError]);
+  useEffect(() => {
+    setReady(null); setScanJob(null);
+    if (readyOpen) void loadReadiness();
+  }, [readyOpen, loadReadiness]);
+  // On-model scan poll: job done → harvest+persist (the client closes the loop), then
+  // the fresh snapshot replaces the view. Failure surfaces on the error bar.
+  useEffect(() => {
+    if (!scanJob) return;
+    const t = window.setInterval(() => {
+      void (async () => {
+        try {
+          const j = await getJob(scanJob);
+          if (!j || j.status === "queued" || j.status === "running") return;
+          window.clearInterval(t);
+          setScanJob(null);
+          if (j.status === "done") {
+            setReady(await persistReadiness(assetId, versionId, scanJob));
+          } else {
+            onError(`on-model scan ${j.status}${j.result?.error ? `: ${j.result.error}` : ""}`);
+          }
+        } catch (e) { window.clearInterval(t); setScanJob(null); onError(String(e)); }
+      })();
+    }, 3000);
+    return () => window.clearInterval(t);
+  }, [scanJob, assetId, versionId, onError]);
 
   const mine = staged.filter((s) => s.version_id === versionId);
   const canStage = !versionLocked && refCount > 0 && busy !== "stage";
@@ -123,6 +163,13 @@ export default function TrainPanel({
       await setCaptionOverride(assetId, refId, text, versionId);
       await loadCaptions();
     } catch (e) { onError(String(e)); } finally { setBusy(null); }
+  };
+  const onScanOnModel = async () => {
+    onError(null);
+    try {
+      const r = await queueReadinessEmbed(assetId, versionId);
+      setScanJob(r.job_id);   // the poll effect takes it from here
+    } catch (e) { onError(String(e)); }
   };
   const onResetCaption = async (refId?: string) => {
     if (!refId && !window.confirm("Reset ALL captions back to their templates?")) return;
@@ -240,6 +287,63 @@ export default function TrainPanel({
 
       {refCount > 0 && (
         <div className="train-captions">
+          <button className="ghost" onClick={() => setReadyOpen(!readyOpen)}
+                  title="advisory training-readiness proxies over the curated set — coverage, near-duplicates, captions, on-model (R14: recommends, never blocks)">
+            {readyOpen ? "▾" : "▸"} readiness
+            {ready ? (ready.advisory.recommended ? " ✅" : ` (${ready.advisory.status})`) : ""}
+          </button>
+          {readyOpen && ready && (() => {
+            const icon = (s: string) => s === "ok" ? "✅" : s === "warn" ? "⚠️" : "ℹ️";
+            const cov = ready.coverage;
+            const missing = Object.entries(cov.axes)
+              .filter(([, v]) => v.missing.length)
+              .map(([axis, v]) => `${axis}: ${v.missing.join(", ")}`)
+              .join(" · ");
+            const om = ready.on_model;
+            return (
+              <div className="ready-tiers">
+                <div className="ready-row" title={missing ? `missing — ${missing}` : "all axis values covered"}>
+                  {icon(cov.status)} coverage {Math.round(cov.score * 100)}%
+                  <span className="muted"> · {cov.ref_count} refs · {cov.distinct_cells} cells
+                    {missing ? ` · missing ${missing}` : ""}</span>
+                </div>
+                <div className="ready-row"
+                     title={ready.dupes.duplicate_groups.length
+                       ? `duplicate groups: ${ready.dupes.duplicate_groups.map((g) => g.join(" ≈ ")).join(" | ")}`
+                       : "no near-duplicates (dHash)"}>
+                  {icon(ready.dupes.status)} duplicates
+                  <span className="muted"> · {ready.dupes.extras} extra(s) in {ready.dupes.duplicate_groups.length} group(s)</span>
+                </div>
+                <div className="ready-row">
+                  {icon(ready.captions.status)} captions
+                  <span className="muted"> · {ready.captions.count}
+                    {ready.captions.edited ? ` (${ready.captions.edited} edited)` : ""}
+                    {ready.captions.missing_trigger.length
+                      ? ` · ⚠ ${ready.captions.missing_trigger.length} missing trigger` : ""}</span>
+                </div>
+                <div className="ready-row">
+                  {om.status === "not_run" ? "ℹ️" : icon(om.status)} on-model
+                  <span className="muted">
+                    {om.status === "not_run"
+                      ? " · not scanned"
+                      : ` · ${om.mode} · mean cos ${om.mean_cos ?? "?"} · ${om.scored ?? 0} scored` +
+                        ((om.outliers?.length ?? 0) > 0 ? ` · ${om.outliers!.length} outlier(s)` : "")}
+                  </span>
+                  <button className="ghost" onClick={() => void onScanOnModel()}
+                          disabled={!!scanJob || versionLocked}
+                          title="queue the face-embedding scan (CPU identity job; anchor-cosine when an anchor is set, else set-centroid — R120). Advisory only.">
+                    {scanJob ? "⏳ scanning…" : "🔬 scan"}
+                  </button>
+                  <button className="ghost" onClick={() => void loadReadiness()} title="refresh the live view">↻</button>
+                </div>
+                <div className="ready-row muted">
+                  {ready.advisory.recommended
+                    ? "✅ looks good to train (advisory — your call either way)"
+                    : `advisory: ${ready.advisory.reasons.join(" · ") || ready.advisory.status}`}
+                </div>
+              </div>
+            );
+          })()}
           <button className="ghost" onClick={() => setCapsOpen(!capsOpen)}
                   title="review/edit the template captions the trainer will see — an edit is a durable override on this version (survives re-staging); reset returns a row to its template">
             {capsOpen ? "▾" : "▸"} captions

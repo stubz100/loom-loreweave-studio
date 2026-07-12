@@ -16,6 +16,7 @@
     "caption_status": { "type": "object", "description": "P2/M2 stage-time caption facts: status/caption_count/caption_policy_hash/captions_hash (+ edited_count, M3)." },
     "caption_overrides": { "type": "object", "description": "P2/M3 caption-edit override layer: ref_id → {caption, edited_at}. Durable on the version (survives re-staging); staging emits the edited text with origin 'edited' and captions_hash reflects it (caption_policy_hash still identifies the template)." },
     "training_context": { "type": "object", "description": "P2/M2 pointer to training_context.json + its context_digest." },
+    "readiness_status": { "type": "object", "description": "P2/M4 advisory readiness summary (status/recommended/on_model/computed_at) — the full tiers live in readiness.json. Never a hard gate (R14)." },
     "anchor_ref": { "type": ["string", "null"] },
     "anchor": {
       "type": ["object", "null"],

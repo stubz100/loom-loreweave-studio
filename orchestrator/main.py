@@ -60,6 +60,7 @@ try:
     from . import recipe
     from . import flux2_prompt
     from . import training
+    from . import readiness
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from adapters import JobSpec  # type: ignore
@@ -88,6 +89,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     import recipe  # type: ignore
     import flux2_prompt  # type: ignore
     import training  # type: ignore
+    import readiness  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
 
@@ -299,6 +301,25 @@ class StageZImageLoraRequest(BaseModel):
     rank: int = Field(default=16, ge=1, le=256)
     alpha: int = Field(default=16, ge=1, le=256)
     learning_rate: float = Field(default=0.0001, gt=0, le=1.0)
+
+
+class ReadinessEmbedRequest(BaseModel):
+    """P2/M4 — queue the on-model face-embedding scan (identity `score` job): every
+    curated ref embedded on CPU, scored vs the anchor (or the set centroid, R120).
+    Measures only — no image is produced or edited."""
+
+    model_config = ConfigDict(extra="forbid")
+    version_id: str | None = None
+    min_det_score: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class ReadinessPersistRequest(BaseModel):
+    """P2/M4 — persist the readiness snapshot (`readiness.json` + version.readiness_status);
+    with `job_id` (a done identity score run) its scores become the on_model tier first."""
+
+    model_config = ConfigDict(extra="forbid")
+    version_id: str | None = None
+    job_id: str | None = None
 
 
 class CaptionOverrideRequest(BaseModel):
@@ -813,6 +834,8 @@ def create_app() -> FastAPI:
                                "PUT /assets/{id}/captions/{ref_id}",
                                "DELETE /assets/{id}/captions/{ref_id}",
                                "DELETE /assets/{id}/captions",
+                               "POST /assets/{id}/readiness",
+                               "POST /assets/{id}/readiness/embed",
                                "POST /postproc/step", "POST /postproc/step/{id}/queue",
                                "DELETE /postproc/step/{id}",
                                "POST /bible/poses/generate", "POST /bible/poses/{key}/icon",
@@ -1627,6 +1650,72 @@ def create_app() -> FastAPI:
             return training.delete_staged(_require_ws(), staged_id)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(404, str(e))
+
+    @app.get("/assets/{asset_id}/readiness")
+    def get_readiness(asset_id: str, version_id: str | None = None) -> dict:
+        """P2/M4 — the live proxy-readiness view: coverage/dupes/captions recomputed fresh
+        (cheap, on-disk data only) + the last persisted on_model tier. ADVISORY (R14) —
+        it recommends, never blocks. Unauthenticated read."""
+        try:
+            return readiness.compute(_require_ws(), asset_id, version_id=version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
+    @app.post("/assets/{asset_id}/readiness/embed")
+    def queue_readiness_embed(asset_id: str, req: ReadinessEmbedRequest,
+                              _auth: None = Depends(require_token)) -> dict:
+        """P2/M4 — queue the on-model scan: ONE identity `score` job over the curated refs
+        (CPU insightface; anchor-cosine when an anchor is set, else centroid — R120).
+        Produces no images; the finished job's scores land via POST /readiness {job_id}."""
+        ws = _require_ws()
+        try:
+            vdir, version = assets.resolve_version_dir(ws, asset_id, req.version_id)
+            if version.get("finalized"):
+                raise ws_mod.WorkspaceError(
+                    "version is finalized — readiness runs on an editable version (retrain ⇒ new version, R58)")
+            items, anchor_path = readiness.embed_items(vdir, version)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        detail = assets.get_asset(ws, asset_id)
+        job_id = RUNNER.submit(
+            pipeline="identity", mode="score",
+            params={"mode": "score", "anchor_image": anchor_path,
+                    "batch_items": items, "min_det_score": req.min_det_score},
+            batch_id="rdn_" + version["id"].removeprefix("ver_"),
+            index=0, batch_size=1,
+            requester_id=detail["profile"]["id"],
+            profile_version_id=version["id"], stage="D",
+        )
+        LOG.info("readiness embed queued: %s asset=%s version=%s (%d refs, anchor=%s)",
+                 job_id, asset_id, version["id"], len(items), bool(anchor_path))
+        return {"job_id": job_id, "ref_count": len(items), "anchor": bool(anchor_path)}
+
+    @app.post("/assets/{asset_id}/readiness")
+    def persist_readiness(asset_id: str, req: ReadinessPersistRequest,
+                          _auth: None = Depends(require_token)) -> dict:
+        """P2/M4 — persist `readiness.json` + `version.readiness_status`. With `job_id`
+        (a DONE identity score run owned by this version) its scores are harvested into
+        the on_model tier first (the client closes the loop, the style-sample pattern)."""
+        ws = _require_ws()
+        job = None
+        if req.job_id:
+            job = RUNNER.get(req.job_id)
+            if job is None:
+                raise HTTPException(404, f"no such job {req.job_id!r}")
+            if job.get("status") != "done":
+                raise HTTPException(409, "score job is not done yet")
+            _require_job_owned_by(ws, asset_id, req.version_id, job)
+        try:
+            _vdir, version = assets.resolve_version_dir(ws, asset_id, req.version_id)
+            if version.get("finalized"):
+                raise ws_mod.WorkspaceError(
+                    "version is finalized — readiness snapshots only on an editable version")
+            snapshot = readiness.persist(ws, asset_id, version_id=req.version_id, job=job)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        LOG.info("readiness persisted: asset=%s version=%s status=%s",
+                 asset_id, snapshot["version_id"], snapshot["advisory"]["status"])
+        return snapshot
 
     @app.get("/assets/{asset_id}/captions")
     def get_captions(asset_id: str, version_id: str | None = None) -> dict:

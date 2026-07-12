@@ -20,13 +20,22 @@ CLI:
   python run_pipeline.py --inputs-file <inputs.json> --output-dir <dir>
   python run_pipeline.py --anchor <face.png> --input <img.png> --output-dir <dir>   # single
 
-inputs.json: {"anchor": <abs path>, "min_det_score": 0.5, "model_name": "inswapper-128",
+inputs.json: {"mode": "lock"|"score", "anchor": <abs path | null>, "min_det_score": 0.5,
+              "model_name": "inswapper-128",
               "items": [{"input": <abs path>, "seed": 0, "meta": {…opaque…}}, …]}
 
-Per item: the largest face with det_score ≥ min_det_score is swapped to the anchor; an
-image with **no detectable face passes through unchanged** (status ok,
+Per item (lock): the largest face with det_score ≥ min_det_score is swapped to the anchor;
+an image with **no detectable face passes through unchanged** (status ok,
 meta.identity="no_face_passthrough") — correct for back views, where the face isn't
 visible anyway, and keeps the dataset complete.
+
+**`"mode": "score"` (loom P2/M4 readiness):** face-embedding proxy WITHOUT any swap —
+measures, never edits. Loads only the buffalo_l detector/embedder (the research-licensed
+inswapper is neither needed nor fetched). Per item: embed the best face → `meta.anchor_cos`
+vs the OPTIONAL anchor and `meta.centroid_cos` vs the set's normalized mean embedding
+(≥2 faces — the R120 no-anchor fallback); a faceless item stays `status ok` with
+`meta.face=false` (back views are data, not errors). **No output images**: every row's
+`output_path` is empty and the scores ride in `meta` — the batch manifest is the product.
 """
 
 from __future__ import annotations
@@ -63,16 +72,14 @@ def _insightface_root() -> str:
     return str(Path.home() / ".insightface")
 
 
-def _load_stack(model_name: str):
-    """One model load shared across all items: detector+embedder pack + the swapper."""
+def _load_stack(model_name: str, *, with_swapper: bool = True):
+    """One model load shared across all items: detector+embedder pack + the swapper.
+    `with_swapper=False` (score mode) loads only buffalo_l — the research-licensed
+    inswapper weight is neither fetched nor needed for measuring."""
     if model_name not in IDENTITY_MODEL_INFO:
         raise ValueError(f"unknown model_name {model_name!r}; "
                          f"one of {list(IDENTITY_MODEL_INFO)}")
-    from huggingface_hub import hf_hub_download
     from insightface.app import FaceAnalysis
-    from insightface import model_zoo
-    info = IDENTITY_MODEL_INFO[model_name]
-    swapper_path = hf_hub_download(repo_id=info["repo_id"], filename=info["filename"])
     app = FaceAnalysis(name="buffalo_l", root=_insightface_root(),
                        providers=["CPUExecutionProvider"])
     # Run the DETECTOR at the lenient anchor floor so app.get() also returns sub-0.5 faces;
@@ -80,6 +87,12 @@ def _load_stack(model_name: str):
     # insightface's default det_thresh=0.5 the detector would drop a stylized anchor face before
     # _best_face ever saw it.
     app.prepare(ctx_id=-1, det_thresh=_ANCHOR_DET_FLOOR, det_size=(640, 640))
+    if not with_swapper:
+        return app, None
+    from huggingface_hub import hf_hub_download
+    from insightface import model_zoo
+    info = IDENTITY_MODEL_INFO[model_name]
+    swapper_path = hf_hub_download(repo_id=info["repo_id"], filename=info["filename"])
     swapper = model_zoo.get_model(swapper_path, providers=["CPUExecutionProvider"])
     return app, swapper
 
@@ -99,11 +112,127 @@ def _best_face(app, img, min_det_score: float):
     return max(faces, key=lambda f: float((f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])))
 
 
+def run_score(spec: dict, output_dir: str) -> int:
+    """M4 readiness score mode — embed faces, never swap. See the module docstring."""
+    import cv2
+    import numpy as np
+
+    anchor_path = spec.get("anchor")
+    items = spec.get("items") or []
+    min_det = float(spec.get("min_det_score", 0.5))
+    if not items:
+        print("[batch-error] inputs file has no items")
+        return 2
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stop_file = out_dir / "STOP"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    print(f"[batch] {len(items)} item(s) | identity score (no swap)"
+          + (f" | anchor {Path(anchor_path).name}" if anchor_path
+             else " | no anchor -> centroid fallback (R120)"))
+    t0 = time.time()
+    app, _ = _load_stack(spec.get("model_name") or "inswapper-128", with_swapper=False)
+    anchor_face = None
+    if anchor_path:
+        aimg = cv2.imread(anchor_path) if Path(anchor_path).is_file() else None
+        anchor_face = None if aimg is None else _best_face(app, aimg, _ANCHOR_DET_FLOOR)
+        if anchor_face is None:
+            print("[batch] WARNING: no usable face in the anchor — "
+                  "scoring falls back to set self-consistency (centroid) only")
+    load_s = round(time.time() - t0, 2)
+    print(f"[stage1] Pipeline loaded in {load_s}s (shared across {len(items)} items)")
+
+    rows: list[dict] = []
+    embs: dict[int, "np.ndarray"] = {}
+    n_ok = n_fail = n_skip = 0
+    stopped = False
+    for idx, item in enumerate(items):
+        if stop_file.is_file():
+            print(f"[batch] STOP file found -- stopping before item {idx + 1}/{len(items)}")
+            stopped = True
+            for j in range(idx, len(items)):
+                rows.append({"index": j, "status": "skipped",
+                             "seed": items[j].get("seed", 0),
+                             "prompt": items[j].get("prompt"),
+                             "output_path": "", "manifest_path": "",
+                             "meta": items[j].get("meta") or {}, "error": "stopped"})
+                n_skip += 1
+            break
+        seed = item.get("seed", 0)
+        meta = dict(item.get("meta") or {})
+        t1 = time.time()
+        try:
+            in_path = item.get("input")
+            if not in_path or not Path(in_path).is_file():
+                raise FileNotFoundError(f"input not found: {in_path}")
+            img = cv2.imread(in_path)
+            if img is None:
+                raise ValueError(f"unreadable image: {in_path}")
+            face = _best_face(app, img, min_det)
+            if face is None:
+                meta["face"] = False        # back views are data, not errors
+            else:
+                meta["face"] = True
+                meta["det_score"] = round(float(face.det_score), 3)
+                embs[idx] = face.normed_embedding
+                if anchor_face is not None:
+                    meta["anchor_cos"] = round(float(np.dot(
+                        anchor_face.normed_embedding, face.normed_embedding)), 3)
+            rows.append({"index": idx, "status": "ok", "seed": seed,
+                         "prompt": item.get("prompt"),
+                         "output_path": "", "manifest_path": "",
+                         "meta": meta, "error": ""})
+            n_ok += 1
+            dt = round(time.time() - t1, 2)
+            print(f"[item {idx + 1}/{len(items)}] scored in {dt}s (face={meta['face']}"
+                  + (f", cos {meta['anchor_cos']}" if "anchor_cos" in meta else "") + ")")
+        except Exception as e:  # noqa: BLE001 - per-item isolation, keep looping
+            rows.append({"index": idx, "status": "failed", "seed": seed,
+                         "prompt": item.get("prompt"),
+                         "output_path": "", "manifest_path": "",
+                         "meta": meta, "error": str(e)})
+            n_fail += 1
+            print(f"[item {idx + 1}/{len(items)}] FAILED: {e}")
+
+    # Centroid pass (R120 no-anchor fallback; also free context WITH an anchor): cosine of
+    # each embedded face to the set's normalized mean — outliers are the off-model refs.
+    if len(embs) >= 2:
+        mean = np.mean(np.stack(list(embs.values())), axis=0)
+        norm = float(np.linalg.norm(mean))
+        if norm > 0:
+            centroid = mean / norm
+            for row in rows:
+                e = embs.get(row["index"])
+                if e is not None:
+                    row["meta"]["centroid_cos"] = round(float(np.dot(centroid, e)), 3)
+
+    status = "stopped" if stopped else ("completed" if n_ok else "failed")
+    manifest = {
+        "kind": "jobs_batch", "pipeline": "identity", "mode": "score",
+        "status": status, "count": len(items),
+        "ok": n_ok, "failed": n_fail, "skipped": n_skip,
+        "anchor": anchor_path, "anchor_face": anchor_face is not None,
+        "faces": len(embs), "min_det_score": min_det,
+        "total_duration_s": round(time.time() - t0, 2),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "items": rows,
+    }
+    mpath = out_dir / f"identity_batch_{ts}.json"
+    mpath.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    print(f"[batch-done] {n_ok} ok / {n_fail} failed / {n_skip} skipped "
+          f"({len(embs)} face(s)) in {manifest['total_duration_s']}s")
+    print(f"  BatchManifest: {mpath}")
+    return 0 if n_ok else 2
+
+
 def run_batch(inputs_file: str, output_dir: str) -> int:
     import cv2
     import numpy as np
 
     spec = json.loads(Path(inputs_file).read_text(encoding="utf-8"))
+    if (spec.get("mode") or "lock") == "score":
+        return run_score(spec, output_dir)
     anchor_path = spec.get("anchor")
     items = spec.get("items") or []
     min_det = float(spec.get("min_det_score", 0.5))

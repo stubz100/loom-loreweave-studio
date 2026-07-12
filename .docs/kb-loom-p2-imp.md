@@ -2180,3 +2180,60 @@ captions_hash CHANGES while policy_hash HOLDS → `caption_status.edited_count` 
 idempotent repeat · clear-all + has_trigger advisory flags · refusals (unknown ref 400/404,
 whitespace 400, empty/oversize 422, finalized locks mutators but read stays open));
 `tsc` + `vite build` clean. **✅ PUSHED `69974b9`.** ⏭ **M4 — proxy readiness meter.**
+
+## M4 — proxy readiness meter (started 2026-07-12 18:40, finished 18:54) ✅
+
+**⭐ P2 DONE-LINE REACHABLE (R169): M2 trainer + M3 captions + M4 readiness are all built.**
+Spec §7 + §12 Phase B entry 5 (P2-4). Everything ADVISORY (R14) — recommends, never blocks.
+
+**Backend — new `orchestrator/readiness.py`:**
+- **Three INLINE tiers** (on-disk data, no GPU, computed per request): **coverage** (which
+  frozen coverage-cell axis values the ref_set spans — per-axis present/missing + distinct
+  cells + mean-coverage score; `background` advisory-only per the P1 contract note),
+  **dupes** (pure-PIL **dHash** 8×8/64-bit, Hamming ≤6 = near-dup, greedy clustering →
+  groups/extras/ratio, warn >20 %), **captions** (M3 preview: count/edited/missing-trigger).
+- **on_model tier** = an identity **`score`** job (queued — insightface never runs on the
+  API thread): worker `postproc/identity/run_pipeline.py` gains **`"mode": "score"`**
+  (monorepo parent edited FIRST, re-vendored byte-identically — the existing R162 md5 row
+  covers it): embeds each ref's best face, **no swap, no images** (`output_path: ""`, the
+  batch manifest is the product), `meta.anchor_cos` vs the OPTIONAL anchor +
+  `meta.centroid_cos` vs the set's normalized mean (**R120 no-anchor fallback**); faceless
+  refs stay ok w/ `face:false` (back views are data); loads buffalo_l ONLY
+  (`_load_stack(with_swapper=False)` — the research-licensed inswapper is never fetched
+  for measuring). Adapter: `score` wired (anchor optional, mode in inputs.json), score
+  parse path (ok WITHOUT outputs — `_batch.parse_batch_result` requires images, score
+  rows have none), `[item i/n]`-based progress (no `  Image:` lines to count).
+- **Snapshots:** `readiness.json` (schema `loom.p2.readiness.v1`, atomic) +
+  `version.readiness_status` {status/recommended/on_model/computed_at} (schema-declared).
+  v1 heuristics are named constants (`DUPE_MAX_DISTANCE=6`, `COVERAGE_WARN_BELOW=0.5`,
+  `MIN_REFS_INFO=6`, `ONMODEL_ANCHOR_WARN_BELOW=0.30`, `ONMODEL_OUTLIER_FLOOR=0.25`,
+  outlier = metric < max(floor, mean−0.15)).
+
+**API:** `GET /assets/{id}/readiness` (unauth live view — inline tiers fresh + last
+persisted on_model; **never writes**) · `POST /assets/{id}/readiness/embed` (token —
+queues the score job, `meta.ref_id` per item = the harvest key, anchor path when set;
+400 on empty ref_set/finalized) · `POST /assets/{id}/readiness` (token — persist snapshot;
+`job_id` harvests a DONE score run first, scope-guarded via `_require_job_owned_by`, 409
+unfinished/cross-version; the client-closes-the-loop pattern). `token_required` updated.
+
+**FE:** TrainPanel **`▸ readiness`** block (above captions): four tier rows (✅/⚠️/ℹ️ +
+compact facts incl. missing axis values, dupe groups on hover, missing-trigger count,
+on-model mean cos/outliers) + advisory line ("looks good to train — your call either way"
+/ reasons) + **🔬 scan** (embed → 3 s poll → auto-persist w/ job_id → snapshot replaces
+the view) + ↻. Client `Readiness` type + `getReadiness`/`queueReadinessEmbed`/
+`persistReadiness`.
+
+**Tests +8 → 394 green** (`test_readiness.py`, real-PNG fixtures: live view scores
+coverage axes/dupes/captions + GET-never-writes + small-set=info · byte-identical refs
+cluster + warn · persist writes snapshot + version status + live view reports
+persisted_at · embed queues ONE score job w/ ref_id meta + absolute inputs + centroid
+flag · crafted done score manifest harvests to on_model (centroid mode, outlier flagged
+below mean−0.15, persists, live view serves it) · refusals (404 asset, 409 unfinished +
+cross-version guard, 400 empty/finalized, GET open on finalized) · adapter score contract
+(inputs.json shape, no-outputs parse ok, [item]-line progress) · worker source-contract
+(run_score exists, mode dispatch, with_swapper=False, no inswapper fetch in score,
+centroid pass, no images)); `tsc` + `vite build` clean; identity md5 drift row green
+(parent + vendored in sync). ⚠ On-rig (when stable): one real 🔬 scan sanity check —
+buffalo_l is already on the rig from P1 identity use. ⏭ **M5 — train options + sd35 +
+PEFT** (opens with the sd35 ROCm spike front-gate — GPU, rig-blocked; the no-GPU parts
+build first).

@@ -2179,4 +2179,4 @@ captions_hash CHANGES while policy_hash HOLDS → `caption_status.edited_count` 
 `training_context.caption_origin`) · reset restores the ORIGINAL captions_hash byte-identically +
 idempotent repeat · clear-all + has_trigger advisory flags · refusals (unknown ref 400/404,
 whitespace 400, empty/oversize 422, finalized locks mutators but read stays open));
-`tsc` + `vite build` clean. ⏭ **M4 — proxy readiness meter.**
+`tsc` + `vite build` clean. **✅ PUSHED `69974b9`.** ⏭ **M4 — proxy readiness meter.**

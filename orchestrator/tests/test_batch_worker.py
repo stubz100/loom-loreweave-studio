@@ -37,6 +37,9 @@ MONOREPO = Path(__file__).resolve().parents[4]
     # M6: the GFPGAN-onnx face-restore worker
     ("postproc/face_restore/run_pipeline.py",
      ["pipelines/multistack/src/pipeline/postproc/face_restore/run_pipeline.py"]),
+    # post-M2.11: the model-free Lanczos resize worker (pure PIL io-pass)
+    ("postproc/resize/run_pipeline.py",
+     ["pipelines/multistack/src/pipeline/postproc/resize/run_pipeline.py"]),
     # M7: the ltxv video worker + the frame-harvest extractor
     ("ltxv/run_pipeline.py", ["pipelines/multistack/src/pipeline/ltxv/run_pipeline.py"]),
     ("ltxv/stage1_load_pipeline.py",
@@ -77,7 +80,7 @@ def test_every_adapter_resolves_without_the_monorepo_fallback():
     from orchestrator.config import CONFIG
     from orchestrator.adapters import (
         birefnet, face_restore, flux2, frame_harvest, identity, krea2,
-        ltxv, multi, sd35, zimage, zimage_trainer,
+        ltxv, multi, resize, sd35, zimage, zimage_trainer,
     )
 
     monorepo_fallback = CONFIG.src_root / "pipeline"
@@ -88,7 +91,8 @@ def test_every_adapter_resolves_without_the_monorepo_fallback():
     adapters = {
         "zimage": zimage, "krea2": krea2, "flux2": flux2, "sd35": sd35,
         "multi": multi, "ltxv": ltxv, "birefnet": birefnet,
-        "face_restore": face_restore, "frame_harvest": frame_harvest,
+        "face_restore": face_restore, "resize": resize,
+        "frame_harvest": frame_harvest,
         "identity": identity, "zimage_trainer": zimage_trainer,
     }
     missing = []

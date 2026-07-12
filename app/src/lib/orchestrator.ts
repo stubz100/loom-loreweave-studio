@@ -551,7 +551,7 @@ export interface AnchorInfo {
 /** M0c: one persisted postprocess step in a base image's stack (source/output lineage). */
 export interface PostprocStep {
   id: string;
-  preset: "clean" | "refine" | "custom" | "restore" | "upscale" | "stylelock";
+  preset: "clean" | "refine" | "custom" | "restore" | "upscale" | "stylelock" | "resize";
   backend: string;
   mode: string;
   params: Record<string, unknown>;

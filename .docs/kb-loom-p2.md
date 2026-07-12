@@ -410,6 +410,10 @@ enriches captions + scoring with project context. **None of that is built in P2.
      **`Upscale ✨`** postprocess preset driving the already-registered **SD3.5 Tile ControlNet**
      (`InstantX/SD3-Controlnet-Tile`, §8/M6+ "planned") as a **single-run `sd35` cn-inpaint** job at the
      target size — the structure-preserving high-ratio upscale path the i2i preset can't match.
+     **⭐ Part D added 2026-07-12 (post-M2.11):** a **model-free `Resize ⤢ (Lanczos)`** postprocess
+     preset — every a/b/c path *re-renders* its source, which is wrong for plain **downscaling**
+     (a tile-CN 1024²→512² "downscale" smeared lines/shapes); Lanczos resampling keeps the pixels.
+     Pure-PIL io-worker, no weights, no VRAM, no prompt; design in "M0e solution design · Part D".
 
    **M0 done-line:** the app still performs the P1 MVP flow, but the shell uses File-menu project
    actions, L1/L2 are tabbed workspaces, L1 content is readable in sub-tabs, L2 can generate a
@@ -616,6 +620,23 @@ conditioning and multi-CN inpaint stay `advanced`/unwired (P3 keyframes R128 / P
 **Sources (carried + 2026-06-21):** `kb-flux2.md` "FLUX.2-dev … denoising stall analysis" (token²/
 resolution cost, 512² recommendation) · [InstantX SD3 ControlNet Tile](https://huggingface.co/InstantX/SD3-Controlnet-Tile)
 · [diffusers SD3 ControlNet pipeline](https://huggingface.co/docs/diffusers/en/api/pipelines/controlnet_sd3).
+
+**⭐ Part D — model-free `Resize ⤢ (Lanczos)` preset (added 2026-07-12, post-M2.11 — ✅ BUILT same
+day).** *Problem (user):* `job_26ee632d`, a 1024²→512² "downscale" of `job_2afa1041`, was run through
+the Part C `Upscale ✨` preset — a full 40-step sd35 **re-render** (tile CN at 0.6 as the only
+conditioner, strength 1.0) — and came back with distorted, blurred lines/shapes. That is inherent, not
+a model-choice issue: **every** Part a/b/c path re-diffuses its source, and the tile CN is built to
+*invent* detail going up, not preserve it going down. Downscaling is a pure resampling problem.
+*Solution:* a `resize` postprocess preset with **no model in the loop** — a pure-PIL **Lanczos**
+io-worker (`postproc/resize/run_pipeline.py`, batch-shaped like `face_restore`: STOP file, jobs_batch
+manifest, `  Image:` lines; alpha survives; CPU, ms per image). Wiring mirrors the io-pass family:
+`resize` adapter + ADAPTERS entry (VRAM estimate **0.0**, no weight pre-flight),
+`_PP_PRESETS["resize"] = {backend:"resize", mode:"resize", params:{scale:0.5}}`, params = ONLY the
+Part B size resolver (`scale` **or** explicit `W×H`; no prompt/model/strength — nothing is
+re-rendered, so no source-prompt requirement either). UI: a `Resize ⤢ (Lanczos)` preset in the
+postproc stack with just the Part B size row ("size: source" hidden — a source-size resample is a
+no-op; the select seeds at the ×0.5 default). Division of labour after Part D: **downscale / exact
+scaling → Resize**; *creative* enlarge → Part b i2i scale / Part c tile-CN `Upscale ✨`.
 
 #### M2.5 solution design — quantized `flux.2-dev` replacement
 

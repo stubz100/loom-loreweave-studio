@@ -3142,13 +3142,15 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives
   const isI2i = preset === "clean" || preset === "refine"
     || preset === "stylelock";   // plain img2img presets (stylelock = M2.10 route 3)
   const isUpscale = preset === "upscale";                    // M0e Part C — sd35 tile-CN upscale
+  const isResize = preset === "resize";     // post-M2.11 — model-free Lanczos (pure resample)
   // M0d Part C — flux.2-dev gets the structured-JSON tree (the dev VLM parses JSON); klein/base
   // flux2 + zimage/sd35 use the plain prompt. flux2 takes no negatives.
   const isFlux2 = isI2i && backend === "flux2";
   const devJson = isFlux2 && model === "flux.2-dev";
   // M0e Part B/C — output size (creative upscale) is offered on zimage/sd35 i2i (flux2 i2i
-  // re-poses at source dims; restore is a face pass) and the Upscale preset (tile-CN).
-  const sizeable = (isI2i && !isFlux2) || isUpscale;
+  // re-poses at source dims; restore is a face pass), the Upscale preset (tile-CN) and the
+  // model-free Resize (where the size IS the whole step).
+  const sizeable = (isI2i && !isFlux2) || isUpscale || isResize;
 
   const submit = () => {
     const params: Record<string, unknown> = {};
@@ -3167,9 +3169,10 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives
       // tile-CN upscale (sd35-fixed): optional prompt (defaults to the source's) + CN scale.
       if (cnScale.trim()) params.cn_scale = cnScale.trim();
       if (prompt.trim()) params.prompt = prompt.trim();
-    } else if (blend.trim()) {
+    } else if (preset === "restore" && blend.trim()) {
       params.blend = Number(blend);
     }
+    // resize carries ONLY the size row (below) — no model, prompt, or strength.
     if (sizeable) {
       // explicit W×H wins (both required); else a scale factor; else (blank) preserve source.
       if (outW.trim() && outH.trim()) {
@@ -3192,7 +3195,8 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives
               disabled={outW.trim() !== "" || outH.trim() !== ""}>
         <option value="0.5">×0.5 (reduce)</option>
         <option value="0.75">×0.75 (reduce)</option>
-        <option value="">size: source</option>
+        {/* a source-size resize is a no-op — the pure-resample preset always picks a size */}
+        {!isResize && <option value="">size: source</option>}
         <option value="1.5">×1.5</option>
         <option value="2">×2</option>
         <option value="4">×4</option>
@@ -3264,11 +3268,15 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives
                       // M2.10 route 3: StyleLock re-imposes the L1 style — flux2 is the drift
                       // source (422 server-side); default to the preset's sd35.
                       if (p === "stylelock" && backend === "flux2") setBackend("sd35");
+                      // Resize: seed the size select with the preset's ×0.5 default (a
+                      // source-size resample is a no-op, so "size: source" is hidden).
+                      setScale(p === "resize" ? "0.5" : "");
                     }}>
               <option value="clean">Clean (i2i 0.5)</option>
               <option value="refine">Refine (i2i 0.25)</option>
               <option value="stylelock" title="re-render toward the L1 style (appended fresh at queue time) — pushes a style-drifted flux2 cell back to the source look; strength 0.2 polish … 0.4 re-interpret">StyleLock 🎨 (i2i 0.3)</option>
               <option value="upscale">Scale ✨ (tile)</option>
+              <option value="resize" title="model-free Lanczos resample — pixel-faithful scaling with no re-render (no model, no GPU). THE way to downscale; the model presets re-paint the image.">Resize ⤢ (Lanczos)</option>
               <option value="restore">Restore (GFPGAN)</option>
             </select>
             {isI2i && (
@@ -3316,6 +3324,13 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives
                   ✨ pick flux.2-dev for the JSON prompt tree
                 </span>
               )}
+              {sizeRow}
+            </>
+          ) : isResize ? (
+            <>
+              <span className="muted" title="Lanczos resample (PIL, CPU) — the pixels survive the size change exactly. Use this to downscale; Clean/Refine/Scale✨ re-render and will drift.">
+                ⤢ pure resample — no model, nothing re-rendered
+              </span>
               {sizeRow}
             </>
           ) : isUpscale ? (

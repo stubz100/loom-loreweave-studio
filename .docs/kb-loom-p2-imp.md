@@ -2006,3 +2006,36 @@ interpretation). Fix = per-icon control:
 
 Tests +1 → **374 green** (keys-subset regenerates-despite-icon w/ caller's seed · unknown-key
 422 · delete → listing off/file 404/repeat 404); `tsc` + `vite build` clean.
+
+## Resize ⤢ (Lanczos) postproc preset — M0e Part D (2026-07-12 11:55–12:25, ✅ PUSHED `<hash-tbd>`)
+
+**User:** `job_26ee632d` (a 1024²→512² "downscale" of `job_2afa1041`) came back with distorted,
+blurred lines/shapes — "can we pick different models for scaling?" **Diagnosis (job record):** the
+downscale ran through the `Upscale ✨` preset = a full 40-step **sd35 cn-inpaint re-render** (tile CN
+at 0.6 the only conditioner, strength 1.0, generic one-line prompt) at half the latent resolution,
+in a different model family than the zimage source. Inherent to every model path, not a model choice:
+diffusion "resize" re-paints; the tile CN invents detail going up, it doesn't preserve it going down.
+**Author call: add a model-free Lanczos resize step** (spec §12 "M0e solution design · Part D").
+
+- **Worker** `postproc/resize/run_pipeline.py` — pure PIL `Image.resize(..., LANCZOS)`; batch-shaped
+  like `face_restore` (STOP file, `resize_batch_<ts>.json` jobs_batch manifest, `  Image:` lines);
+  palette→RGBA promote, alpha survives; CPU, ms/image. Vendored + parent-synced (disk-only, R162)
+  and added to the md5 drift guard + the vendored-completeness guard.
+- **Adapter** `adapters/resize.py` (io-pass family: inputs.json w/ width/height/items) registered in
+  `ADAPTERS` (both import branches) with `VRAM_ESTIMATES["resize"] = 0.0`; `/capabilities` row added.
+- **Orchestrator** `_PP_PRESETS["resize"] = {backend:"resize", mode:"resize", params:{scale:0.5}}`;
+  allowed params = ONLY the M0e Part B size resolver (`scale` | explicit `W×H` — no prompt/model/
+  strength, and **no source-prompt requirement**: nothing is re-rendered); queue endpoint gets a
+  `mode == "resize"` io branch (source + Part B target dims) and skips the weight pre-flight
+  (`elif backend != "resize"`); preset Literal + store-schema enum += `resize`.
+- **UI** PostprocPanel: `Resize ⤢ (Lanczos)` preset → just the Part B size row ("size: source"
+  option hidden for resize — a source-size resample is a no-op; select seeds at ×0.5), explainer
+  line "pure resample — no model, nothing re-rendered"; restore's blend no longer leaks into other
+  presets' params (guarded to `preset === "restore"`). TS `PostprocStep.preset` += "resize".
+- **Division of labour:** downscale / exact scaling → **Resize**; creative enlarge → i2i scale
+  (Part b) / tile-CN `Upscale ✨` (Part c).
+
+Tests **+5 → 379 green** (`test_resize_pass.py`: real 64²→32² Lanczos E2E incl. alpha + manifest
+shape + per-item isolation rc=2 · adapter argv/inputs.json + vendored-script resolve · configure/
+queue shape w/ ×0.5 default → 512² dims + explicit-W×H override · rejects strength/prompt/model/
+blend/scale-8/width-only + fixed backend); `tsc` + `vite build` clean.

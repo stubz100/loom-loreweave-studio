@@ -46,6 +46,7 @@ try:
     from .adapters import birefnet as birefnet_adapter
     from .adapters import identity as identity_adapter
     from .adapters import face_restore as face_restore_adapter
+    from .adapters import resize as resize_adapter
     from .adapters import ltxv as ltxv_adapter
     from .adapters import frame_harvest as frame_harvest_adapter
     from .adapters import zimage_trainer as zimage_trainer_adapter
@@ -65,6 +66,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import birefnet as birefnet_adapter  # type: ignore
     from adapters import identity as identity_adapter  # type: ignore
     from adapters import face_restore as face_restore_adapter  # type: ignore
+    from adapters import resize as resize_adapter  # type: ignore
     from adapters import ltxv as ltxv_adapter  # type: ignore
     from adapters import frame_harvest as frame_harvest_adapter  # type: ignore
     from adapters import zimage_trainer as zimage_trainer_adapter  # type: ignore
@@ -77,7 +79,8 @@ except ImportError:  # pragma: no cover - direct-run convenience
 ADAPTERS = {"zimage": zimage_adapter, "multi": multi_adapter, "sd35": sd35_adapter,
             "flux2": flux2_adapter, "krea2": krea2_adapter,
             "birefnet": birefnet_adapter, "identity": identity_adapter,
-            "face_restore": face_restore_adapter, "ltxv": ltxv_adapter,
+            "face_restore": face_restore_adapter, "resize": resize_adapter,
+            "ltxv": ltxv_adapter,
             "frame_harvest": frame_harvest_adapter,
             "zimage_trainer": zimage_trainer_adapter}
 SCHEMA_VERSION = 1
@@ -258,6 +261,7 @@ VRAM_ESTIMATES = {"zimage": 11.0, "multi": 14.0, "sd35": 13.0, "birefnet": 4.0,
                                                           # freed before the flow loads (§11)
                   "krea2": 16.0,                          # Turbo @768 with CPU offload on 16 GB ROCm
                   "identity": 1.0, "face_restore": 1.0,   # onnx CPU — effectively no VRAM
+                  "resize": 0.0,                          # PIL CPU Lanczos — no GPU at all
                   "ltxv": 12.0,                           # 2B + T5-XXL w/ model offload
                   "frame_harvest": 1.0,                   # OpenCV CPU
                   "zimage_trainer": 15.0}                 # P2 Z-Image LoRA train, qfloat8/low_vram

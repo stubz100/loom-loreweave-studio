@@ -43,6 +43,7 @@ try:
     from .adapters import birefnet as birefnet_adapter
     from .adapters import identity as identity_adapter
     from .adapters import face_restore as face_restore_adapter
+    from .adapters import resize as resize_adapter
     from .adapters import ltxv as ltxv_adapter
     from .adapters import frame_harvest as frame_harvest_adapter
     from .runner import RUNNER, WORKER_REAP, ADAPTERS, estimate_vram
@@ -70,6 +71,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import birefnet as birefnet_adapter  # type: ignore
     from adapters import identity as identity_adapter  # type: ignore
     from adapters import face_restore as face_restore_adapter  # type: ignore
+    from adapters import resize as resize_adapter  # type: ignore
     from adapters import ltxv as ltxv_adapter  # type: ignore
     from adapters import frame_harvest as frame_harvest_adapter  # type: ignore
     from runner import RUNNER, WORKER_REAP, ADAPTERS, estimate_vram  # type: ignore
@@ -513,7 +515,7 @@ class AddPostprocStepRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     base: str
-    preset: Literal["clean", "refine", "restore", "upscale", "stylelock"] = "clean"
+    preset: Literal["clean", "refine", "restore", "upscale", "stylelock", "resize"] = "clean"
     backend: str | None = None
     params: dict = Field(default_factory=dict)
     mask: str | None = None
@@ -2500,6 +2502,11 @@ def create_app() -> FastAPI:
         # owns the look, so the text pulls TOWARD the source/L1 style instead of fighting a
         # reference. Variable strength (0.2 ≈ polish … 0.4 ≈ re-interpret); zimage|sd35 only.
         "stylelock": {"backend": "sd35", "mode": "img2img", "params": {"strength": 0.3}},
+        # post-M2.11 (2026-07-12) — model-free Lanczos resample: a pure-PIL io-worker (no
+        # diffusion, no weights, no VRAM). THE downscale path: every model-based step
+        # re-renders its source (the tile-CN "downscale" that motivated this smeared lines
+        # and shapes); Lanczos keeps the pixels. Default ×0.5; scale/W×H = the Part B resolver.
+        "resize": {"backend": "resize", "mode": "resize", "params": {"scale": 0.5}},
     }
 
     def _producing_job(src: str):
@@ -2565,6 +2572,10 @@ def create_app() -> FastAPI:
             # M0e Part C — tile-CN upscale: prompt (defaults to source), the output size (Part B
             # resolver), CN conditioning scale, model. `controlnet` is fixed (tile) by the preset.
             allowed = {"prompt", "model_name", "cn_scale", "width", "height", "scale"}
+        elif spec["mode"] == "resize":
+            # post-M2.11 — pure Lanczos resample: ONLY the output size (the Part B resolver);
+            # no model, no prompt, no strength — nothing is re-rendered.
+            allowed = {"width", "height", "scale"}
         else:
             allowed = {"blend"}
         params = dict(spec["params"])
@@ -2627,7 +2638,7 @@ def create_app() -> FastAPI:
                     raise HTTPException(412, {"error": "face-restore weight(s) missing",
                                               "missing": missing,
                                               "hint": "POST /components/fetch?postproc=face_restore"})
-            else:
+            elif backend != "resize":   # resize = pure-PIL io-worker: no weights to pre-flight
                 resolved = params_in.get("model_name") or model_catalog.default_model(backend)
                 variant = model_catalog.find_variant(backend, resolved)
                 if variant and not components.variant_weights_present(variant):
@@ -2703,6 +2714,12 @@ def create_app() -> FastAPI:
                 job_params["cn_scale"] = params_in["cn_scale"]
             if params_in.get("model_name"):
                 job_params["model_name"] = params_in["model_name"]
+        elif mode == "resize":
+            # post-M2.11 — model-free Lanczos: the io-worker only needs the source + target
+            # dims (the Part B resolver — scale factor or explicit W×H; preset default ×0.5).
+            tw, th = _postproc_target_dims((w, h), params_in)
+            job_params = {"prompt": f"[resize postproc of {src}]",
+                          "batch_items": [{"input": str(src_abs)}], "width": tw, "height": th}
         elif is_io:
             # restore (GFPGAN io-worker): preserve source dims (it's a face pass, not a resize).
             job_params = {"prompt": f"[{step['preset']} postproc of {src}]",
@@ -2982,6 +2999,7 @@ def create_app() -> FastAPI:
             "birefnet": birefnet_adapter.capabilities(CONFIG.pipeline_roots),
             "identity": identity_adapter.capabilities(CONFIG.pipeline_roots),
             "face_restore": face_restore_adapter.capabilities(CONFIG.pipeline_roots),
+            "resize": resize_adapter.capabilities(CONFIG.pipeline_roots),
             "ltxv": ltxv_adapter.capabilities(CONFIG.pipeline_roots),
             "frame_harvest": frame_harvest_adapter.capabilities(CONFIG.pipeline_roots),
         }}

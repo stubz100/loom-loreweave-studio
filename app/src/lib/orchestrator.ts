@@ -1311,6 +1311,12 @@ export async function stageZimageLora(assetId: string, body: {
   version_id?: string;
   trigger_token?: string;
   steps?: number;
+  // the "advanced ⚙" knobs (M5 pull-forward slice) — backend-validated ranges; unset = the
+  // M1-accepted preset (rank/alpha 16/16 · 512px · lr 1e-4)
+  rank?: number;           // 1–256
+  alpha?: number;          // 1–256
+  learning_rate?: number;  // (0, 1]
+  resolution?: number;     // 256–2048, ÷16
 } = {}): Promise<StagedTraining> {
   const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/lora/zimage/stage`, {
     method: "POST",

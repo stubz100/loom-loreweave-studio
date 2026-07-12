@@ -36,6 +36,14 @@ export default function TrainPanel({
   const [staged, setStaged] = useState<StagedTraining[]>([]);
   const [trigger, setTrigger] = useState("");
   const [steps, setSteps] = useState("");   // blank → the M1-accepted default (500)
+  // "advanced ⚙" (M5 pull-forward slice): the four knobs the staging endpoint already takes.
+  // Blank = the M1-accepted preset value; everything else stays preset-pinned until M5
+  // (quantize/low_vram/optimizer are rig-safety-sensitive on 16 GB — deliberately not here).
+  const [adv, setAdv] = useState(false);
+  const [rank, setRank] = useState("");     // 1–256 (preset 16)
+  const [alpha, setAlpha] = useState("");   // 1–256 (preset 16)
+  const [lr, setLr] = useState("");         // (0, 1] (preset 0.0001)
+  const [res, setRes] = useState("");       // 256–2048 ÷16 (preset 512)
   // "stage" or a staged id — only the in-flight action's controls lock, not the whole panel
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -54,6 +62,22 @@ export default function TrainPanel({
   const clampSteps = () => {   // backend bound is 1–10000; keep what's shown = what's sent
     if (steps.trim()) setSteps(String(Math.min(10000, Math.max(1, Number(steps)))));
   };
+  // Advanced-knob clamps mirror the backend bounds (keep what's shown = what's sent).
+  const clampInt = (v: string, set: (s: string) => void, lo: number, hi: number) => {
+    if (v.trim()) set(String(Math.min(hi, Math.max(lo, Number(v)))));
+  };
+  const clampRes = () => {     // 256–2048, snapped to /16 (the catalog dimension rule)
+    if (res.trim()) {
+      const n = Math.min(2048, Math.max(256, Number(res)));
+      setRes(String(Math.round(n / 16) * 16));
+    }
+  };
+  const clampLr = () => {      // (0, 1] float; junk or ≤0 clears back to the preset
+    if (!lr.trim()) return;
+    const n = Number(lr);
+    if (!Number.isFinite(n) || n <= 0) setLr("");
+    else if (n > 1) setLr("1");
+  };
   const onStage = async () => {
     setBusy("stage"); onError(null);
     try {
@@ -61,8 +85,13 @@ export default function TrainPanel({
         version_id: versionId,
         trigger_token: trigger.trim() || undefined,
         steps: steps.trim() ? Math.min(10000, Math.max(1, Number(steps))) : undefined,
+        rank: rank.trim() ? Number(rank) : undefined,
+        alpha: alpha.trim() ? Number(alpha) : undefined,
+        learning_rate: lr.trim() ? Number(lr) : undefined,
+        resolution: res.trim() ? Number(res) : undefined,
       });
       setTrigger(""); setSteps("");
+      setRank(""); setAlpha(""); setLr(""); setRes("");
       await refresh();
     } catch (e) { onError(String(e)); } finally { setBusy(null); }
   };
@@ -126,6 +155,46 @@ export default function TrainPanel({
             title="total training steps, 1–10000 (M1 accepted 500 for the fixed-set spike)"
           />
         </label>
+        <button className="ghost" onClick={() => setAdv(!adv)}
+                title="rank/alpha, learning rate, resolution — blank = the M1-accepted preset. The rig-safety knobs (quantize/low_vram/optimizer) stay preset-pinned until M5.">
+          {adv ? "▾" : "▸"} advanced
+        </button>
+        {adv && (
+          <>
+            <label className="sm">
+              rank
+              <input value={rank} placeholder="16" inputMode="numeric"
+                     onChange={(e) => setRank(e.target.value.replace(/[^0-9]/g, ""))}
+                     onBlur={() => clampInt(rank, setRank, 1, 256)}
+                     disabled={!canStage}
+                     title="LoRA rank (network.linear), 1–256 — adapter capacity; 16 = the M1 preset. Higher learns more detail but risks overfitting a small ref set." />
+            </label>
+            <label className="sm">
+              alpha
+              <input value={alpha} placeholder="16" inputMode="numeric"
+                     onChange={(e) => setAlpha(e.target.value.replace(/[^0-9]/g, ""))}
+                     onBlur={() => clampInt(alpha, setAlpha, 1, 256)}
+                     disabled={!canStage}
+                     title="LoRA alpha (network.linear_alpha), 1–256 — effective scale = alpha/rank; the usual convention is alpha = rank (M1 preset 16/16)." />
+            </label>
+            <label className="sm">
+              learning rate
+              <input value={lr} placeholder="0.0001"
+                     onChange={(e) => setLr(e.target.value.replace(/[^0-9.eE-]/g, ""))}
+                     onBlur={clampLr}
+                     disabled={!canStage}
+                     title="optimizer learning rate, (0, 1] — 1e-4 = the M1-accepted AdamW preset. The single most impactful knob: lower = slower/safer, higher = faster/less stable." />
+            </label>
+            <label className="sm">
+              resolution
+              <input value={res} placeholder="512" inputMode="numeric"
+                     onChange={(e) => setRes(e.target.value.replace(/[^0-9]/g, ""))}
+                     onBlur={clampRes}
+                     disabled={!canStage}
+                     title="training resolution, 256–2048 (÷16) — 512 = the M1 preset validated on the 16 GB rig; higher squares the memory/time cost." />
+            </label>
+          </>
+        )}
         <button className="ghost" onClick={() => void onStage()} disabled={!canStage}
                 title="materialize captions/policy/context/dataset/train.yaml + a staged record — does NOT queue (R118)">
           ⚙ Stage · Train LoRA ({refCount} ref{refCount === 1 ? "" : "s"})
@@ -142,6 +211,9 @@ export default function TrainPanel({
                 <span className="muted">
                   {" "}· {s.caption_count} caption{s.caption_count === 1 ? "" : "s"}
                   {" "}· {String((s.settings ?? {}).steps ?? "?")} steps
+                  {" "}· r{String((s.settings ?? {}).rank ?? "?")}/a{String((s.settings ?? {}).alpha ?? "?")}
+                  {" "}· {String((s.settings ?? {}).resolution ?? "?")}px
+                  {" "}· lr {String((s.settings ?? {}).learning_rate ?? "?")}
                   {" "}· {s.id}
                   {s.context_digest ? ` · ctx ${s.context_digest.slice(0, 8).toLowerCase()}` : ""}
                 </span>

@@ -2039,3 +2039,31 @@ Tests **+5 → 379 green** (`test_resize_pass.py`: real 64²→32² Lanczos E2E 
 shape + per-item isolation rc=2 · adapter argv/inputs.json + vendored-script resolve · configure/
 queue shape w/ ×0.5 default → 512² dims + explicit-W×H override · rejects strength/prompt/model/
 blend/scale-8/width-only + fixed backend); `tsc` + `vite build` clean.
+
+## Trainer overlay diagnosis + Train-panel advanced row (2026-07-12 12:30–12:57, ✅ PUSHED `<hash-tbd>`)
+
+**User ran the first real trainer job (`job_0675b7a8`, char02) — failed at ai-toolkit import:**
+`ModuleNotFoundError: No module named 'oyaml'`. Root cause: the job's `runtime_overlay` was
+**None** — `LOOM_TRAINER_OVERLAY` was never added to `.env.local` (M2.9b step 1, still pending),
+so the staged record baked in no overlay and the trainer ran against the bare shared venv
+(R103: ai-toolkit's deps — oyaml/peft/albumentations/… — live ONLY in the isolated overlay
+`F:\source\repos\stubz-002-tripo-sf\.tmp\ai-toolkit-deps`; oyaml+peft verified present).
+**Fix (env-only, gitignored — recorded here, no code change):** the `LOOM_TRAINER_OVERLAY=…`
+line is now in `.env.local`; `CONFIG.trainer_overlay` verified resolving. Retry path = restart
+the app → RE-STAGE → queue (the overlay is baked at STAGE time; the failed job's params froze
+`None`, and trainer jobs are /rerun-excluded by design; staged store was empty — no stale
+record). Leftover `_temp/lora_char02_ver_e14f82_stg_ef3486f8/` = M6 cleanup fodder.
+
+**Train panel "advanced ⚙" row (author: "is steps all ai-toolkit offers?") — an M5
+pull-forward slice, FE-only.** The staging endpoint ALREADY accepted `rank`/`alpha`/
+`learning_rate`/`resolution` (backend-validated: 1–256 / 1–256 / (0,1] / 256–2048÷16) — the
+panel just never rendered them. Now: a `▸ advanced` disclosure between steps and ⚙ Stage with
+the four knobs (blank = the M1-accepted preset 16/16 · 1e-4 · 512px; clamps mirror the backend
+bounds, resolution snaps ÷16, junk lr clears); staged rows now show the full recipe
+(`… steps · r16/a16 · 512px · lr 0.0001 · stg_…`); `stageZimageLora` client body extended.
+**Deliberately NOT exposed until M5** (rig-safety-pinned on 16 GB): quantize/qtype, low_vram,
+gradient checkpointing, optimizer (8-bit needs bitsandbytes — shimmed off in the overlay),
+batch size, save_every, EMA, caption dropout, sample prompts. M5 owns the per-model preset
+system that makes the full knob matrix coherent.
+
+Backend untouched — **379 tests green**; `tsc` + `vite build` clean.

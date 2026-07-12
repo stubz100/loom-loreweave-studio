@@ -2068,7 +2068,7 @@ system that makes the full knob matrix coherent.
 
 Backend untouched — **379 tests green**; `tsc` + `vite build` clean.
 
-## Trainer live progress: real % + step-counter note (2026-07-12 13:40–14:05, ✅ PUSHED `<hash-tbd>`)
+## Trainer live progress: real % + step-counter note (2026-07-12 13:40–14:05, ✅ PUSHED `b54ee42`)
 
 **User:** "some sort of feedback on how the job is progressing… at least a step counter —
 `job_40b04cde` is at 8% for about an hour now." **Diagnosis (live log):** the per-job log DOES

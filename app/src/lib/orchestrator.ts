@@ -1348,3 +1348,60 @@ export async function deleteStagedTraining(stagedId: string):
   if (!res.ok) throw new Error(`training delete ${res.status}: ${await res.text()}`);
   return await res.json();
 }
+
+// --- P2/M3: caption review/edit (the override layer) -------------------------------
+
+export interface CaptionRow {
+  id: string;                    // ref_ id
+  file: string;
+  caption: string;               // effective (override wins)
+  template_caption: string;
+  origin: "template" | "edited";
+  edited_at?: string | null;
+  has_trigger: boolean;          // advisory: the trigger token appears in the text
+  coverage_cell: Record<string, string>;
+}
+
+export interface CaptionsResponse {
+  asset_id: string;
+  version_id: string;
+  trigger_token: string;
+  finalized: boolean;
+  count: number;
+  edited_count: number;
+  captions: CaptionRow[];
+}
+
+/** Read-only preview of the version's effective captions (no staging side effect). */
+export async function getCaptions(assetId: string, versionId?: string):
+    Promise<CaptionsResponse> {
+  const q = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/captions${q}`);
+  if (!res.ok) throw new Error(`captions ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+/** Durably override one ref's caption (survives re-staging; captions_hash reflects it). */
+export async function setCaptionOverride(assetId: string, refId: string, caption: string,
+                                         versionId?: string): Promise<CaptionRow> {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/captions/${refId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ caption, version_id: versionId }),
+  });
+  if (!res.ok) throw new Error(`caption edit ${res.status}: ${await res.text()}`);
+  return (await res.json()) as CaptionRow;
+}
+
+/** Reset one ref (refId given) or ALL refs back to the template caption. */
+export async function clearCaptionOverride(assetId: string, refId?: string,
+                                           versionId?: string): Promise<{ cleared: number }> {
+  const q = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
+  const path = refId ? `/assets/${assetId}/captions/${refId}` : `/assets/${assetId}/captions`;
+  const res = await fetch(`${orchestratorUrl()}${path}${q}`, {
+    method: "DELETE",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`caption reset ${res.status}: ${await res.text()}`);
+  return await res.json();
+}

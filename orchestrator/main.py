@@ -301,6 +301,18 @@ class StageZImageLoraRequest(BaseModel):
     learning_rate: float = Field(default=0.0001, gt=0, le=1.0)
 
 
+class CaptionOverrideRequest(BaseModel):
+    """P2/M3 — durably override one curated ref's caption (the caption-edit layer).
+
+    The edit lives on the VERSION (`caption_overrides`), not on a staged copy, so it
+    survives re-staging; the next stage emits it (origin "edited") and `captions_hash`
+    reflects it. Reset = DELETE the override (back to the template)."""
+
+    model_config = ConfigDict(extra="forbid")
+    caption: str = Field(min_length=1, max_length=1000)
+    version_id: str | None = None
+
+
 class WorldRequest(BaseModel):
     """M8 — set the long-form world summary (markdown)."""
 
@@ -798,6 +810,9 @@ def create_app() -> FastAPI:
                                "POST /assets/{id}/lora/zimage/stage",
                                "POST /training/staged/{id}/queue",
                                "DELETE /training/staged/{id}",
+                               "PUT /assets/{id}/captions/{ref_id}",
+                               "DELETE /assets/{id}/captions/{ref_id}",
+                               "DELETE /assets/{id}/captions",
                                "POST /postproc/step", "POST /postproc/step/{id}/queue",
                                "DELETE /postproc/step/{id}",
                                "POST /bible/poses/generate", "POST /bible/poses/{key}/icon",
@@ -1610,6 +1625,48 @@ def create_app() -> FastAPI:
         """Delete a staged trainer record without touching any queued/running job."""
         try:
             return training.delete_staged(_require_ws(), staged_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
+    @app.get("/assets/{asset_id}/captions")
+    def get_captions(asset_id: str, version_id: str | None = None) -> dict:
+        """P2/M3 — preview the version's effective captions WITHOUT staging: the frozen
+        template text + any durable per-ref overrides. Unauthenticated read (Train panel)."""
+        try:
+            return training.list_captions(_require_ws(), asset_id, version_id=version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
+    @app.put("/assets/{asset_id}/captions/{ref_id}")
+    def put_caption_override(asset_id: str, ref_id: str, req: CaptionOverrideRequest,
+                             _auth: None = Depends(require_token)) -> dict:
+        """P2/M3 — durably override one ref's caption on the version (survives re-staging;
+        the next stage emits it and `captions_hash` reflects it). Token-gated."""
+        try:
+            row = training.set_caption_override(
+                _require_ws(), asset_id, ref_id, req.caption, version_id=req.version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        LOG.info("caption override set: asset=%s ref=%s", asset_id, ref_id)
+        return row
+
+    @app.delete("/assets/{asset_id}/captions/{ref_id}")
+    def delete_caption_override(asset_id: str, ref_id: str, version_id: str | None = None,
+                                _auth: None = Depends(require_token)) -> dict:
+        """P2/M3 — reset ONE ref back to its template caption (idempotent). Token-gated."""
+        try:
+            return training.clear_caption_overrides(
+                _require_ws(), asset_id, ref_id=ref_id, version_id=version_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+
+    @app.delete("/assets/{asset_id}/captions")
+    def delete_caption_overrides(asset_id: str, version_id: str | None = None,
+                                 _auth: None = Depends(require_token)) -> dict:
+        """P2/M3 — reset ALL refs back to template captions (drops orphans too). Token-gated."""
+        try:
+            return training.clear_caption_overrides(
+                _require_ws(), asset_id, version_id=version_id)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(404, str(e))
 

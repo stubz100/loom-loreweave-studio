@@ -36,6 +36,10 @@ _STAGED_LOCK = threading.Lock()
 STAGED_SCHEMA_VERSION = 1
 CAPTION_POLICY_ID = "loom-template-caption-v1"
 TRAINING_CONTEXT_KIND = "loom.p2.training_context.v1"
+# M3: captions.jsonl rows carry `origin: template|edited` (and `template_caption` on edited
+# rows) — bumped from 1 so a hash change from the row shape is honest, not silent.
+CAPTION_ROW_SCHEMA_VERSION = 2
+CAPTION_MAX_LEN = 1000
 
 DEFAULT_ZIMAGE_SETTINGS: dict[str, Any] = {
     "base_model": "Tongyi-MAI/Z-Image",
@@ -138,6 +142,110 @@ def _version_dir_for(ws: Workspace, asset_id: str, version_id: str | None) -> tu
     return vdir, version, profile
 
 
+# --- M3: caption-edit override layer ---------------------------------------------
+# An edit is a DURABLE per-ref override stored on the version (`caption_overrides`:
+# ref_id → {caption, edited_at}) — not an edit of a staged copy — so it survives
+# re-staging. Staging emits the edited text (origin "edited") and `captions_hash`
+# hashes the FINAL text; `caption_policy_hash` still identifies the template, so
+# "caption changed" stays distinguishable from "template changed" (spec §6/§12 M3).
+# An override is a LITERAL caption: re-staging under a different trigger token
+# regenerates template rows but keeps edited text verbatim (`has_trigger` flags it).
+
+
+def _override_map(version: dict) -> dict:
+    ov = version.get("caption_overrides")
+    return ov if isinstance(ov, dict) else {}
+
+
+def _resolve_caption(ref: dict, overrides: dict, trigger_token: str) -> tuple[str, str, str]:
+    """→ (effective_caption, template_caption, origin) for one curated ref."""
+    template = coverage.build_caption(ref.get("coverage_cell") or {}, trigger_token)
+    ov = overrides.get(ref.get("id"))
+    text = str(ov.get("caption") or "").strip() if isinstance(ov, dict) else ""
+    if text:
+        return text, template, "edited"
+    return template, template, "template"
+
+
+def _resolve_trigger(version: dict, profile: dict) -> str:
+    return (version.get("trigger_token") or _trigger_from_profile(profile)).strip()
+
+
+def _caption_row_view(ref: dict, overrides: dict, trigger: str) -> dict:
+    caption, template, origin = _resolve_caption(ref, overrides, trigger)
+    ov = overrides.get(ref["id"]) if origin == "edited" else None
+    return {
+        "id": ref["id"],
+        "file": ref["file"],
+        "caption": caption,
+        "template_caption": template,
+        "origin": origin,
+        "edited_at": (ov or {}).get("edited_at"),
+        "has_trigger": trigger.lower() in caption.lower(),
+        "coverage_cell": ref.get("coverage_cell") or {},
+    }
+
+
+def list_captions(ws: Workspace, asset_id: str, *, version_id: str | None = None) -> dict:
+    """Preview the version's effective captions WITHOUT staging (read-only): template
+    text from the frozen coverage contract + any durable overrides applied."""
+    _vdir, version, profile = _version_dir_for(ws, asset_id, version_id)
+    trigger = _resolve_trigger(version, profile)
+    overrides = _override_map(version)
+    rows = [_caption_row_view(ref, overrides, trigger) for ref in version.get("ref_set") or []]
+    return {
+        "asset_id": profile["id"],
+        "version_id": version["id"],
+        "trigger_token": trigger,
+        "finalized": bool(version.get("finalized")),
+        "count": len(rows),
+        "edited_count": sum(1 for r in rows if r["origin"] == "edited"),
+        "captions": rows,
+    }
+
+
+def set_caption_override(ws: Workspace, asset_id: str, ref_id: str, caption: str,
+                         *, version_id: str | None = None) -> dict:
+    """Durably override one ref's caption on the version. Whitespace collapses to single
+    spaces (the dataset `.txt` is one line); empty → error (reset returns to template)."""
+    vdir, version, profile = _version_dir_for(ws, asset_id, version_id)
+    if version.get("finalized"):
+        raise ws_mod.WorkspaceError("cannot edit captions on a finalized version; unlock it first")
+    text = " ".join(str(caption).split())
+    if not text:
+        raise ws_mod.WorkspaceError("caption must not be empty (use reset to return to the template)")
+    if len(text) > CAPTION_MAX_LEN:
+        raise ws_mod.WorkspaceError(f"caption exceeds {CAPTION_MAX_LEN} characters")
+    refs = {r["id"]: r for r in version.get("ref_set") or []}
+    if ref_id not in refs:
+        raise ws_mod.WorkspaceError(f"unknown ref {ref_id!r} in version {version['id']}")
+    overrides = dict(_override_map(version))
+    overrides[ref_id] = {"caption": text, "edited_at": _now()}
+    version["caption_overrides"] = overrides
+    assets.write_version(vdir, version)
+    return _caption_row_view(refs[ref_id], overrides, _resolve_trigger(version, profile))
+
+
+def clear_caption_overrides(ws: Workspace, asset_id: str, *, ref_id: str | None = None,
+                            version_id: str | None = None) -> dict:
+    """Reset one ref (idempotent) or ALL refs back to the template caption. Clearing all
+    also drops orphaned overrides (refs since culled from the ref_set)."""
+    vdir, version, profile = _version_dir_for(ws, asset_id, version_id)
+    if version.get("finalized"):
+        raise ws_mod.WorkspaceError("cannot edit captions on a finalized version; unlock it first")
+    overrides = dict(_override_map(version))
+    if ref_id is not None:
+        if ref_id not in {r["id"] for r in version.get("ref_set") or []}:
+            raise ws_mod.WorkspaceError(f"unknown ref {ref_id!r} in version {version['id']}")
+        cleared = 1 if overrides.pop(ref_id, None) is not None else 0
+    else:
+        cleared = len(overrides)
+        overrides = {}
+    version["caption_overrides"] = overrides
+    assets.write_version(vdir, version)
+    return {"cleared": cleared, "asset_id": profile["id"], "version_id": version["id"]}
+
+
 def _write_captions(vdir: Path, version: dict, profile: dict, trigger_token: str,
                     *, base_family: str, settings: dict) -> dict:
     refs = version.get("ref_set") or []
@@ -155,24 +263,36 @@ def _write_captions(vdir: Path, version: dict, profile: dict, trigger_token: str
         "vlm": False,
         "created_at": _now(),
     }
-    policy_bytes = json.dumps(policy, sort_keys=True).encode("utf-8")
-    policy_hash = _sha256_bytes(policy_bytes)
+    # M3 fix (pre-existing M2 nit): the policy hash used to cover the whole record incl.
+    # `created_at` → a NEW hash every staging, so it never identified the template. Hash
+    # the stable policy IDENTITY (template + fields + contract version) — `trigger_token`
+    # and `created_at` stay in the FILE but out of the hash (a trigger change shows up in
+    # captions_hash; the template itself is what this hash names).
+    policy_identity = {k: policy[k] for k in (
+        "schema_version", "id", "coverage_contract_version", "template",
+        "source_fields", "omit_empty_background", "vlm")}
+    policy_hash = _sha256_bytes(json.dumps(policy_identity, sort_keys=True).encode("utf-8"))
     ws_mod.atomic_write_json(vdir / "caption_policy.json", policy)
 
+    overrides = _override_map(version)   # M3: durable per-ref edits win over the template
     rows: list[dict[str, Any]] = []
     for ref in refs:
         cell = ref.get("coverage_cell") or {}
-        caption = coverage.build_caption(cell, trigger_token)
-        rows.append({
-            "schema_version": 1,
+        caption, template, origin = _resolve_caption(ref, overrides, trigger_token)
+        row: dict[str, Any] = {
+            "schema_version": CAPTION_ROW_SCHEMA_VERSION,
             "id": ref["id"],
             "file": ref["file"],
             "caption": caption,
+            "origin": origin,
             "trigger_token": trigger_token,
             "coverage_cell": cell,
             "source_output": ref.get("source_output"),
             "source_job_id": ref.get("job_id"),
-        })
+        }
+        if origin == "edited":
+            row["template_caption"] = template   # what the edit replaced, for the record
+        rows.append(row)
     jsonl = "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows)
     captions_hash = _sha256_bytes(jsonl.encode("utf-8"))
     _atomic_write_text(vdir / "captions.jsonl", jsonl)
@@ -198,8 +318,9 @@ def _write_captions(vdir: Path, version: dict, profile: dict, trigger_token: str
                 "job_id": r.get("job_id"),
                 "seed": r.get("seed"),
                 "style_id": r.get("style_id"),   # M2.8 #7 — graph-ready style provenance
+                "caption_origin": row["origin"],  # M3 — template vs edited, graph-ready
             }
-            for r in refs
+            for r, row in zip(refs, rows)
         ],
         "caption_policy_hash": policy_hash,
         "captions_hash": captions_hash,
@@ -213,6 +334,7 @@ def _write_captions(vdir: Path, version: dict, profile: dict, trigger_token: str
     version["caption_status"] = {
         "status": "ready",
         "caption_count": len(rows),
+        "edited_count": sum(1 for r in rows if r["origin"] == "edited"),   # M3
         "caption_policy_hash": policy_hash,
         "captions_hash": captions_hash,
         "updated_at": _now(),

@@ -2134,4 +2134,49 @@ Suggested diagnostics before the next attempt (author-owned): HWiNFO log of GPU 
    M2.11/M0e-Part-D added; "Next: M3 — caption review/edit (the override layer)".
 5. **Spec §12 Phase A list reordered** 3e→3f→3g→3h (was 3e→3g→3h→3f; text unchanged).
 
-⏭ **Phase B opens: M3 (caption-edit override layer) next.**
+⏭ **Phase B opens: M3 (caption-edit override layer) next.** **✅ PUSHED `e9891c1`.**
+
+## M3 — caption review/edit: the override layer (started 2026-07-12 18:22, finished 18:37) ✅
+
+**Scope (the re-scoped M3 — generation landed in M2):** durable per-ref caption edits that
+survive re-staging, staging that respects them, and hash honesty. Spec §12 Phase B entry 4 + §6.
+
+**Backend (`training.py`):**
+- **`caption_overrides` on the VERSION** (`ref_id → {caption, edited_at}`; declared in
+  `version.schema.json` with the M2 fields `trigger_token`/`caption_status`/`training_context`
+  that had been additional-properties-only) — durable, so an edit persists across re-staging;
+  an override is a **literal caption** (re-staging under a new trigger regenerates template rows
+  but keeps edited text verbatim; `has_trigger` flags a missing trigger, advisory per R14).
+- **`list_captions`** = read-only preview WITHOUT staging (template from the frozen coverage
+  contract + overrides applied; per-row `origin`, `template_caption`, `has_trigger`, cell).
+- **`set_caption_override`** (whitespace collapsed — the dataset `.txt` is one line; ≤1000 chars;
+  empty → error; unknown ref → error; finalized version refuses) · **`clear_caption_overrides`**
+  (one ref idempotently, or ALL — also drops orphaned overrides of culled refs).
+- **`_write_captions` applies overrides:** rows bumped to **`schema_version: 2`** with
+  `origin: template|edited` (+ `template_caption` on edited rows — what the edit replaced);
+  dataset `.txt` gets the edited text; `caption_status` gains `edited_count`;
+  `training_context.refs[]` gain **`caption_origin`** (graph-ready).
+- ⭐ **Pre-existing M2 nit found by the new tests and FIXED:** `caption_policy_hash` hashed the
+  whole policy record **including `created_at`** → a NEW hash every staging; it never actually
+  identified the template. Now hashes the stable **policy identity** (template + source fields +
+  contract version — `trigger_token`/`created_at` stay in the FILE, out of the hash), so
+  "caption changed" (captions_hash) vs "template changed" (policy hash) finally works as spec'd.
+
+**API (`main.py`):** `GET /assets/{id}/captions` (unauth read, `?version_id=`) ·
+`PUT /assets/{id}/captions/{ref_id}` (400 on refusals) · `DELETE …/captions/{ref_id}` ·
+`DELETE …/captions` (reset all) — the three mutators token-gated + added to `token_required`.
+
+**FE:** `orchestrator.ts` `CaptionRow`/`CaptionsResponse` + `getCaptions`/`setCaptionOverride`/
+`clearCaptionOverride`; **TrainPanel** gains a collapsed **`▸ captions (n · m edited)`** section
+between the stage form and the staged list: per-row single-line editor (draft → 💾 save as
+override), **✎** edited badge (tooltip shows the replaced template), **⚠** missing-trigger badge,
+per-row **↺** reset + **↺ reset all**, template/trigger hint line; re-fetches after ⚙ Stage (a
+trigger change regenerates templates). Finalized version = read-only review. New `.cap-*` CSS.
+
+**Tests +5 → 386 green** (`test_captions.py`: preview-without-side-effect + 404 · the core
+contract (durable on version.json → staged dataset `.txt` + jsonl `origin`/`template_caption` →
+captions_hash CHANGES while policy_hash HOLDS → `caption_status.edited_count` +
+`training_context.caption_origin`) · reset restores the ORIGINAL captions_hash byte-identically +
+idempotent repeat · clear-all + has_trigger advisory flags · refusals (unknown ref 400/404,
+whitespace 400, empty/oversize 422, finalized locks mutators but read stays open));
+`tsc` + `vite build` clean. ⏭ **M4 — proxy readiness meter.**

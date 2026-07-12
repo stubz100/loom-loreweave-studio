@@ -9,11 +9,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  CaptionsResponse,
   Job,
   StagedTraining,
+  clearCaptionOverride,
   deleteStagedTraining,
+  getCaptions,
   getStagedTraining,
   queueStagedTraining,
+  setCaptionOverride,
   stageZimageLora,
 } from "./lib/orchestrator";
 
@@ -46,6 +50,10 @@ export default function TrainPanel({
   const [res, setRes] = useState("");       // 256–2048 ÷16 (preset 512)
   // "stage" or a staged id — only the in-flight action's controls lock, not the whole panel
   const [busy, setBusy] = useState<string | null>(null);
+  // M3 captions review/edit: collapsed by default; drafts hold per-row unsaved text.
+  const [capsOpen, setCapsOpen] = useState(false);
+  const [caps, setCaps] = useState<CaptionsResponse | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -55,6 +63,17 @@ export default function TrainPanel({
     }
   }, []);
   useEffect(() => { void refresh(); }, [refresh, assetId, versionId]);
+
+  const loadCaptions = useCallback(async () => {
+    try {
+      setCaps(await getCaptions(assetId, versionId));
+      setDrafts({});
+    } catch (e) { onError(String(e)); }
+  }, [assetId, versionId, onError]);
+  useEffect(() => {
+    setCaps(null); setDrafts({});
+    if (capsOpen) void loadCaptions();
+  }, [capsOpen, loadCaptions]);
 
   const mine = staged.filter((s) => s.version_id === versionId);
   const canStage = !versionLocked && refCount > 0 && busy !== "stage";
@@ -93,6 +112,24 @@ export default function TrainPanel({
       setTrigger(""); setSteps("");
       setRank(""); setAlpha(""); setLr(""); setRes("");
       await refresh();
+      if (capsOpen) await loadCaptions();   // staging may change the trigger → templates
+    } catch (e) { onError(String(e)); } finally { setBusy(null); }
+  };
+  const onSaveCaption = async (refId: string) => {
+    const text = (drafts[refId] ?? "").trim();
+    if (!text) return;
+    setBusy(`cap:${refId}`); onError(null);
+    try {
+      await setCaptionOverride(assetId, refId, text, versionId);
+      await loadCaptions();
+    } catch (e) { onError(String(e)); } finally { setBusy(null); }
+  };
+  const onResetCaption = async (refId?: string) => {
+    if (!refId && !window.confirm("Reset ALL captions back to their templates?")) return;
+    setBusy(refId ? `cap:${refId}` : "cap:all"); onError(null);
+    try {
+      await clearCaptionOverride(assetId, refId, versionId);
+      await loadCaptions();
     } catch (e) { onError(String(e)); } finally { setBusy(null); }
   };
   const onQueue = async (stagedId: string) => {
@@ -200,6 +237,68 @@ export default function TrainPanel({
           ⚙ Stage · Train LoRA ({refCount} ref{refCount === 1 ? "" : "s"})
         </button>
       </div>
+
+      {refCount > 0 && (
+        <div className="train-captions">
+          <button className="ghost" onClick={() => setCapsOpen(!capsOpen)}
+                  title="review/edit the template captions the trainer will see — an edit is a durable override on this version (survives re-staging); reset returns a row to its template">
+            {capsOpen ? "▾" : "▸"} captions
+            {caps ? ` (${caps.count}${caps.edited_count ? ` · ${caps.edited_count} edited` : ""})` : ""}
+          </button>
+          {capsOpen && caps && (
+            <>
+              <div className="muted cap-hint">
+                template: <code>&lt;trigger&gt;, &lt;angle&gt;, &lt;shot&gt;, &lt;expression&gt;[, &lt;bg&gt; background]</code>
+                {" "}· trigger <b>{caps.trigger_token}</b> — edits are saved on the version;
+                the next ⚙ Stage bakes them into the dataset (captions_hash reflects them).
+                {caps.edited_count > 0 && !versionLocked && (
+                  <button className="ghost" onClick={() => void onResetCaption()}
+                          disabled={busy === "cap:all"}
+                          title="drop every override — all rows return to their template text">
+                    ↺ reset all
+                  </button>
+                )}
+              </div>
+              {caps.captions.map((c) => {
+                const draft = drafts[c.id];
+                const dirty = draft !== undefined && draft.trim() !== c.caption;
+                return (
+                  <div className="cap-row" key={c.id}>
+                    <span className="cap-file muted" title={`${c.file} · ${Object.values(c.coverage_cell ?? {}).filter(Boolean).join(" · ")}`}>
+                      {c.file.replace(/\.[a-z0-9]+$/i, "")}
+                    </span>
+                    <input
+                      className="cap-input"
+                      value={draft ?? c.caption}
+                      onChange={(e) => setDrafts({ ...drafts, [c.id]: e.target.value })}
+                      disabled={versionLocked || busy === `cap:${c.id}`}
+                      title={c.origin === "edited" ? `edited — template was: ${c.template_caption}` : "template caption (edit + 💾 to override)"}
+                    />
+                    {c.origin === "edited" && <span title="edited (override)">✎</span>}
+                    {!c.has_trigger && (
+                      <span title={`⚠ the trigger token "${caps.trigger_token}" is missing from this caption — the LoRA may not bind to it (advisory)`}>⚠</span>
+                    )}
+                    {dirty && !versionLocked && (
+                      <button className="ghost" onClick={() => void onSaveCaption(c.id)}
+                              disabled={busy === `cap:${c.id}` || !(draft ?? "").trim()}
+                              title="save as a durable override on this version">
+                        💾
+                      </button>
+                    )}
+                    {c.origin === "edited" && !versionLocked && (
+                      <button className="ghost" onClick={() => void onResetCaption(c.id)}
+                              disabled={busy === `cap:${c.id}`}
+                              title="drop the override — back to the template text">
+                        ↺
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
+      )}
 
       {mine.length > 0 && (
         <div className="train-staged">

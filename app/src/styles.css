@@ -167,6 +167,19 @@ body {
 /* the "advanced ⚙" knobs (rank/alpha/lr/resolution) — narrow numeric fields */
 .train-stage-form label.sm input { width: 84px; }
 .train-staged, .train-jobs { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+/* M3 caption review/edit (the override layer) */
+.train-captions { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.train-captions > button { align-self: flex-start; }
+.cap-hint { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }
+.cap-row { display: flex; align-items: center; gap: 6px; }
+.cap-file {
+  flex: 0 0 130px; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 11px;
+}
+.cap-input {
+  flex: 1; background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 4px; padding: 3px 6px; font-size: 12px; min-width: 0;
+}
 .train-row {
   display: flex; align-items: center; gap: 8px; padding: 4px 6px;
   border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2);

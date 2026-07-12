@@ -12,6 +12,10 @@
     "finalized": { "type": "boolean" },
     "saved_at": { "type": "string" },
     "prompt_template": { "type": "string" },
+    "trigger_token": { "type": "string", "description": "P2/M2: the LoRA trigger token last used at stage time (also seeds the M3 caption preview)." },
+    "caption_status": { "type": "object", "description": "P2/M2 stage-time caption facts: status/caption_count/caption_policy_hash/captions_hash (+ edited_count, M3)." },
+    "caption_overrides": { "type": "object", "description": "P2/M3 caption-edit override layer: ref_id → {caption, edited_at}. Durable on the version (survives re-staging); staging emits the edited text with origin 'edited' and captions_hash reflects it (caption_policy_hash still identifies the template)." },
+    "training_context": { "type": "object", "description": "P2/M2 pointer to training_context.json + its context_digest." },
     "anchor_ref": { "type": ["string", "null"] },
     "anchor": {
       "type": ["object", "null"],

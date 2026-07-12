@@ -2040,7 +2040,7 @@ shape + per-item isolation rc=2 · adapter argv/inputs.json + vendored-script re
 queue shape w/ ×0.5 default → 512² dims + explicit-W×H override · rejects strength/prompt/model/
 blend/scale-8/width-only + fixed backend); `tsc` + `vite build` clean.
 
-## Trainer overlay diagnosis + Train-panel advanced row (2026-07-12 12:30–12:57, ✅ PUSHED `<hash-tbd>`)
+## Trainer overlay diagnosis + Train-panel advanced row (2026-07-12 12:30–12:57, ✅ PUSHED `fc84201`)
 
 **User ran the first real trainer job (`job_0675b7a8`, char02) — failed at ai-toolkit import:**
 `ModuleNotFoundError: No module named 'oyaml'`. Root cause: the job's `runtime_overlay` was

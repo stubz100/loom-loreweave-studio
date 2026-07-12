@@ -241,7 +241,12 @@ loom's captioning (D1) — **v1 is template-only (author, round-15 answer 2):**
   and needs **no VLM**, which keeps P2's core path VLM-free and de-risked. We already have the
   coverage tags from P1, so captioning is essentially free.
 - **Trigger token:** unique per character/version (suggested + editable).
-- **Editable:** captions land in `captions.jsonl` for human review/edit before training.
+- **Editable:** captions land in `captions.jsonl` for human review/edit before training. *(M3
+  design, pinned 2026-07-12: edits are **durable per-ref overrides** stored on the version — not
+  edits of a staged copy — so they persist across re-staging; staging emits the edited text into
+  the dataset `.txt`s + `captions.jsonl` with per-row `origin: template|edited`; `captions_hash`
+  hashes the FINAL text while `caption_policy_hash` still identifies the template, so "caption
+  changed" stays distinguishable from "template changed".)*
 - **Policy recorded:** the exact template version + source fields land in `caption_policy.json`, so
   a later P4/P6 context or GraphRAG tool can distinguish "caption changed" from "model/trainer
   changed."
@@ -1197,8 +1202,18 @@ off the normal `/jobs` poll, cancel like any job). Client fns `getStagedTraining
 `queueStagedTraining`/`deleteStagedTraining` + the `StagedTraining` type in `orchestrator.ts`.
 Promote-on-success stays **M6** (the panel says so). ⚠ Visual sign-off owed (M0e pattern).
 
-**b — P2-10 queued resume smoke (the 🔴 WBS row; execution moved here from M2). 🟡 PREPPED —
-the GPU run needs the author's go (no-surprise-GPU, R141).** What's now in place: the M1 isolated
+**b — P2-10 queued resume smoke (the 🔴 WBS row; execution moved here from M2). 🟠 DE-FACTO
+EXERCISED on the rig 2026-07-12; formal completion BLOCKED ON HARDWARE.** The author's first real
+training runs (char02, `loom/stubz001`) exercised the resume path for real: `job_62629914`'s log
+shows `[train-preflight]`/`[train-resume]` firing, a **step-100 checkpoint saved mid-run**, and
+step-vs-elapsed arithmetic (129/500 at 1:50 elapsed, 1.4 s/it) proving the segment **resumed
+mid-count (~step 50), not from 0** — i.e. recover→queued+paused→unpause→checkpoint-resume all
+operated. What's still owed for the formal stamp: a run **completing** after a resume (exit 0,
+trainer manifest `status: completed`, artifact hash) — blocked because **sustained training load
+hard-shuts-down the author's system** (2026-07-12; suspected summer thermals or PSU transients —
+earlier full-load inference was bursty by comparison; see the journal's hardware note). Runs when
+the rig is stable; the stranded `running` job recovers + resumes from its step-100 checkpoint on
+the next launch. Original prep + procedure below stands. What was in place: the M1 isolated
 dependency overlay was LOCATED + verified on the rig
 (`F:\source\repos\stubz-002-tripo-sf\.tmp\ai-toolkit-deps` — peft present, torchao/bitsandbytes
 disabled shims intact), and a new rig-level config default **`LOOM_TRAINER_OVERLAY`**
@@ -1223,11 +1238,27 @@ transformer; never snapshot), mirroring the worker's `scaled_fp8.COMFY_FLUX2_REP
 it whenever the request arms `turbo` → **412** with `POST /components/fetch?postproc=flux2_turbo_lora`
 (the generic single-file fetch), never a mid-sweep worker crash.
 
-**d — consolidated on-rig sign-off checklist (author-owned; none block Phase B).** M2.5 quantized-dev
-smoke (t2i JSON 8-step + i2i postproc, manifest `comfy-q8`) · M2.6 turbo quality/speed at 4–6 steps
-vs no-turbo 8 · M2.7 warm sweeps hold flat per-cell + pause→resume keeps tiles + a Cast streams
-individual candidates · M0d/M0e + styles-Pass-2 visual sign-offs · (carried from P1, separate:
-the formal A–H rig acceptance stamp).
+**d — consolidated on-rig sign-off checklist (author-owned; none block Phase B).**
+*Ledger updated 2026-07-12 (author's go): items with recorded de-facto evidence are STAMPED —
+the rig has been in daily real use since 2026-07-04 and several checks happened implicitly.*
+- ✅ **M2.5 quantized-dev smoke — STAMPED**: dev t2i ran live repeatedly (the 2026-07-04 probe
+  read on a live dev-turbo sweep; dev-turbo@4 accepted as the operating point) and dev i2i via
+  the stacked Clean job ("Clean confirmed working on the rig", 2026-07-04 journal). Residual
+  one-glance item: eyeball `comfy-q8` in a dev job manifest on the next run.
+- ✅ **M2.6 turbo quality/speed — STAMPED**: author accepted dev-turbo@4 ≈100 s/warm-cell as the
+  dev-sweep operating point (2026-07-04) + "already producing much better images" on the
+  reduced-guidance sweeps (M2.10 addendum).
+- ✅ **M2.7 flat per-cell — STAMPED**: probe-measured steady ~20.9 s/step healthy cells and a
+  steady ≈100 s/cell across the 17-prompt dev-turbo set (2026-07-04). Still owed: a deliberate
+  mid-sweep **pause→resume keeps tiles** check · **a Cast streams individual candidates** check.
+- ✅ **M2.11 pose-icon generation — STAMPED**: author ran batch icon runs on the rig 2026-07-05
+  (feedback from them drove the per-icon ↻/🗑 controls). Still owed: one **subset sweep** fired
+  from the CellPicker.
+- Still owed (author's word required, no proxy evidence): **M0d/M0e + styles-Pass-2 + Train-panel
+  visual sign-offs** (all surfaces in daily use since build — implicit, but the stamp is the
+  author's) · **Stage-D visual sign-off** · (carried from P1, separate: the formal A–H rig
+  acceptance stamp).
+- 🚫 **M2.9b formal resume-completion** — blocked on hardware (see b above).
 
 #### M2.10 — expansion style fidelity: the reference owns the style (route 1)
 
@@ -1353,6 +1384,10 @@ author's visual sign-off.
    (overlay located; `LOOM_TRAINER_OVERLAY` rig default; GPU run = author's go), (c) the M2.6
    **Turbo-LoRA weight gate** (412 + single-file fetch), (d) the consolidated **on-rig sign-off
    checklist** (author-owned, non-blocking). Scope + procedure: §12 "M2.9".
+3f. **M2.10 — expansion style fidelity (route 1).** flux2 Stage-B stops restating the L1 style in
+   text and instead **assigns the reference's style** (ref-role prompting per BFL guidance) +
+   pins identity to the hero; dev default guidance 4.0 → 3.0. Routes 2/3 (StyleLock post-pass,
+   Klein KV edit) parked. Problem/findings/remediations: §12 "M2.10".
 3g. **M2.11 — expansion cell picker + pose icons.** Fire a SUBSET of a pose recipe:
    param-window-style `CellPicker` (multi-select) + `StageBRequest.cells` index filter; icons =
    a GENERATED per-cell set (L1-styles pattern) from a new **L1 · Poses** sub-tab — flux2-dev
@@ -1365,21 +1400,31 @@ author's visual sign-off.
    queries ("which curated refs used style X?", "which cells lack a kept ref?"). **Non-gating**
    (R170: never blocks the P2 done-line or training); sequencing at the author's call —
    naturally after M4 readiness, whose queries it overlaps.
-3f. **M2.10 — expansion style fidelity (route 1).** flux2 Stage-B stops restating the L1 style in
-   text and instead **assigns the reference's style** (ref-role prompting per BFL guidance) +
-   pins identity to the hero; dev default guidance 4.0 → 3.0. Routes 2/3 (StyleLock post-pass,
-   Klein KV edit) parked. Problem/findings/remediations: §12 "M2.10".
 
 ### Phase B — Thicken (all VLM-free)
 
-4. **M3 — template captioning.** Generate `captions.jsonl` deterministically from coverage-cell
-   metadata + trigger token; write `caption_policy.json`; review/edit UI. **(No VLM.)**
+4. **M3 — caption review/edit (the override layer).** *Re-scoped 2026-07-12: deterministic
+   generation ALREADY landed in M2* — `training.py` writes `captions.jsonl` + `caption_policy.json`
+   + `captions_hash`/`caption_policy_hash` + `training_context.json` at STAGE time. What M3 builds
+   is the **caption-edit override layer** the M2 close flagged as the design fork: a review/edit
+   UI over the version's per-ref template captions, **durable per-ref overrides** (an edit
+   persists on the version, survives re-staging), **staging respects overrides** (the staged
+   dataset's `.txt` captions + `captions.jsonl` carry the edited text; `origin: template|edited`
+   per row), and **`captions_hash` reflects the final text** (an edit changes the hash — the
+   policy hash still identifies the template). Reset-to-template per ref + all. **(No VLM.)**
 5. **M4 — proxy readiness.** Coverage (from metadata) + perceptual-hash dupes + face-embedding
    on-model → `readiness.json` → advisory readiness meter. **(No VLM.)** ***P2 done-line now
    reachable*** (M2 trainer + M3 captions + M4 readiness, R169).
 6. **M5 — train options + sd35 + PEFT backend.** Expose train-from-base / seed-from-parent (R68) and
    the per-model preset + advanced knobs; add the **diffusers-PEFT** advanced backend; onboard the
-   **sd35** trainer; record full training manifests.
+   **sd35** trainer; record full training manifests. **⚠ M5 opens with an M1-style front-gate
+   (added 2026-07-12): an sd35 training SPIKE** — prove ai-toolkit trains an SD3.5 LoRA on
+   RX 9070 XT / ROCm / 16 GB *at all* (same class of unknown P2-0 was for zimage) **before** the
+   preset system / knob matrix / UI is built on top of it; if no-go, the diffusers-PEFT backend
+   becomes sd35's primary path instead of its advanced option. **PEFT backend isolation (R103):**
+   PEFT/TRL deps live in a dependency overlay like ai-toolkit's (`.tmp/ai-toolkit-deps` extended,
+   or a sibling `peft-deps` overlay baked at stage time via the same `runtime_overlay` channel) —
+   never installed into the shared inference venv.
 7. **M6 — promote + manual cleanup + LoRA management.** Promote into the version; one-click temp
    cleanup; version selector shows LoRA presence. **(No style-LoRA path — declared only, 0 effort in
    P2 per R122; built in P5 with multi-LoRA stacking, R147.)**
@@ -1434,9 +1479,9 @@ flagged — noted for `kb-loom-p4.md`.)
 | P2-1 | **Training spike (no UI)** — vendor **ai-toolkit**, train one `zimage` LoRA from a fixed dataset, load-test it | M1 | M | 🔴 **no trainer exists** |
 | P2-2 | Trainer as a **staged queued job** (wrap in P0 queue + manifest; `jobs/staged.json`; auto-generate, don't auto-start) | M2 | M | 🟡 |
 | P2-2.5 | **Quantized `flux.2-dev` replacement + gated-repo elimination** — fold the quantized Comfy Flux2-dev split-file branch into the existing flux2 runner behind the logical dev id (single-run t2i/i2i; batch `ref` stays Klein); vendor the ~17 MB dev config+tokenizer + re-point Klein's VAE to the Comfy `flux2-vae` so **both gated repos (BFL dev 166 GB + Mistral 90 GB) are deleted**; add precise split-file weight gates, manifest fields, advanced `text_encoder`/`fp8_matmul` params, and no-GPU adapter/catalog tests; **Klein runtime unchanged (VAE source only)** | M2.5 | M | 🟡 runtime migration |
-| P2-3 | Template captioning (`captions.jsonl` + `caption_policy.json` deterministically from coverage-cell metadata; no VLM) | M3 | S | 🟢 |
+| P2-3 | Template captioning — generation LANDED IN M2 (stage-time `captions.jsonl` + `caption_policy.json` + hashes); M3 = the **caption-edit override layer** (review/edit UI + durable per-ref overrides + hash honesty; no VLM) | M3 | S (mostly FE) | 🟢 |
 | P2-4 | Proxy readiness meter (coverage + perceptual-hash dupes + face-embedding centroid; **no-anchor fallback**) | M4 | M | 🟡 |
-| P2-5 | Train options + **`sd35` base** + **PEFT backend** (train-from-base / seed-from-parent; second base model; diffusers-PEFT advanced path) | M5 | L | 🟡 two trainers, two bases |
+| P2-5 | Train options + **`sd35` base** + **PEFT backend** (train-from-base / seed-from-parent; second base model; diffusers-PEFT advanced path). **Opens with an sd35-trains-on-ROCm SPIKE front-gate** (added 2026-07-12) + PEFT deps get their own overlay (R103) | M5 | L | 🔴 gate, then 🟡 conventional |
 | P2-6 | Promote + manual cleanup + LoRA management (promote into version; one-click temp cleanup; LoRA list/attach) | M6 | M | 🟢 |
 | P2-7 | Acceptance: P1 char → captioned → readiness ✓ → staged → queued → trained → promoted | M7 | S | 🟢 |
 | P2-9 | **Training VRAM-fit presets** — rank/resolution/batch/grad-accum/precision combos that *fit 16 GB*, pinned **per base model** (`zimage`, `sd35`) | M5 | M | 🟡 *folded from gap* |

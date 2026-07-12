@@ -82,7 +82,7 @@ invoked); GPU batch smoke verified.
 > 1e-4, and Loom's Z-Image worker loads the result at inference with recorded adapter provenance.
 > **M2 backend slice complete:** staged trainer records (`jobs/staged.json`, R118 — auto-generate,
 > never auto-queue) + the `zimage_trainer` resumable queue pipeline + deterministic
-> captions/policy/context written at stage time (Train-panel UI + promote-on-success still owed).
+> captions/policy/context written at stage time (promote-on-success lands in M6).
 > **M2.5 complete:** `flux.2-dev` re-routed to the Comfy-Org **quantized** split files (t2i/i2i AND
 > batch ref sweeps); **both gated heavyweight repos eliminated** (~51 GB public footprint instead).
 > **M2.6 built:** optional Flux2-Turbo LoRA for low-step dev sweeps (on-rig sign-off owed).
@@ -92,7 +92,19 @@ invoked); GPU batch smoke verified.
 > `MIOPEN_FIND_MODE=2` at startup (Windows-ROCm conv/VAE fix), zimage-base defaulted to 768²
 > (the 1024² denoise floor is hardware), Krea2 Turbo vendored as a fourth t2i generator.
 > **M2.8 (2026-07-04):** MVP-close docs/code consistency + robustness review — findings in
-> [`kb-loom-p2.md`](.docs/kb-loom-p2.md) §12 "M2.8". Next: **M3 template captioning** (review/edit UI).
+> [`kb-loom-p2.md`](.docs/kb-loom-p2.md) §12 "M2.8".
+> **M2.9 (Phase A close-out):** the **`D · Train` panel** (`TrainPanel.tsx` — stage → staged list →
+> explicit ▶ Add to queue, R118 surfaced; advanced rank/alpha/lr/resolution row) + the Turbo-LoRA
+> **412 weight gate** + live trainer progress (`step N/M · loss · ETA` off ai-toolkit's tqdm) +
+> P2-10 resume smoke **de-facto exercised on the rig 2026-07-12** (checkpoint discovered, resumed
+> mid-count) — formal completion waits on rig stability (sustained-training shutdowns; see spec
+> §12 "M2.9").
+> **M2.10:** expansion style fidelity — on flux2 Stage-B **the reference owns the style** (L1 text
+> dropped, ref-role directives, dev guidance → 3.0) + the on-demand **StyleLock 🎨** i2i postproc
+> preset. **M2.11:** expansion **cell picker** (`▦ cells` — fire a subset of a pose recipe,
+> byte-identical cells) + a **generated pose-icon set** (L1 · 🕴 Poses tab, durable `bible/poses/`).
+> **M0e Part D:** model-free **`Resize ⤢` (Lanczos)** postproc preset (downscale/exact = resample;
+> creative enlarge = i2i / `Upscale ✨`). Next: **M3 — caption review/edit (the override layer)**.
 > Spec:
 > [`kb-loom-p1.md`](.docs/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](.docs/kb-storyboard01.md) §10.0, journal:

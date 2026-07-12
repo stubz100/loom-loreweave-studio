@@ -2093,3 +2093,45 @@ source-contract: `_execute` honors `collect_note`); `tsc`+`vite` untouched (back
 ⚠ Applies on the NEXT orchestrator start — the fix was written while `job_40b04cde` was mid-run
 (~44%), and a restart would reap it (resumable from the last save_every=50 checkpoint); guidance
 = let it finish, then restart.
+
+## Phase A → B pivot: full-state review + docs pass + hardware blocker (2026-07-12 18:19–18:45)
+
+**Full-state review (agent, this session):** verified at HEAD `505e8d2` — **381 backend tests
+green** (RTK run), **tsc + vite build clean**, all 34 vendor/md5-drift-guard tests green, worktree
+clean + synced. Rig-state inspection of `loom/stubz001` found the author's **first real trainer
+runs (2026-07-12)**: `job_0675b7a8` failed (overlay, fixed same day), `job_40b04cde` canceled on
+restart (~step 222), **`job_62629914` stranded `running`** (app closed ~17:38 mid-run at ~step
+129/500, healthy 1.4 s/it — no VRAM paging this segment). Its log: `[train-preflight]` +
+`[train-resume]` fired, **step-100 checkpoint saved**, and the step-vs-elapsed arithmetic
+(129/500 at 1:50) proves the segment **resumed mid-count (~50), not from 0** — the P2-10 resume
+machinery has de-facto operated on the rig. On next launch it recovers + resumes from ckpt 100.
+
+⚠ **HARDWARE BLOCKER (author, 2026-07-12): sustained training load hard-shuts-down the system.**
+Suspected summer thermals or GPU power transients (earlier full-load inference was bursty by
+comparison — training holds ~100 % for hours, a different duty cycle). Consequence: **M2.9b's
+formal completion (a run finishing after a resume) is blocked until the rig is stable**; it stays
+on the ledger, does NOT gate Phase B (author call, same day: proceed to the remaining P2 work).
+Suggested diagnostics before the next attempt (author-owned): HWiNFO log of GPU hotspot/VRAM temp
++ 12 V rail during a run; cap the GPU power limit (−10…−15 %) in AMD software; verify PSU headroom.
+
+**Docs pass — the 5 review adjustments (author's go), spec + README (this commit):**
+1. **M3 re-scoped** (spec §12 Phase B entry 4 + §6 "Editable" bullet + WBS P2-3): deterministic
+   caption GENERATION already landed in M2 at stage time — M3 = the **caption-edit override
+   layer**: review/edit UI, durable per-ref overrides on the version (survive re-staging),
+   staging emits edited text (`origin: template|edited` per row), `captions_hash` hashes the
+   FINAL text (policy hash still identifies the template), reset-to-template.
+2. **M5 front-gate added** (spec §12 entry 6 + WBS P2-5 → 🔴 gate): an M1-style **sd35-trains-
+   on-ROCm SPIKE before** preset/knob/UI work (same class of unknown P2-0 was); if no-go,
+   diffusers-PEFT becomes sd35's primary path. PEFT deps get their own overlay (R103), never the
+   shared venv.
+3. **M2.9d ledger burn-down** (spec §12 "M2.9" d): STAMPED with recorded evidence — M2.5 dev
+   smoke (live probe sweep + Clean-on-rig), M2.6 turbo (accepted operating point + better-images
+   report), M2.7 flat-per-cell (probe), M2.11 icon-gen (author's on-rig batch runs). Kept owed:
+   pause→resume-keeps-tiles, Cast streaming, subset sweep, visual sign-offs (M0d/M0e/styles/
+   TrainPanel/Stage-D), P1 A–H, M2.9b formal completion (hardware). M2.9b section re-statused
+   🟡 PREPPED → 🟠 DE-FACTO EXERCISED / blocked-on-hardware.
+4. **README status block** brought current: stale "Train-panel UI owed" line fixed; M2.9/M2.10/
+   M2.11/M0e-Part-D added; "Next: M3 — caption review/edit (the override layer)".
+5. **Spec §12 Phase A list reordered** 3e→3f→3g→3h (was 3e→3g→3h→3f; text unchanged).
+
+⏭ **Phase B opens: M3 (caption-edit override layer) next.**

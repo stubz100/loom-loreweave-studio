@@ -1182,6 +1182,10 @@ class JobRunner:
         # hook announce each finished image as it lands, so a long multi cast streams
         # tiles into the grid instead of appearing all-at-once at the end.
         collect_fn = getattr(adapter, "collect_output", None)
+        # Live per-line note when the adapter offers it (`collect_note(line) -> str|None`)
+        # — the trainer's step counter (user 2026-07-12: an hour-long train showed only a
+        # frozen % between coarse markers; the note carries "step N/M · loss · ETA").
+        note_fn = getattr(adapter, "collect_note", None)
         out_root = ws.out_dir.resolve()
         last_tail = 0.0
         try:
@@ -1192,6 +1196,7 @@ class JobRunner:
                     if log_fp is not None:
                         log_fp.write(line + "\n")
                     pr = progress_fn(line)
+                    nt = note_fn(line) if note_fn is not None else None
                     partial: str | None = None
                     if collect_fn is not None:
                         raw = collect_fn(line)
@@ -1204,13 +1209,16 @@ class JobRunner:
                     # coarse stage markers — a multi cast used to show a frozen tail for
                     # minutes (review 2026-06-10). In-memory only; no disk write here.
                     now = time.time()
-                    if pr is not None or partial is not None or now - last_tail >= 0.5:
+                    if pr is not None or partial is not None or nt is not None \
+                            or now - last_tail >= 0.5:
                         last_tail = now
                         with self._lock:
                             j = self.jobs.get(job_id)
                             if j:
                                 if pr is not None:
                                     j["progress"] = pr
+                                if nt is not None:
+                                    j["note"] = nt
                                 if partial is not None:
                                     prev = j.get("partial_outputs") or []
                                     if partial not in prev:

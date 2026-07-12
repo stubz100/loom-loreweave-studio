@@ -238,3 +238,37 @@ def test_stage_defaults_the_runtime_overlay_from_config(client, monkeypatch, tmp
     explicit = client.post(f"/assets/{asset['id']}/lora/zimage/stage",
                            json={"runtime_overlay": "X:/explicit-overlay"}).json()
     assert explicit["queue_job"]["params"]["runtime_overlay"] == "X:/explicit-overlay"
+
+def test_trainer_progress_and_note_parse_the_real_tqdm_line():
+    """User 2026-07-12: a live train sat at 8% for an hour — the % only tracked the
+    wrapper's coarse markers, while ai-toolkit's tqdm line (the one that actually streams,
+    every ~15 s) matched no pattern. `progress` must read it, and the new `collect_note`
+    hook must turn it into a live step counter for the Train panel."""
+    from orchestrator.adapters import zimage_trainer as zt
+    real = ("loom_char02_v1_base_zimage:  44%|████▍     | 222/500 "
+            "[54:28<1:08:12, 14.72s/it, lr: 1.0e-04 loss: 3.703e-01]")
+    assert zt.progress(real) == pytest.approx(222 / 500)
+    assert zt.collect_note(real) == "step 222/500 · loss 0.370 · ~1:08:12 left"
+    # tqdm's warm-up shape (no rate estimate yet) → counter without an ETA
+    warm = "loom_x:   0%|          | 1/500 [00:14<?, ?it/s]"
+    assert zt.progress(warm) == 0.1                      # the coarse floor still applies
+    assert zt.collect_note(warm) == "step 1/500"
+    # the wrapper's own markers + explicit step lines keep working; noise stays silent
+    assert zt.progress("[train-preflight] config=x") == 0.05
+    assert zt.progress("[train-resume] no prior checkpoint") == 0.08
+    assert zt.progress("resuming at step 50/60") == pytest.approx(50 / 60)
+    assert zt.progress("[train-done] artifact=x") == 1.0
+    for quiet in (" - 14.5079s avg - train_loop, num = 10", "Timer 'x Timer':", ""):
+        assert zt.progress(quiet) is None
+        assert zt.collect_note(quiet) is None
+
+
+def test_runner_streams_collect_note_into_the_job(monkeypatch, tmp_path):
+    """The cold-path stream loop must honor an adapter's `collect_note` hook (source
+    contract, the NaN-guard test pattern): the note lands on the job row the Train
+    panel polls."""
+    import inspect
+    from orchestrator import runner as runner_mod
+    src = inspect.getsource(runner_mod.JobRunner._execute)
+    assert 'getattr(adapter, "collect_note", None)' in src
+    assert 'j["note"] = nt' in src

@@ -73,7 +73,13 @@ def build_argv(spec: JobSpec, python_exe: str, script: Path) -> list[str]:
 _STEP_PATTERNS = (
     re.compile(r"\bstep\s+(\d+)\s*/\s*(\d+)\b", re.I),
     re.compile(r"\bsteps?\s*[:=]\s*(\d+)\s*/\s*(\d+)\b", re.I),
+    # ai-toolkit's tqdm step line — the one that ACTUALLY streams during training
+    # (user 2026-07-12: progress sat at the 8% resume-marker for an hour while the log
+    # showed "…: 44%|████▍ | 222/500 [54:28<1:08:12, 14.72s/it, lr: … loss: …]"):
+    re.compile(r"\b(\d+)\s*/\s*(\d+)\s*\["),
 )
+_TQDM_ETA = re.compile(r"<\s*([\d:]+),")            # "[54:28<1:08:12," → remaining (no '?')
+_TQDM_LOSS = re.compile(r"loss:\s*([0-9.eE+-]+)")
 
 
 def progress(line: str) -> float | None:
@@ -91,6 +97,27 @@ def progress(line: str) -> float | None:
     if "[train-done]" in s:
         return 1.0
     return None
+
+
+def collect_note(line: str) -> str | None:
+    """Live step counter for the Train panel (runner `collect_note` hook, user 2026-07-12:
+    "at least a step counter" — a % alone reads frozen on an hour-long train). Parses the
+    tqdm line into `step 222/500 · loss 0.367 · ~1:09:57 left`; loss/ETA are best-effort
+    (tqdm prints `<?,` before its first rate estimate)."""
+    m = _STEP_PATTERNS[-1].search(line)
+    if not m:
+        return None
+    note = f"step {m.group(1)}/{m.group(2)}"
+    lo = _TQDM_LOSS.search(line)
+    if lo:
+        try:
+            note += f" · loss {float(lo.group(1)):.3f}"
+        except ValueError:
+            pass
+    eta = _TQDM_ETA.search(line)
+    if eta:
+        note += f" · ~{eta.group(1)} left"
+    return note
 
 
 def parse_result(returncode: int, stdout: str, _stderr: str, output_dir: Path) -> CompletionRecord:

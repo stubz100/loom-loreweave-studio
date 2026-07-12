@@ -2067,3 +2067,29 @@ batch size, save_every, EMA, caption dropout, sample prompts. M5 owns the per-mo
 system that makes the full knob matrix coherent.
 
 Backend untouched — **379 tests green**; `tsc` + `vite build` clean.
+
+## Trainer live progress: real % + step-counter note (2026-07-12 13:40–14:05, ✅ PUSHED `<hash-tbd>`)
+
+**User:** "some sort of feedback on how the job is progressing… at least a step counter —
+`job_40b04cde` is at 8% for about an hour now." **Diagnosis (live log):** the per-job log DOES
+stream ai-toolkit's tqdm line every step (`loom_char02_…:  44%|████▍ | 222/500 [54:28<1:08:12,
+14.72s/it, lr: … loss: …]`) — but `zimage_trainer.progress` only matched `step N/M`-shaped text
+and the wrapper's coarse markers, so the % froze at the 8% `[train-resume]` marker while the
+run was really at 44%.
+
+- **`zimage_trainer`:** `_STEP_PATTERNS` += the tqdm shape (`\b(\d+)\s*/\s*(\d+)\s*\[`) → the %
+  now tracks every ~15 s step line; new **`collect_note(line)`** parses the same line into
+  **`step 222/500 · loss 0.370 · ~1:08:12 left`** (loss/ETA best-effort — tqdm prints `<?,`
+  before its first rate estimate).
+- **Runner (cold path `_execute`):** new optional adapter hook **`collect_note`**, mirroring
+  `collect_output` — a non-None note lands on `job["note"]` inside the same throttled locked
+  update. Warm-serve loop untouched (trainers never warm-serve).
+- **FE: zero change** — TrainPanel + the queue panel already render `note`, the Inspector the
+  log tail; they now show a live step counter.
+
+Tests **+2 → 381 green** (real tqdm line → progress 0.444 + exact note · warm-up `<?,` line →
+counter w/o ETA · markers/explicit-step lines unchanged · timer/noise lines stay silent ·
+source-contract: `_execute` honors `collect_note`); `tsc`+`vite` untouched (backend-only).
+⚠ Applies on the NEXT orchestrator start — the fix was written while `job_40b04cde` was mid-run
+(~44%), and a restart would reap it (resumable from the last save_every=50 checkpoint); guidance
+= let it finish, then restart.

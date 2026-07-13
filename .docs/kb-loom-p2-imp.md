@@ -2296,4 +2296,4 @@ the parent's weights; (3) the **PEFT backend build** itself (deliberately NOT bu
 blind — it needs GPU verification loops and the spike decides its role). Also owed:
 sd35 inference-side LoRA loading flags exist (`--lora-*` on the sd35 worker) — verify
 the trained artifact loads (pairs with M7's verify step).
-⏭ **M6 — promote + cleanup + LoRA management.**
+**✅ PUSHED `4e8fc30`.** ⏭ **M6 — promote + cleanup + LoRA management.**

@@ -567,6 +567,17 @@ export interface PostprocStep {
 /** M0c: an ordered postprocess stack anchored to a base image (out/-relative). */
 export interface PostprocStack { base: string; steps: PostprocStep[]; }
 
+export interface LoraInfo {
+  file: string;
+  sha256: string;
+  manifest: string;                 // version-relative path to lora/lora.manifest.json
+  base_family: string;
+  trigger_token?: string | null;
+  lora_weight_default?: number;
+  promoted_at: string;
+  job_id?: string;
+}
+
 export interface ProfileVersion {
   id: string;
   name: string;
@@ -578,6 +589,9 @@ export interface ProfileVersion {
   casting: CastingCandidate[];
   /** P1-12: out/-relative output names rejected during Stage-C culling (persistent). */
   rejected?: string[];
+  /** P2/M6: the promoted character LoRA (null/absent = untrained — still valid, P1). */
+  lora?: LoraInfo | null;
+  trigger_token?: string;
 }
 
 /** P1-12: mark/unmark a Stage-B candidate output rejected (persistent cull-from-view). */
@@ -1355,6 +1369,43 @@ export async function deleteStagedTraining(stagedId: string):
     headers: { "X-Loom-Token": orchestratorToken() },
   });
   if (!res.ok) throw new Error(`training delete ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+// --- P2/M6: promote (Stage E) + cleanup (R13) + preview (P2-11) ----------------------
+
+/** Copy a DONE trainer run's adapter into the version's lora/ + write the manifest. */
+export async function promoteTrainedLora(jobId: string):
+    Promise<{ promoted: boolean; version_id: string; artifact: string; sha256: string }> {
+  const res = await fetch(`${orchestratorUrl()}/training/jobs/${jobId}/promote`, {
+    method: "POST",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`promote ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+/** R13 one-click temp cleanup of a terminal run's _temp/lora_* dir (idempotent). */
+export async function cleanupTrainingRun(jobId: string):
+    Promise<{ cleaned: boolean; run_dir: string }> {
+  const res = await fetch(`${orchestratorUrl()}/training/jobs/${jobId}/cleanup`, {
+    method: "POST",
+    headers: { "X-Loom-Token": orchestratorToken() },
+  });
+  if (!res.ok) throw new Error(`cleanup ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+/** P2-11: queue one sample gen with the fresh, un-promoted adapter from the run dir. */
+export async function previewTrainedLora(jobId: string, body: {
+  prompt?: string; seed?: number;
+} = {}): Promise<{ job_id: string; trainer_job_id: string; prompt: string }> {
+  const res = await fetch(`${orchestratorUrl()}/training/jobs/${jobId}/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`preview ${res.status}: ${await res.text()}`);
   return await res.json();
 }
 

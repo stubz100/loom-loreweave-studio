@@ -1578,7 +1578,7 @@ export default function App() {
                   : [{ id: activeAsset.active_version, name: "v1_base", finalized: false } as ProfileVersion]
                 ).map((v) => (
                   <option key={v.id} value={v.id}>
-                    {v.name}{v.finalized ? " 🔒" : ""}
+                    {v.name}{v.lora ? " ✨" : ""}{v.finalized ? " 🔒" : ""}
                   </option>
                 ))}
               </select>
@@ -2202,8 +2202,10 @@ export default function App() {
               versionName={versionList.find((v) => v.id === activeAsset.active_version)?.name}
               versionLocked={activeVersionLocked}
               refCount={refSet.length}
+              lora={versionList.find((v) => v.id === activeAsset.active_version)?.lora ?? null}
               trainJobs={trainJobs}
               onCancelJob={(id) => void onCancel(id)}
+              onPromoted={() => void refreshCasting(activeAsset)}
               onError={setError}
             />
           )}

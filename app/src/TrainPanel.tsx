@@ -11,8 +11,10 @@ import { useCallback, useEffect, useState } from "react";
 import {
   CaptionsResponse,
   Job,
+  LoraInfo,
   Readiness,
   StagedTraining,
+  cleanupTrainingRun,
   clearCaptionOverride,
   deleteStagedTraining,
   getCaptions,
@@ -20,6 +22,8 @@ import {
   getReadiness,
   getStagedTraining,
   persistReadiness,
+  previewTrainedLora,
+  promoteTrainedLora,
   queueReadinessEmbed,
   queueStagedTraining,
   setCaptionOverride,
@@ -33,14 +37,16 @@ interface TrainPanelProps {
   versionName?: string;
   versionLocked: boolean;
   refCount: number;                     // curated refs (Stage C) — the training corpus
+  lora: LoraInfo | null;                // M6: the version's promoted LoRA (null = untrained)
   trainJobs: Job[];                     // zimage_trainer jobs for THIS version
   onCancelJob: (jobId: string) => void;
+  onPromoted: () => void;               // M6: reload the asset detail (version.lora flipped)
   onError: (msg: string | null) => void;
 }
 
 export default function TrainPanel({
-  assetId, assetName, versionId, versionName, versionLocked, refCount,
-  trainJobs, onCancelJob, onError,
+  assetId, assetName, versionId, versionName, versionLocked, refCount, lora,
+  trainJobs, onCancelJob, onPromoted, onError,
 }: TrainPanelProps) {
   const [staged, setStaged] = useState<StagedTraining[]>([]);
   const [trigger, setTrigger] = useState("");
@@ -167,6 +173,28 @@ export default function TrainPanel({
     try {
       await setCaptionOverride(assetId, refId, text, versionId);
       await loadCaptions();
+    } catch (e) { onError(String(e)); } finally { setBusy(null); }
+  };
+  // M6 actions on a DONE trainer run: preview (P2-11) / promote (Stage E) / cleanup (R13).
+  const onPreview = async (jobId: string) => {
+    setBusy(`m6:${jobId}`); onError(null);
+    try {
+      // the sample streams into the version grid via App's normal poll
+      await previewTrainedLora(jobId, {});
+    } catch (e) { onError(String(e)); } finally { setBusy(null); }
+  };
+  const onPromote = async (jobId: string) => {
+    setBusy(`m6:${jobId}`); onError(null);
+    try {
+      await promoteTrainedLora(jobId);
+      onPromoted();          // version.lora flipped — reload the asset detail
+    } catch (e) { onError(String(e)); } finally { setBusy(null); }
+  };
+  const onCleanup = async (jobId: string) => {
+    if (!window.confirm("Delete this run's _temp/ dir (dataset copy, checkpoints, config)? Promote first if you want to keep the adapter.")) return;
+    setBusy(`m6:${jobId}`); onError(null);
+    try {
+      await cleanupTrainingRun(jobId);
     } catch (e) { onError(String(e)); } finally { setBusy(null); }
   };
   const onScanOnModel = async () => {
@@ -482,13 +510,44 @@ export default function TrainPanel({
                   ✕ cancel
                 </button>
               )}
+              {j.status === "done" && (
+                <>
+                  <button className="ghost" onClick={() => void onPreview(j.id)}
+                          disabled={busy === `m6:${j.id}`}
+                          title="P2-11: one sample generation with the FRESH un-promoted adapter (from the run dir) — eyeball the character before promoting; the tile streams into the grid">
+                    🖼 preview
+                  </button>
+                  <button className="ghost" onClick={() => void onPromote(j.id)}
+                          disabled={busy === `m6:${j.id}` || versionLocked}
+                          title="Stage E: copy the adapter into versions/<v>/lora/ + write lora.manifest.json (dataset/caption/context hashes) + set version.lora — temp stays until 🧹">
+                    ⬆ promote
+                  </button>
+                  <button className="ghost" onClick={() => void onCleanup(j.id)}
+                          disabled={busy === `m6:${j.id}`}
+                          title="R13 manual cleanup: delete this run's _temp/ dir (idempotent; promote first to keep the adapter)">
+                    🧹
+                  </button>
+                </>
+              )}
+              {(j.status === "failed" || j.status === "canceled") && (
+                <button className="ghost" onClick={() => void onCleanup(j.id)}
+                        disabled={busy === `m6:${j.id}`}
+                        title="R13 manual cleanup: delete this run's _temp/ dir">
+                  🧹
+                </button>
+              )}
             </div>
           ))}
-          <p className="muted">
-            A finished run leaves its adapter in the run dir; <b>promote into the version is M6</b>
-            {" "}(not wired yet) — the artifact path is on the job result.
-          </p>
         </div>
+      )}
+
+      {lora && (
+        <p className="muted">
+          ✨ promoted LoRA: <b>{lora.file}</b> · {lora.base_family}
+          {lora.trigger_token ? ` · trigger ${lora.trigger_token}` : ""}
+          {" "}· {new Date(lora.promoted_at).toLocaleString()} · sha {lora.sha256.slice(0, 8).toLowerCase()}
+          {" "}(full record: {lora.manifest})
+        </p>
       )}
     </div>
   );

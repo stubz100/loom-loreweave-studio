@@ -327,6 +327,14 @@ class ReadinessPersistRequest(BaseModel):
     job_id: str | None = None
 
 
+class LoraPreviewRequest(BaseModel):
+    """P2/M6 (P2-11) — sample-gen with the freshly trained, un-promoted adapter."""
+
+    model_config = ConfigDict(extra="forbid")
+    prompt: str | None = Field(default=None, max_length=2000)
+    seed: int | None = Field(default=None, ge=0)
+
+
 class CaptionOverrideRequest(BaseModel):
     """P2/M3 — durably override one curated ref's caption (the caption-edit layer).
 
@@ -837,6 +845,9 @@ def create_app() -> FastAPI:
                                "POST /assets/{id}/lora/stage",
                                "POST /training/staged/{id}/queue",
                                "DELETE /training/staged/{id}",
+                               "POST /training/jobs/{id}/promote",
+                               "POST /training/jobs/{id}/cleanup",
+                               "POST /training/jobs/{id}/preview",
                                "PUT /assets/{id}/captions/{ref_id}",
                                "DELETE /assets/{id}/captions/{ref_id}",
                                "DELETE /assets/{id}/captions",
@@ -1670,6 +1681,68 @@ def create_app() -> FastAPI:
             return training.delete_staged(_require_ws(), staged_id)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(404, str(e))
+
+    @app.post("/training/jobs/{job_id}/promote")
+    def promote_trained_lora(job_id: str, _auth: None = Depends(require_token)) -> dict:
+        """P2/M6 (Stage E) — copy a DONE trainer run's adapter into the version's `lora/`
+        + write `lora.manifest.json` (P2-13 graph-ready facts) + set `version.lora`.
+        Temp stays for the explicit cleanup click (R13). Token-gated."""
+        job = RUNNER.get(job_id)
+        if job is None:
+            raise HTTPException(404, f"no such job {job_id!r}")
+        if job.get("status") != "done":
+            raise HTTPException(409, "only a DONE trainer run can be promoted")
+        try:
+            res = training.promote_lora(_require_ws(), job)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        LOG.info("LoRA promoted: job=%s version=%s sha=%s",
+                 job_id, res["version_id"], res["sha256"][:12])
+        return res
+
+    @app.post("/training/jobs/{job_id}/cleanup")
+    def cleanup_training_run(job_id: str, _auth: None = Depends(require_token)) -> dict:
+        """P2/M6 — R13 one-click temp cleanup of a TERMINAL run's `_temp/lora_*` dir
+        (idempotent; guarded to the project temp tree). Token-gated."""
+        job = RUNNER.get(job_id)
+        if job is None:
+            raise HTTPException(404, f"no such job {job_id!r}")
+        if job.get("status") not in ("done", "failed", "canceled"):
+            raise HTTPException(409, "the run is still queued/running — cancel it first")
+        try:
+            res = training.cleanup_run(_require_ws(), job)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        LOG.info("training temp cleaned: job=%s dir=%s (existed=%s)",
+                 job_id, res["run_dir"], res["cleaned"])
+        return res
+
+    @app.post("/training/jobs/{job_id}/preview")
+    def preview_trained_lora(job_id: str, req: LoraPreviewRequest,
+                             _auth: None = Depends(require_token)) -> dict:
+        """P2/M6 (P2-11) — queue ONE sample generation with the fresh, still-un-promoted
+        adapter loaded from the run dir, so the author eyeballs the character BEFORE
+        promoting. The tile streams into the version's grid. Token-gated."""
+        job = RUNNER.get(job_id)
+        if job is None:
+            raise HTTPException(404, f"no such job {job_id!r}")
+        if job.get("status") != "done":
+            raise HTTPException(409, "only a DONE trainer run can be previewed")
+        try:
+            sub = training.preview_request(_require_ws(), job,
+                                           prompt=req.prompt, seed=req.seed)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        preview_id = RUNNER.submit(
+            pipeline=sub["pipeline"], mode=sub["mode"], params=sub["params"],
+            batch_id="prv_" + job_id.removeprefix("job_"),
+            index=0, batch_size=1,
+            requester_id=sub["requester_id"],
+            profile_version_id=sub["profile_version_id"], stage=sub["stage"],
+        )
+        LOG.info("LoRA preview queued: %s (trainer job %s)", preview_id, job_id)
+        return {"job_id": preview_id, "trainer_job_id": job_id,
+                "prompt": sub["params"]["prompt"]}
 
     @app.get("/assets/{asset_id}/readiness")
     def get_readiness(asset_id: str, version_id: str | None = None) -> dict:

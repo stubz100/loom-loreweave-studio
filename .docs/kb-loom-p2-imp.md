@@ -2297,3 +2297,45 @@ blind — it needs GPU verification loops and the spike decides its role). Also 
 sd35 inference-side LoRA loading flags exist (`--lora-*` on the sd35 worker) — verify
 the trained artifact loads (pairs with M7's verify step).
 **✅ PUSHED `4e8fc30`.** ⏭ **M6 — promote + cleanup + LoRA management.**
+## M6 — promote (Stage E) + manual cleanup (R13) + LoRA management (started 2026-07-13 17:00, finished 17:20) ✅
+
+**Backend (`training.py` M6 block + 3 endpoints):**
+- **Promote** — `POST /training/jobs/{id}/promote` (DONE trainer runs only, 409 otherwise):
+  COPIES the adapter (result outputs → fallback `run_dir` search for `artifact_name`) into
+  `versions/<vN>/lora/` + writes **`lora.manifest.json`** (`loom.p2.lora_manifest.v1`) with
+  the **P2-13 graph-ready facts** — `caption_policy_hash`/`captions_hash`/`context_digest`
+  now ride the JOB PARAMS from stage time (M5+ staging injects them; the version-dir
+  `training_context.json` is only the fallback for pre-M5 jobs — a later re-stage can no
+  longer misattribute an older run's manifest), plus `dataset_hash` (sha of the run's
+  `dataset_manifest.json`), settings/base_model/trigger/train_init/`seed_artifact`,
+  `trained_by_job`, trainer-manifest status + duration, and **`replaces`** (the previous
+  promoted sha — re-promoting an unfinalized version overwrites honestly). Sets
+  **`version.lora`** {file, sha256, manifest, base_family, trigger_token,
+  lora_weight_default, promoted_at, job_id} (schema-declared: null/absent = untrained,
+  still a valid P1 version). Finalized version → 400 (retrain ⇒ new version, R58). Temp
+  is NOT touched (R13: promote-then-MANUAL-cleanup).
+- **Cleanup** — `POST /training/jobs/{id}/cleanup` (terminal runs only, 409 while
+  queued/running): rmtree of the run's `_temp/lora_*` dir, **idempotent**, and
+  **hard-guarded to the project temp tree** (a foreign `run_dir` → 400, nothing deleted).
+- **Preview (P2-11)** — `POST /training/jobs/{id}/preview`: queues ONE zimage t2i with
+  the FRESH un-promoted adapter straight from the run dir (`lora_path`/`lora_weight` —
+  the M1 loader), default prompt = `<trigger>, front view, portrait, neutral expression`
+  (the train.yaml sample), prompt/seed overridable; scoped to the version's grid
+  (stage D). sd35 preview → 400 until the spike lands the sd35 inference LoRA flags.
+- `token_required` += the three routes.
+
+**FE:** trainer-job rows (TrainPanel) gain **🖼 preview / ⬆ promote / 🧹 cleanup** on done
+runs (🧹 also on failed/canceled); the stale "promote is M6 (not wired yet)" footer is
+replaced by a **✨ promoted-LoRA line** (file · family · trigger · date · sha8 · manifest
+path); **the version selector now shows LoRA presence** (`name ✨🔒`) — `ProfileVersion.lora`
+typed, App passes `lora` + `onPromoted` (asset-detail reload) into the panel. Client fns
+`promoteTrainedLora`/`cleanupTrainingRun`/`previewTrainedLora`.
+
+**Tests +5 → 405 green** (`test_m6_promote.py`, hand-finished trainer jobs in the real
+staged→queued layout: promote copies bytes + manifest carries THIS run's stage-time
+hashes + dataset_hash + duration + version.lora flips + asset detail serves it + temp
+survives (R13) · re-promote overwrites + `replaces` records the old sha · refusals (404
+unknown / 409 not-done / 400 non-trainer / 400 artifact-vanished / 400 finalized) ·
+cleanup idempotent + 409 while queued + foreign-path 400 leaves the tree intact ·
+preview loads the run-dir artifact w/ trigger prompt + seed/prompt overrides + 409
+not-done); `tsc` + `vite build` clean. ⏭ **M7 — acceptance.**

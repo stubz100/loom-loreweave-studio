@@ -2417,4 +2417,4 @@ rides the preview params from the env default · runner `_execute` source-contra
 author's visual stamps remain. Still rig-owed: the **M7 stamp** (🖼 preview → ⬆ promote
 eyeball — now unblocked by finding 1's fix; restart the app first so the new code
 runs), the **M5 sd35 spike** + **R68 seed check**. The trained char02 adapter is ready
-to promote.
+to promote. **✅ PUSHED `e86493e`.**

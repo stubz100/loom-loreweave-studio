@@ -96,9 +96,8 @@ invoked); GPU batch smoke verified.
 > **M2.9 (Phase A close-out):** the **`D · Train` panel** (`TrainPanel.tsx` — stage → staged list →
 > explicit ▶ Add to queue, R118 surfaced; advanced rank/alpha/lr/resolution row) + the Turbo-LoRA
 > **412 weight gate** + live trainer progress (`step N/M · loss · ETA` off ai-toolkit's tqdm) +
-> P2-10 resume smoke **de-facto exercised on the rig 2026-07-12** (checkpoint discovered, resumed
-> mid-count) — formal completion waits on rig stability (sustained-training shutdowns; see spec
-> §12 "M2.9").
+> P2-10 resume smoke **✅ STAMPED 2026-07-13**: `job_62629914` completed a full 500-step run
+> after mid-count checkpoint resume across multiple restarts (spec §12 "M2.9b").
 > **M2.10:** expansion style fidelity — on flux2 Stage-B **the reference owns the style** (L1 text
 > dropped, ref-role directives, dev guidance → 3.0) + the on-demand **StyleLock 🎨** i2i postproc
 > preset. **M2.11:** expansion **cell picker** (`▦ cells` — fire a subset of a pose recipe,

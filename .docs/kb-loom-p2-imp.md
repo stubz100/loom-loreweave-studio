@@ -2373,3 +2373,48 @@ shutdowns. **Procedure (author, when the rig is stable — mirrors the harness):
 Docs synced this close: spec §12 Phase B entries 4–8 carry build-status markers; README
 Phase B block current. P2 remains OPEN until the author's stamps land (M2.9b · M7 · the
 M5 gate) — everything buildable without the rig is now built. **✅ PUSHED `ec155ec`.**
+## ⭐ M2.9b STAMPED + two rig findings fixed (2026-07-13 ~21:00–21:45; rig run 17:52–18:04)
+
+**M2.9b / P2-10 — STAMPED (user-confirmed: "a full lora training job was completed").**
+`job_62629914` (char02, 500 steps) finished on the rig: trainer manifest
+`status: completed`, final segment **612.49 s** (runner: `done job_62629914 in 612.7s →
+loom_char02_v1_base_zimage.safetensors`), artifact real in the run dir. The job's
+lifetime exercised the WHOLE R88/R159 surface for real — crash-branch recovery
+("recovered (resumable)"), **mid-count checkpoint resume across multiple restarts**
+(incl. the 2026-07-12 hardware shutdowns), step-100 checkpoint save, live tqdm
+progress + step-counter note, exit 0. The 🔴 WBS row **P2-10 is done**; spec §12
+"M2.9" b + d and the README updated.
+
+**Rig finding 1 — 🖼 preview FAILED: `load_pipeline: PEFT backend is required for this
+method` (`job_af29227d`, 17 s in).** Root cause: diffusers refuses `load_lora_weights`
+without **PEFT — which lives ONLY in the isolated trainer overlay** (R103; the M2
+runtime contract even recorded `requires_peft_for_lora_inference: true` — the
+inference side was simply never wired to the overlay). **Fix:** `preview_request` puts
+`runtime_overlay` on the preview job (the trainer job's own overlay first, the
+`LOOM_TRAINER_OVERLAY` rig default second; explicitly-empty ⇒ no param) and the
+runner's cold spawn now **prepends a job's `runtime_overlay` to the worker's
+PYTHONPATH** — the same mechanism the trainer wrapper uses for its inner ai-toolkit
+process, now generic for any LoRA-loaded job (sd35 preview will ride it after the M5
+spike). The shared venv stays unmutated. **Retry = click 🖼 again on the done run.**
+
+**Rig finding 2 — "cleanup failed" was a FEEDBACK gap, not a failure.** The log + disk
+prove both dead runs' temp dirs WERE deleted on the first click
+(`job_0675b7a8` 18:03:29 `existed=True` → 18:04:09 repeat `existed=False` = the
+idempotent no-op; `job_40b04cde` 18:04:14 `existed=True`; `_temp/` now holds only the
+completed run) — but the UI changed nothing visible, so it read as failure. **Fix (FE):**
+per-row confirmation notes ("🧹 temp cleaned ✓" / "🧹 already clean"; preview reports
+"🖼 preview <id> queued → grid") + failed/canceled trainer rows gain **🗑 remove-row**
+(best-effort temp cleanup, then the existing terminal-job `DELETE /jobs/{id}` — record,
+log and trainer manifest gone; the row disappears on the next poll). Done rows keep
+🖼 ⬆ 🧹 only — a completed run is never row-deleted from here.
+
+**Tests +1 → 407 green** (`test_preview_rides_the_trainer_overlay_for_peft`: overlay
+rides the preview params from the env default · runner `_execute` source-contract
+(PYTHONPATH prepend) · explicitly-empty overlay keeps the param off the job);
+`tsc` + `vite build` clean.
+
+**P2 ledger after this session:** M2.9 **a ✅ · b ✅ (2026-07-13) · c ✅ · d** = only the
+author's visual stamps remain. Still rig-owed: the **M7 stamp** (🖼 preview → ⬆ promote
+eyeball — now unblocked by finding 1's fix; restart the app first so the new code
+runs), the **M5 sd35 spike** + **R68 seed check**. The trained char02 adapter is ready
+to promote.

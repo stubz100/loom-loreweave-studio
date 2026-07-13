@@ -16,6 +16,7 @@ import {
   StagedTraining,
   cleanupTrainingRun,
   clearCaptionOverride,
+  deleteJob,
   deleteStagedTraining,
   getCaptions,
   getJob,
@@ -72,6 +73,9 @@ export default function TrainPanel({
   const [readyOpen, setReadyOpen] = useState(false);
   const [ready, setReady] = useState<Readiness | null>(null);
   const [scanJob, setScanJob] = useState<string | null>(null);
+  // Rig feedback 2026-07-13: cleanup succeeded server-side but LOOKED like a failure —
+  // nothing visible changes. Per-row confirmation notes fix that.
+  const [rowNote, setRowNote] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -180,7 +184,8 @@ export default function TrainPanel({
     setBusy(`m6:${jobId}`); onError(null);
     try {
       // the sample streams into the version grid via App's normal poll
-      await previewTrainedLora(jobId, {});
+      const r = await previewTrainedLora(jobId, {});
+      setRowNote((n) => ({ ...n, [jobId]: `🖼 preview ${r.job_id} queued → grid` }));
     } catch (e) { onError(String(e)); } finally { setBusy(null); }
   };
   const onPromote = async (jobId: string) => {
@@ -194,7 +199,16 @@ export default function TrainPanel({
     if (!window.confirm("Delete this run's _temp/ dir (dataset copy, checkpoints, config)? Promote first if you want to keep the adapter.")) return;
     setBusy(`m6:${jobId}`); onError(null);
     try {
-      await cleanupTrainingRun(jobId);
+      const r = await cleanupTrainingRun(jobId);
+      setRowNote((n) => ({ ...n, [jobId]: r.cleaned ? "🧹 temp cleaned ✓" : "🧹 already clean" }));
+    } catch (e) { onError(String(e)); } finally { setBusy(null); }
+  };
+  const onRemoveRow = async (jobId: string) => {
+    if (!window.confirm("Remove this trainer job from the list? (Its _temp/ dir is cleaned first; the job record, log and trainer manifest are deleted.)")) return;
+    setBusy(`m6:${jobId}`); onError(null);
+    try {
+      try { await cleanupTrainingRun(jobId); } catch { /* temp may already be gone */ }
+      await deleteJob(jobId);   // the row disappears via App's normal poll
     } catch (e) { onError(String(e)); } finally { setBusy(null); }
   };
   const onScanOnModel = async () => {
@@ -502,6 +516,7 @@ export default function TrainPanel({
                   {j.status === "running" ? ` · ${Math.round((j.progress || 0) * 100)}%` : ""}
                   {j.note ? ` · ${j.note}` : ""}
                   {j.result?.error && j.status === "failed" ? ` · ${j.result.error}` : ""}
+                  {rowNote[j.id] ? ` · ${rowNote[j.id]}` : ""}
                 </span>
               </span>
               {(j.status === "queued" || j.status === "running") && (
@@ -530,11 +545,18 @@ export default function TrainPanel({
                 </>
               )}
               {(j.status === "failed" || j.status === "canceled") && (
-                <button className="ghost" onClick={() => void onCleanup(j.id)}
-                        disabled={busy === `m6:${j.id}`}
-                        title="R13 manual cleanup: delete this run's _temp/ dir">
-                  🧹
-                </button>
+                <>
+                  <button className="ghost" onClick={() => void onCleanup(j.id)}
+                          disabled={busy === `m6:${j.id}`}
+                          title="R13 manual cleanup: delete this run's _temp/ dir (the row stays)">
+                    🧹
+                  </button>
+                  <button className="ghost" onClick={() => void onRemoveRow(j.id)}
+                          disabled={busy === `m6:${j.id}`}
+                          title="remove this dead run entirely: temp cleaned + the job record/log/manifest deleted — the row disappears">
+                    🗑
+                  </button>
+                </>
               )}
             </div>
           ))}

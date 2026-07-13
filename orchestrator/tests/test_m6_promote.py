@@ -231,3 +231,29 @@ def test_preview_queues_a_sample_gen_with_the_fresh_adapter(client):
     s3 = client.post(f"/assets/{asset['id']}/lora/stage", json={}).json()
     j3 = client.post(f"/training/staged/{s3['id']}/queue").json()["job_id"]
     assert client.post(f"/training/jobs/{j3}/preview", json={}).status_code == 409
+
+
+def test_preview_rides_the_trainer_overlay_for_peft(client, monkeypatch):
+    """Rig 2026-07-13 (`job_af29227d`): the preview's zimage worker failed with
+    'PEFT backend is required for this method' — PEFT lives ONLY in the isolated
+    trainer overlay (R103), never the shared venv. The overlay must ride the preview
+    job's params (the job's own overlay first, rig default second) and the runner's
+    cold spawn must prepend it to the worker's PYTHONPATH (source contract)."""
+    import inspect
+    from orchestrator import runner as runner_mod
+    from orchestrator.runner import RUNNER
+
+    asset = _curated_asset(client)
+    monkeypatch.setenv("LOOM_TRAINER_OVERLAY", r"X:itk-overlay")
+    jid, _ = _finished_trainer_job(client, asset)
+    prev = client.post(f"/training/jobs/{jid}/preview", json={}).json()
+    assert RUNNER.get(prev["job_id"])["params"]["runtime_overlay"] == r"X:itk-overlay"
+
+    src = inspect.getsource(runner_mod.JobRunner._execute)
+    assert 'params.get("runtime_overlay")' in src and "PYTHONPATH" in src
+
+    # explicitly-empty overlay (no rig default) -> the param stays off the job
+    monkeypatch.setenv("LOOM_TRAINER_OVERLAY", "")
+    jid2, _ = _finished_trainer_job(client, asset)
+    bare = client.post(f"/training/jobs/{jid2}/preview", json={}).json()
+    assert "runtime_overlay" not in RUNNER.get(bare["job_id"])["params"]

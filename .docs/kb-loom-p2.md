@@ -1202,8 +1202,12 @@ off the normal `/jobs` poll, cancel like any job). Client fns `getStagedTraining
 `queueStagedTraining`/`deleteStagedTraining` + the `StagedTraining` type in `orchestrator.ts`.
 Promote-on-success stays **M6** (the panel says so). ⚠ Visual sign-off owed (M0e pattern).
 
-**b — P2-10 queued resume smoke (the 🔴 WBS row; execution moved here from M2). 🟠 DE-FACTO
-EXERCISED on the rig 2026-07-12; formal completion BLOCKED ON HARDWARE.** The author's first real
+**b — P2-10 queued resume smoke (the 🔴 WBS row; execution moved here from M2).
+✅ STAMPED 2026-07-13 — the full run COMPLETED on the rig (user-confirmed):** `job_62629914`
+finished with trainer manifest `status: completed` (final segment 612.49 s), artifact real;
+its lifetime exercised the whole R88/R159 surface — crash-branch recovery, mid-count
+checkpoint resume across MULTIPLE restarts (incl. the 2026-07-12 hardware shutdowns),
+step-100 checkpoint save, live progress. History of the exercise below. The author's first real
 training runs (char02, `loom/stubz001`) exercised the resume path for real: `job_62629914`'s log
 shows `[train-preflight]`/`[train-resume]` firing, a **step-100 checkpoint saved mid-run**, and
 step-vs-elapsed arithmetic (129/500 at 1:50 elapsed, 1.4 s/it) proving the segment **resumed
@@ -1258,7 +1262,8 @@ the rig has been in daily real use since 2026-07-04 and several checks happened 
   visual sign-offs** (all surfaces in daily use since build — implicit, but the stamp is the
   author's) · **Stage-D visual sign-off** · (carried from P1, separate: the formal A–H rig
   acceptance stamp).
-- 🚫 **M2.9b formal resume-completion** — blocked on hardware (see b above).
+- ✅ **M2.9b formal resume-completion — STAMPED 2026-07-13** (see b above: `job_62629914`
+  completed after multi-restart checkpoint resume).
 
 #### M2.10 — expansion style fidelity: the reference owns the style (route 1)
 

@@ -876,16 +876,24 @@ def preview_request(ws: Workspace, job: dict, *, prompt: str | None = None,
     artifact = _find_artifact(job)
     settings = params.get("settings") or {}
     trigger = params.get("trigger_token") or version.get("trigger_token") or ""
+    sub_params = {
+        "prompt": (prompt or f"{trigger}, front view, portrait, neutral expression").strip(),
+        "seed": 12345 if seed is None else int(seed),
+        "model_name": settings.get("model_name") or "zimage-base",
+        "lora_path": str(artifact),
+        "lora_weight": settings.get("lora_weight_default", 1.0),
+    }
+    # Rig finding 2026-07-13 (`job_af29227d`): diffusers refuses `load_lora_weights`
+    # without PEFT — which lives ONLY in the trainer overlay (R103). The overlay rides
+    # the preview job so the runner prepends it to the worker's PYTHONPATH; the trainer
+    # job's own overlay wins over the rig default (same rule as staging).
+    overlay = params.get("runtime_overlay") or CONFIG.trainer_overlay
+    if overlay:
+        sub_params["runtime_overlay"] = str(overlay)
     return {
         "pipeline": "zimage",
         "mode": "t2i",
-        "params": {
-            "prompt": (prompt or f"{trigger}, front view, portrait, neutral expression").strip(),
-            "seed": 12345 if seed is None else int(seed),
-            "model_name": settings.get("model_name") or "zimage-base",
-            "lora_path": str(artifact),
-            "lora_weight": settings.get("lora_weight_default", 1.0),
-        },
+        "params": sub_params,
         "requester_id": promo["asset_id"],
         "profile_version_id": version["id"],
         "stage": "D",

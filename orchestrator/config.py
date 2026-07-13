@@ -220,6 +220,15 @@ class Config:
         return _get("LOOM_TRAINER_OVERLAY") or None
 
     @property
+    def trainer_sd35_go(self) -> bool:
+        """`LOOM_TRAINER_SD35_GO` — the M5 front-gate stamp (spec §12 entry 6, added
+        2026-07-12): whether ai-toolkit trains an SD3.5 LoRA on RX 9070 XT / ROCm is
+        UNPROVEN (the same class of unknown P2-0 was for zimage). Staging an sd35 run
+        REFUSES until the rig spike passes and this is set to 1/true — the honest
+        software mirror of the front-gate, so nothing builds on an unproven trainer."""
+        return (_get("LOOM_TRAINER_SD35_GO", "") or "").strip().lower() in ("1", "true", "yes")
+
+    @property
     def active_phases_raw(self) -> str | None:
         """Raw `LOOM_ACTIVE_PHASES` (comma-separated phases the launch gate hard-requires),
         read through the **central loader** (real env > `.env.local` > `.env`) like every

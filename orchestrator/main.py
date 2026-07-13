@@ -301,6 +301,11 @@ class StageZImageLoraRequest(BaseModel):
     rank: int = Field(default=16, ge=1, le=256)
     alpha: int = Field(default=16, ge=1, le=256)
     learning_rate: float = Field(default=0.0001, gt=0, le=1.0)
+    # M5 train options: per-base-family preset (sd35 behind the ROCm spike gate),
+    # backend roster (PEFT declared, R115), R68 train-init toggle.
+    base_family: Literal["zimage", "sd35"] = "zimage"
+    backend: Literal["ai_toolkit", "peft"] = "ai_toolkit"
+    train_init: Literal["from_base", "seed_parent"] = "from_base"
 
 
 class ReadinessEmbedRequest(BaseModel):
@@ -829,6 +834,7 @@ def create_app() -> FastAPI:
                                "POST /assets/{id}/refs/reject",
                                "POST /assets/{id}/refs/cull", "POST /assets/{id}/save",
                                "POST /assets/{id}/lora/zimage/stage",
+                               "POST /assets/{id}/lora/stage",
                                "POST /training/staged/{id}/queue",
                                "DELETE /training/staged/{id}",
                                "PUT /assets/{id}/captions/{ref_id}",
@@ -1603,14 +1609,24 @@ def create_app() -> FastAPI:
         except ws_mod.WorkspaceError as e:
             raise HTTPException(400, str(e))
 
-    @app.post("/assets/{asset_id}/lora/zimage/stage")
-    def stage_zimage_lora(asset_id: str, req: StageZImageLoraRequest,
-                          _auth: None = Depends(require_token)) -> dict:
-        """P2/M2 — materialize a Z-Image LoRA trainer job as a staged record.
+    @app.get("/training/presets")
+    def get_training_presets() -> dict:
+        """P2/M5 — the per-base-family trainer presets (P2-9 VRAM-fit envelopes) + the
+        backend roster. sd35 reports `enabled: false` until the ROCm spike front-gate is
+        stamped (`LOOM_TRAINER_SD35_GO`). Unauthenticated read."""
+        return training.list_presets()
+
+    @app.post("/assets/{asset_id}/lora/stage")               # M5: the generalized route
+    @app.post("/assets/{asset_id}/lora/zimage/stage")        # M2 name, kept as an alias
+    def stage_lora_training(asset_id: str, req: StageZImageLoraRequest,
+                            _auth: None = Depends(require_token)) -> dict:
+        """P2/M2+M5 — materialize a LoRA trainer job as a staged record.
 
         This prepares deterministic captions, caption policy, training context,
         temp dataset, ai-toolkit config, and `jobs/staged.json`; it deliberately
-        does NOT enqueue. The user must explicitly queue the staged id.
+        does NOT enqueue. The user must explicitly queue the staged id. M5 adds
+        `base_family` (sd35 refused until the spike gate is stamped), `backend`
+        (PEFT declared-only, R115) and `train_init` (R68 seed-from-parent).
         """
         settings = {
             "steps": req.steps,
@@ -1620,8 +1636,11 @@ def create_app() -> FastAPI:
             "learning_rate": req.learning_rate,
         }
         try:
-            record = training.stage_zimage_lora(
+            record = training.stage_lora(
                 _require_ws(), asset_id,
+                base_family=req.base_family,
+                backend=req.backend,
+                train_init=req.train_init,
                 version_id=req.version_id,
                 trigger_token=req.trigger_token,
                 runtime_overlay=req.runtime_overlay,
@@ -1629,8 +1648,9 @@ def create_app() -> FastAPI:
             )
         except ws_mod.WorkspaceError as e:
             raise HTTPException(400, str(e))
-        LOG.info("staged zimage LoRA: %s asset=%s version=%s",
-                 record["id"], asset_id, record["version_id"])
+        LOG.info("staged %s LoRA: %s asset=%s version=%s init=%s",
+                 req.base_family, record["id"], asset_id, record["version_id"],
+                 req.train_init)
         return record
 
     @app.post("/training/staged/{staged_id}/queue")

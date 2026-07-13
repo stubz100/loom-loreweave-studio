@@ -44,6 +44,7 @@ CAPTION_MAX_LEN = 1000
 DEFAULT_ZIMAGE_SETTINGS: dict[str, Any] = {
     "base_model": "Tongyi-MAI/Z-Image",
     "model_name": "zimage-base",
+    "arch": "zimage",
     "steps": 500,
     "resolution": 512,
     "rank": 16,
@@ -60,6 +61,79 @@ DEFAULT_ZIMAGE_SETTINGS: dict[str, Any] = {
     "max_step_saves_to_keep": 2,
     "lora_weight_default": 1.0,
 }
+
+# M5: the sd35 preset — PROJECTED from the M1-validated zimage envelope, not yet
+# rig-proven (spec §12 entry 6 front-gate). Medium (2.5B) is the 16 GB-fit base pick;
+# large (8B) is out of the envelope. ⚙ Every value here is spike-validate-then-trust.
+DEFAULT_SD35_SETTINGS: dict[str, Any] = {
+    "base_model": "stabilityai/stable-diffusion-3.5-medium",
+    "model_name": "sd35-medium",
+    "arch": "sd3",
+    "steps": 500,
+    "resolution": 512,
+    "rank": 16,
+    "alpha": 16,
+    "batch_size": 1,
+    "learning_rate": 0.0001,
+    "optimizer": "adamw",
+    "dtype": "bf16",
+    "quantize": True,
+    "qtype": "qfloat8",
+    "low_vram": True,
+    "gradient_checkpointing": True,
+    "save_every": 50,
+    "max_step_saves_to_keep": 2,
+    "lora_weight_default": 1.0,
+}
+
+# R115 backends: ai-toolkit is the working default; diffusers-PEFT stays DECLARED until
+# the M5 sd35 spike decides its role (advanced option vs sd35-primary on a no-go).
+TRAINER_BACKENDS = ("ai_toolkit",)
+
+# M5/P2-9 per-base-family preset registry: the "just works" preset + the 16 GB VRAM-fit
+# envelope it was (or will be) validated inside. `spike_pending` families are refused at
+# stage time until `LOOM_TRAINER_SD35_GO` stamps the rig spike (config.trainer_sd35_go).
+TRAINER_PRESETS: dict[str, dict[str, Any]] = {
+    "zimage": {
+        "base_family": "zimage",
+        "settings": DEFAULT_ZIMAGE_SETTINGS,
+        "status": "validated",
+        "validated": "M1 spike 2026-06-21 — RX 9070 XT / ROCm / 16 GB",
+        "vram_fit": {"resolution_max": 768, "batch_size_max": 1, "quantize": "qfloat8",
+                     "low_vram": True, "gradient_checkpointing": True},
+    },
+    "sd35": {
+        "base_family": "sd35",
+        "settings": DEFAULT_SD35_SETTINGS,
+        "status": "spike_pending",
+        "gate_env": "LOOM_TRAINER_SD35_GO",
+        "vram_fit": {"resolution_max": 512, "batch_size_max": 1, "quantize": "qfloat8",
+                     "low_vram": True, "gradient_checkpointing": True},
+    },
+}
+
+
+def list_presets() -> dict:
+    """The per-base-family trainer presets + backend roster (`GET /training/presets`)."""
+    rows = []
+    for fam, p in TRAINER_PRESETS.items():
+        gated = p.get("status") == "spike_pending" and not CONFIG.trainer_sd35_go
+        rows.append({
+            "base_family": fam,
+            "settings": p["settings"],
+            "status": p["status"],
+            "validated": p.get("validated"),
+            "vram_fit": p["vram_fit"],
+            "enabled": not gated,
+            "gate_env": p.get("gate_env"),
+        })
+    return {
+        "backends": {
+            "ai_toolkit": "default (optimized) — the working backend",
+            "peft": "advanced (deep control) — DECLARED (R115); lands after the M5 sd35 spike",
+        },
+        "presets": rows,
+    }
 
 
 def _now() -> str:
@@ -393,7 +467,7 @@ def _yaml_scalar(value: Any) -> str:
 
 def _write_aitk_config(config_path: Path, *, job_name: str, run_dir: Path, dataset_dir: Path,
                        trigger_token: str, settings: dict) -> None:
-    s = {**DEFAULT_ZIMAGE_SETTINGS, **settings}
+    s = {**DEFAULT_ZIMAGE_SETTINGS, **settings}   # settings carry the family's full preset
     text = f"""---
 job: extension
 config:
@@ -451,7 +525,7 @@ config:
         use_ui_logger: false
       model:
         name_or_path: {s["base_model"]}
-        arch: zimage
+        arch: {s["arch"]}
         quantize: {_yaml_scalar(bool(s["quantize"]))}
         qtype: {s["qtype"]}
         quantize_te: {_yaml_scalar(bool(s["quantize"]))}
@@ -473,34 +547,76 @@ config:
         sample_steps: 30
 meta:
   name: {job_name}
-  version: "p2m2-zimage-default"
+  version: "p2-{s["arch"]}-default"
 """
     _atomic_write_text(config_path, text)
 
 
-def stage_zimage_lora(ws: Workspace, asset_id: str, *, version_id: str | None = None,
-                      trigger_token: str | None = None, runtime_overlay: str | None = None,
-                      settings: dict | None = None) -> dict:
+def _resolve_parent_lora(ws: Workspace, asset_id: str, version: dict) -> Path:
+    """R68 seed-from-parent: the parent version's PROMOTED LoRA artifact (versions/<p>/lora/).
+    Explicit errors — no parent, or a parent that was never promoted — so the toggle can't
+    silently train from base while claiming to seed."""
+    parent_id = version.get("derived_from")
+    if not parent_id:
+        raise ws_mod.WorkspaceError(
+            "seed-from-parent needs a parent version (derived_from) — this version has none; "
+            "train-from-base is the default (R68)")
+    pdir, _parent = assets.resolve_version_dir(ws, asset_id, parent_id)
+    lora_dir = pdir / "lora"
+    cands = sorted(lora_dir.glob("*.safetensors")) if lora_dir.is_dir() else []
+    if not cands:
+        raise ws_mod.WorkspaceError(
+            f"parent version {parent_id!r} has no promoted LoRA to seed from "
+            "(promote a trained run into it first — Stage E/M6)")
+    return cands[-1]
+
+
+def stage_lora(ws: Workspace, asset_id: str, *, base_family: str = "zimage",
+               backend: str = "ai_toolkit", train_init: str = "from_base",
+               version_id: str | None = None, trigger_token: str | None = None,
+               runtime_overlay: str | None = None, settings: dict | None = None) -> dict:
+    """M5-generalized staging: per-base-family preset (zimage validated; sd35 behind the
+    ROCm spike front-gate), backend roster (ai-toolkit working; PEFT declared, R115), and
+    the R68 train-init toggle (from_base default; seed_parent pre-places the parent's
+    promoted LoRA as the step-0 checkpoint the wrapper's discovery reports — ⚠ ai-toolkit
+    resume-from-step-0 semantics are spike-verified on the rig)."""
+    if base_family not in TRAINER_PRESETS:
+        raise ws_mod.WorkspaceError(
+            f"unknown base_family {base_family!r}; one of {sorted(TRAINER_PRESETS)}")
+    if backend not in TRAINER_BACKENDS:
+        raise ws_mod.WorkspaceError(
+            f"backend {backend!r} is declared (R115) but not yet enabled — diffusers-PEFT "
+            "lands after the M5 sd35 spike decides its role; ai_toolkit is the default")
+    if base_family == "sd35" and not CONFIG.trainer_sd35_go:
+        raise ws_mod.WorkspaceError(
+            "sd35 training is behind the M5 ROCm spike front-gate (unproven on the "
+            "RX 9070 XT / 16 GB rig) — run the spike, then set LOOM_TRAINER_SD35_GO=1")
+    if train_init not in ("from_base", "seed_parent"):
+        raise ws_mod.WorkspaceError(
+            f"train_init {train_init!r} must be 'from_base' or 'seed_parent' (R68)")
+
     vdir, version, profile = _version_dir_for(ws, asset_id, version_id)
     if version.get("finalized"):
         raise ws_mod.WorkspaceError("cannot stage LoRA training for a finalized version; unlock or duplicate it first")
+    seed_src = (_resolve_parent_lora(ws, asset_id, version)
+                if train_init == "seed_parent" else None)
     # M2.9b: default the isolated dependency overlay from rig-level config (the Train
     # panel doesn't ask for a path; the shared venv can't run ai-toolkit without it).
     # An explicit request value still wins.
     runtime_overlay = runtime_overlay or CONFIG.trainer_overlay
-    merged_settings = {**DEFAULT_ZIMAGE_SETTINGS, **(settings or {})}
+    merged_settings = {**TRAINER_PRESETS[base_family]["settings"], **(settings or {})}
     trigger = (trigger_token or version.get("trigger_token") or _trigger_from_profile(profile)).strip()
     if not re.match(r"^[A-Za-z][A-Za-z0-9_]{2,48}$", trigger):
         raise ws_mod.WorkspaceError("trigger_token must start with a letter and contain only letters, digits or underscores")
 
     caption_info = _write_captions(
         vdir, version, profile, trigger,
-        base_family="zimage",
+        base_family=base_family,
         settings=merged_settings,
     )
     staged_id = new_id("stg", 8)
     safe_version = re.sub(r"[^a-zA-Z0-9_]+", "_", version["name"]).strip("_") or version["id"]
-    job_name = f"loom_{profile['slug'].replace('-', '_')}_{safe_version}_zimage"
+    job_name = f"loom_{profile['slug'].replace('-', '_')}_{safe_version}_{base_family}"
     run_dir = ws.temp_dir / f"lora_{profile['slug']}_{version['id']}_{staged_id}"
     run_dir.mkdir(parents=True, exist_ok=True)
     dataset = _prepare_dataset(vdir, run_dir, caption_info["captions"])
@@ -513,6 +629,17 @@ def stage_zimage_lora(ws: Workspace, asset_id: str, *, version_id: str | None = 
         trigger_token=trigger,
         settings=merged_settings,
     )
+    seed_info = None
+    if seed_src is not None:
+        # R68 seed-from-parent: pre-place the parent's LoRA where ai-toolkit's own
+        # checkpoint discovery looks (run_dir/<job_name>/), named as the step-0 save —
+        # training continues FROM those weights for the full step budget.
+        ckpt_dir = run_dir / job_name
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        seed_dst = ckpt_dir / f"{job_name}_000000000.safetensors"
+        shutil.copy2(seed_src, seed_dst)
+        seed_info = {"source": str(seed_src), "checkpoint": str(seed_dst),
+                     "sha256": _sha256_file(seed_dst)}
 
     trainer_root = Path(__file__).resolve().parents[1] / "trainers" / "ai-toolkit"
     artifact_name = f"{job_name}.safetensors"
@@ -523,6 +650,10 @@ def stage_zimage_lora(ws: Workspace, asset_id: str, *, version_id: str | None = 
         "runtime_overlay": runtime_overlay,
         "artifact_name": artifact_name,
         "expected_steps": int(merged_settings["steps"]),
+        "base_family": base_family,
+        "backend": backend,
+        "train_init": train_init,
+        "seed_artifact": seed_info,
         "resume_strategy": "ai_toolkit_checkpoint_discovery",
         "runtime_contract": {
             "isolated_dependency_overlay": bool(runtime_overlay),
@@ -541,13 +672,17 @@ def stage_zimage_lora(ws: Workspace, asset_id: str, *, version_id: str | None = 
     record = {
         "schema_version": STAGED_SCHEMA_VERSION,
         "id": staged_id,
-        "kind": "zimage_lora_train",
+        "kind": "zimage_lora_train" if base_family == "zimage" else f"{base_family}_lora_train",
         "status": "staged",
         "created_at": _now(),
         "asset_id": profile["id"],
         "asset_name": profile["name"],
         "version_id": version["id"],
         "version_name": version["name"],
+        "base_family": base_family,
+        "backend": backend,
+        "train_init": train_init,
+        "seed_artifact": seed_info,
         "trigger_token": trigger,
         "caption_count": len(caption_info["captions"]),
         "caption_policy_hash": caption_info["caption_policy_hash"],
@@ -572,6 +707,11 @@ def stage_zimage_lora(ws: Workspace, asset_id: str, *, version_id: str | None = 
         data["staged"][staged_id] = record
         _persist_staged(ws, data)
     return record
+
+
+def stage_zimage_lora(ws: Workspace, asset_id: str, **kwargs) -> dict:
+    """Back-compat alias (the M2 name) — the M5-generalized entry is `stage_lora`."""
+    return stage_lora(ws, asset_id, base_family="zimage", **kwargs)
 
 
 def queue_staged(ws: Workspace, staged_id: str, runner) -> dict:

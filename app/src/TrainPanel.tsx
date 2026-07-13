@@ -53,6 +53,9 @@ export default function TrainPanel({
   const [alpha, setAlpha] = useState("");   // 1–256 (preset 16)
   const [lr, setLr] = useState("");         // (0, 1] (preset 0.0001)
   const [res, setRes] = useState("");       // 256–2048 ÷16 (preset 512)
+  // M5 train options: base family (sd35 spike-gated server-side) + R68 train-init.
+  const [family, setFamily] = useState<"zimage" | "sd35">("zimage");
+  const [trainInit, setTrainInit] = useState<"from_base" | "seed_parent">("from_base");
   // "stage" or a staged id — only the in-flight action's controls lock, not the whole panel
   const [busy, setBusy] = useState<string | null>(null);
   // M3 captions review/edit: collapsed by default; drafts hold per-row unsaved text.
@@ -148,6 +151,8 @@ export default function TrainPanel({
         alpha: alpha.trim() ? Number(alpha) : undefined,
         learning_rate: lr.trim() ? Number(lr) : undefined,
         resolution: res.trim() ? Number(res) : undefined,
+        base_family: family,
+        train_init: trainInit,
       });
       setTrigger(""); setSteps("");
       setRank(""); setAlpha(""); setLr(""); setRes("");
@@ -217,6 +222,25 @@ export default function TrainPanel({
       )}
 
       <div className="train-stage-form">
+        <label className="sm">
+          base
+          <select value={family} onChange={(e) => setFamily(e.target.value as "zimage" | "sd35")}
+                  disabled={!canStage}
+                  title="base model family the LoRA trains against. sd35 is behind the M5 ROCm spike front-gate — staging refuses until LOOM_TRAINER_SD35_GO stamps the rig spike.">
+            <option value="zimage">zimage</option>
+            <option value="sd35">sd35 ⚗</option>
+          </select>
+        </label>
+        <label className="sm">
+          init
+          <select value={trainInit}
+                  onChange={(e) => setTrainInit(e.target.value as "from_base" | "seed_parent")}
+                  disabled={!canStage}
+                  title="R68: train-from-base (default) or seed from the PARENT version's promoted LoRA (needs a derived version whose parent has a lora/ artifact — refused otherwise)">
+            <option value="from_base">from base</option>
+            <option value="seed_parent">seed parent</option>
+          </select>
+        </label>
         <label>
           trigger token
           <input
@@ -412,6 +436,8 @@ export default function TrainPanel({
               <span className="train-row-main">
                 <b>{s.trigger_token}</b>
                 <span className="muted">
+                  {" "}· {s.base_family ?? "zimage"}
+                  {s.train_init === "seed_parent" ? " (seeded)" : ""}
                   {" "}· {s.caption_count} caption{s.caption_count === 1 ? "" : "s"}
                   {" "}· {String((s.settings ?? {}).steps ?? "?")} steps
                   {" "}· r{String((s.settings ?? {}).rank ?? "?")}/a{String((s.settings ?? {}).alpha ?? "?")}

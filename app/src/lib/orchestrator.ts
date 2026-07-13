@@ -1296,6 +1296,11 @@ export interface StagedTraining {
   captions_hash?: string;
   context_digest?: string;
   settings?: Record<string, unknown>; // steps/resolution/rank/alpha/lr (M1-accepted defaults)
+  // M5 train options
+  base_family?: "zimage" | "sd35";
+  backend?: string;                   // ai_toolkit (peft declared, R115)
+  train_init?: "from_base" | "seed_parent";
+  seed_artifact?: { source: string; checkpoint: string; sha256: string } | null;
 }
 
 export async function getStagedTraining(signal?: AbortSignal):
@@ -1305,8 +1310,9 @@ export async function getStagedTraining(signal?: AbortSignal):
   return await res.json();
 }
 
-/** Stage a Z-Image LoRA run for a character version (writes captions/policy/context/
- * dataset/train.yaml + the staged record; does NOT queue — R118). */
+/** Stage a LoRA run for a character version (writes captions/policy/context/
+ * dataset/train.yaml + the staged record; does NOT queue — R118). M5: base_family
+ * (sd35 spike-gated), train_init (R68 seed-from-parent), backend (peft declared). */
 export async function stageZimageLora(assetId: string, body: {
   version_id?: string;
   trigger_token?: string;
@@ -1317,8 +1323,11 @@ export async function stageZimageLora(assetId: string, body: {
   alpha?: number;          // 1–256
   learning_rate?: number;  // (0, 1]
   resolution?: number;     // 256–2048, ÷16
+  base_family?: "zimage" | "sd35";              // sd35 refused until the spike gate
+  backend?: "ai_toolkit" | "peft";              // peft = declared-only (R115)
+  train_init?: "from_base" | "seed_parent";     // R68
 } = {}): Promise<StagedTraining> {
-  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/lora/zimage/stage`, {
+  const res = await fetch(`${orchestratorUrl()}/assets/${assetId}/lora/stage`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
     body: JSON.stringify(body),

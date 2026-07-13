@@ -2237,3 +2237,63 @@ centroid pass, no images)); `tsc` + `vite build` clean; identity md5 drift row g
 buffalo_l is already on the rig from P1 identity use. **✅ PUSHED `2cc32a2`.** ⏭ **M5 — train options + sd35 +
 PEFT** (opens with the sd35 ROCm spike front-gate — GPU, rig-blocked; the no-GPU parts
 build first).
+
+## M5 (no-GPU slice) — train options: presets, gates, seed-from-parent (started 2026-07-12 18:56, finished 2026-07-13 16:55 — session pause overnight) ✅
+
+**Scope honesty:** the M5 front-gate (the **sd35-trains-on-ROCm spike**) is GPU work and
+the rig is hardware-blocked, so this slice builds everything that does NOT stand on the
+unproven trainer — and encodes the gate IN SOFTWARE so nothing can jump it by accident.
+GPU-owed remainder listed at the end.
+
+- **Per-family preset registry (P2-9)** — `training.TRAINER_PRESETS`: `zimage` (the
+  M1-validated preset, status `validated`, 16 GB **vram_fit** envelope: ≤768 px · batch 1 ·
+  qfloat8 · low_vram · grad-ckpt) and `sd35` (**status `spike_pending`** — ⚙ projected
+  values, spike-validate-then-trust: `stabilityai/stable-diffusion-3.5-medium` (2.5B — the
+  16 GB-fit pick; large 8B is out of envelope), `arch: sd3`, otherwise the zimage knob
+  shape). `GET /training/presets` (unauth) serves the roster + backends; sd35 reports
+  `enabled:false` until the gate is stamped.
+- **The spike front-gate as code** — new `config.trainer_sd35_go`
+  (**`LOOM_TRAINER_SD35_GO`**): staging `base_family="sd35"` **refuses (400)** until the
+  rig spike passes and the flag is set — the honest software mirror of spec §12 entry 6.
+- **Generalized staging** — `training.stage_lora(base_family, backend, train_init, …)`
+  (`stage_zimage_lora` kept as the back-compat alias); `_write_aitk_config` takes the
+  family's `arch` from settings (was hardcoded zimage); `job_name`/`artifact_name` carry
+  the family suffix; staged records + queue params gain
+  `base_family`/`backend`/`train_init`/`seed_artifact`; record `kind` =
+  `sd35_lora_train` for sd35. Route: **`POST /assets/{id}/lora/stage`** (the M2
+  `…/lora/zimage/stage` name kept as an alias — both registered on one handler);
+  `token_required` updated.
+- **Backend roster (R115)** — `TRAINER_BACKENDS = ("ai_toolkit",)`; requesting
+  `backend="peft"` → 400 "declared but not yet enabled — lands after the M5 spike
+  decides its role" (spike GO ⇒ PEFT = advanced option; NO-GO ⇒ PEFT = sd35's primary
+  path). The queue/manifest contract stays backend-agnostic so the PEFT trainer slots in
+  without record changes.
+- **R68 seed-from-parent** — `train_init="seed_parent"`: resolves the PARENT version's
+  (`derived_from`) promoted LoRA (`versions/<p>/lora/*.safetensors`; explicit 400s: no
+  parent / parent never promoted — names M6) and **pre-places it as the step-0 checkpoint**
+  (`run_dir/<job_name>/<job_name>_000000000.safetensors`) where ai-toolkit's own
+  checkpoint discovery looks — training continues FROM those weights for the full step
+  budget (the same mechanism the P2-10 resume exercised on the rig 2026-07-12). Full
+  provenance on the staged record (`seed_artifact`: source/checkpoint/sha256).
+  ⚠ resume-from-step-0 semantics = **spike-verify on the rig** (one seeded 60-step run).
+- **FE** — TrainPanel stage form gains **base** (`zimage` / `sd35 ⚗`) and **init**
+  (`from base` / `seed parent`) selects (server refusals surface on the error bar);
+  staged rows show family + `(seeded)`; client `stageZimageLora` posts the generalized
+  route with the new fields; `StagedTraining` type extended.
+
+**Tests +6 → 400 green** (`test_m5_train_options.py`: roster gates sd35 until the env
+flag flips it · sd35 staging 400s pre-gate then writes `arch: sd3` + medium repo +
+`_sd35` artifact post-gate · peft 400 (R115) + unknown enums 422 · seed_parent places the
+byte-identical step-0 checkpoint w/ sha provenance + from_base stays clean · seed
+refusals (no parent / never promoted) · the legacy zimage route still stages);
+`tsc` + `vite build` clean.
+
+⚠ **M5 GPU-owed (rig, after hardware is stable):** (1) the **sd35 spike** — one 60-step
+sd35-medium LoRA via ai-toolkit on the rig (go/no-go; GO ⇒ set `LOOM_TRAINER_SD35_GO=1`
++ validate the preset values, NO-GO ⇒ PEFT becomes sd35's path and gets built then);
+(2) **seed-from-parent semantics check** — one seeded short run resumes from step 0 with
+the parent's weights; (3) the **PEFT backend build** itself (deliberately NOT built
+blind — it needs GPU verification loops and the spike decides its role). Also owed:
+sd35 inference-side LoRA loading flags exist (`--lora-*` on the sd35 worker) — verify
+the trained artifact loads (pairs with M7's verify step).
+⏭ **M6 — promote + cleanup + LoRA management.**

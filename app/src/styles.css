@@ -166,6 +166,10 @@ body {
 }
 /* the "advanced ⚙" knobs (rank/alpha/lr/resolution) — narrow numeric fields */
 .train-stage-form label.sm input { width: 84px; }
+.train-stage-form select {
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 4px; padding: 4px 6px;
+}
 .train-staged, .train-jobs { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
 /* M4 readiness meter (advisory tiers) */
 .ready-tiers { display: flex; flex-direction: column; gap: 3px; font-size: 12px; padding: 2px 0 4px; }

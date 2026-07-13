@@ -2297,7 +2297,7 @@ blind — it needs GPU verification loops and the spike decides its role). Also 
 sd35 inference-side LoRA loading flags exist (`--lora-*` on the sd35 worker) — verify
 the trained artifact loads (pairs with M7's verify step).
 **✅ PUSHED `4e8fc30`.** ⏭ **M6 — promote + cleanup + LoRA management.**
-## M6 — promote (Stage E) + manual cleanup (R13) + LoRA management (started 2026-07-13 17:00, finished 17:20) ✅
+## M6 — promote (Stage E) + manual cleanup (R13) + LoRA management (started 2026-07-13 16:57, finished 17:04) ✅
 
 **Backend (`training.py` M6 block + 3 endpoints):**
 - **Promote** — `POST /training/jobs/{id}/promote` (DONE trainer runs only, 409 otherwise):
@@ -2338,4 +2338,4 @@ survives (R13) · re-promote overwrites + `replaces` records the old sha · refu
 unknown / 409 not-done / 400 non-trainer / 400 artifact-vanished / 400 finalized) ·
 cleanup idempotent + 409 while queued + foreign-path 400 leaves the tree intact ·
 preview loads the run-dir artifact w/ trigger prompt + seed/prompt overrides + 409
-not-done); `tsc` + `vite build` clean. ⏭ **M7 — acceptance.**
+not-done); `tsc` + `vite build` clean. **✅ PUSHED `09cc02e`.** ⏭ **M7 — acceptance.**

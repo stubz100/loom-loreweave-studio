@@ -1412,9 +1412,14 @@ author's visual sign-off.
    dataset's `.txt` captions + `captions.jsonl` carry the edited text; `origin: template|edited`
    per row), and **`captions_hash` reflects the final text** (an edit changes the hash — the
    policy hash still identifies the template). Reset-to-template per ref + all. **(No VLM.)**
+   *(✅ built 2026-07-12 — journal "M3"; also fixed the M2 nit where caption_policy_hash
+   included `created_at` and was volatile every staging.)*
 5. **M4 — proxy readiness.** Coverage (from metadata) + perceptual-hash dupes + face-embedding
    on-model → `readiness.json` → advisory readiness meter. **(No VLM.)** ***P2 done-line now
    reachable*** (M2 trainer + M3 captions + M4 readiness, R169).
+   *(✅ built 2026-07-12 — journal "M4": inline coverage/dupes/captions tiers + the identity
+   worker's new no-swap `score` mode (R120 centroid fallback) harvested into readiness.json;
+   one on-rig 🔬 scan sanity check owed.)*
 6. **M5 — train options + sd35 + PEFT backend.** Expose train-from-base / seed-from-parent (R68) and
    the per-model preset + advanced knobs; add the **diffusers-PEFT** advanced backend; onboard the
    **sd35** trainer; record full training manifests. **⚠ M5 opens with an M1-style front-gate
@@ -1425,15 +1430,25 @@ author's visual sign-off.
    PEFT/TRL deps live in a dependency overlay like ai-toolkit's (`.tmp/ai-toolkit-deps` extended,
    or a sibling `peft-deps` overlay baked at stage time via the same `runtime_overlay` channel) —
    never installed into the shared inference venv.
+   *(🟡 no-GPU slice ✅ built 2026-07-13 — journal "M5": preset registry + `GET /training/presets`,
+   the gate AS CODE (`LOOM_TRAINER_SD35_GO`), generalized `POST /assets/{id}/lora/stage`,
+   R68 seed-from-parent step-0-checkpoint plumbing. RIG-OWED: the sd35 spike itself, the
+   seed-semantics check, and the PEFT backend build — deliberately not built blind.)*
 7. **M6 — promote + manual cleanup + LoRA management.** Promote into the version; one-click temp
    cleanup; version selector shows LoRA presence. **(No style-LoRA path — declared only, 0 effort in
    P2 per R122; built in P5 with multi-LoRA stacking, R147.)**
+   *(✅ built 2026-07-13 — journal "M6": promote + `lora.manifest.json` w/ the P2-13 facts +
+   `version.lora` + ✨ selector badge + guarded idempotent cleanup + P2-11 preview.)*
 
 ### Done-line
 
 8. **M7 — acceptance.** A P1 character → template-captioned → proxy-readiness ✓ → **staged → added to
    queue → trained → promoted → test-gen reproduces it on-model**, all recorded in the training
    manifest (§1), with `caption_policy_hash` + `context_digest` present.
+   *(🟡 the no-GPU acceptance NARRATIVE is built + green 2026-07-13 — `test_p2_acceptance.py`
+   walks the whole done-line through the real API in order, GPU step hand-finished. The
+   **P2 stamp itself = the author's rig run** (procedure: journal "M7"), blocked on the
+   sustained-load hardware shutdowns of 2026-07-12.)*
 
 ---
 

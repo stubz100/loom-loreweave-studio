@@ -104,7 +104,17 @@ invoked); GPU batch smoke verified.
 > preset. **M2.11:** expansion **cell picker** (`▦ cells` — fire a subset of a pose recipe,
 > byte-identical cells) + a **generated pose-icon set** (L1 · 🕴 Poses tab, durable `bible/poses/`).
 > **M0e Part D:** model-free **`Resize ⤢` (Lanczos)** postproc preset (downscale/exact = resample;
-> creative enlarge = i2i / `Upscale ✨`). Next: **M3 — caption review/edit (the override layer)**.
+> creative enlarge = i2i / `Upscale ✨`).
+> **Phase B built (2026-07-12/13, 406 tests):** **M3** caption review/edit — durable per-ref
+> overrides that survive re-staging, `captions_hash` reflects the final text; **M4** proxy
+> readiness meter (coverage + dHash dupes + captions + an identity `score` on-model scan,
+> advisory per R14) — ***the P2 done-line is reachable***; **M5 no-GPU slice** — per-family
+> trainer presets (P2-9), the **sd35 ROCm spike front-gate as code** (`LOOM_TRAINER_SD35_GO`),
+> R68 seed-from-parent plumbing (spike + PEFT build = rig-owed); **M6** promote →
+> `lora.manifest.json` (P2-13 graph-ready facts) → `version.lora` + ✨ selector badge +
+> guarded cleanup (R13) + LoRA preview (P2-11); **M7** no-GPU acceptance narrative.
+> **The P2 stamp = the author's rig run** (journal "M7" procedure) once the sustained-load
+> hardware shutdowns are resolved.
 > Spec:
 > [`kb-loom-p1.md`](.docs/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](.docs/kb-storyboard01.md) §10.0, journal:

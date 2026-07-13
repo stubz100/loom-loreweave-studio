@@ -2339,3 +2339,37 @@ unknown / 409 not-done / 400 non-trainer / 400 artifact-vanished / 400 finalized
 cleanup idempotent + 409 while queued + foreign-path 400 leaves the tree intact ·
 preview loads the run-dir artifact w/ trigger prompt + seed/prompt overrides + 409
 not-done); `tsc` + `vite build` clean. **✅ PUSHED `09cc02e`.** ⏭ **M7 — acceptance.**
+## M7 — acceptance: the narrative harness (started 2026-07-13 17:05, finished 17:15) 🟡 stamp = author's rig run
+
+**Built: `test_p2_acceptance.py` — the §1 done-line walked END-TO-END through the real
+API in one narrative test** (+1 → **406 green**): P1 character w/ 4-cell curated set →
+D1 template captions + ONE edit (the override survives into the staged dataset `.txt`s —
+the M3→M2 handshake asserted) → D2 readiness snapshot persisted → D3 **staged** (nothing
+on the GPU queue, R118) → explicit **▶ queue** (resumable, stage D) → run hand-finished
+exactly the way the wrapper finishes (the M2/M6 pattern — the ONLY substitution is the
+GPU step) → **E promote** (manifest carries `caption_policy_hash` + `context_digest` +
+`captions_hash` + `dataset_hash` = the §1 requirement, all matching the staged record) →
+`version.lora` flips → **verify test-gen queued WITH the adapter** (trigger prompt,
+version-scoped) → R13 explicit cleanup (temp gone, promoted copy stays).
+
+**The P2 STAMP itself is the author's rig run** — blocked on the 2026-07-12 hardware
+shutdowns. **Procedure (author, when the rig is stable — mirrors the harness):**
+1. **Hardware first:** HWiNFO log (GPU hotspot/VRAM temp + 12 V rail) during a short
+   sustained load; cap the GPU power limit −10…−15 % in AMD software if thermal/transient.
+2. **Finish M2.9b free:** launch → `job_62629914` recovers **queued+paused** → unpause →
+   it resumes from its step-100 checkpoint → completes (exit 0, manifest `completed`) →
+   record timings/hashes here → **M2.9b STAMPED**.
+3. **M7 stamp (char02 or fresh):** `D · Train` → readiness **🔬 scan** (one real on-model
+   run — also the owed M4 sanity check) → review captions (edit at least one) → **⚙ Stage**
+   → **▶ Add to queue** → train completes → **🖼 preview** (the eyeball: does the character
+   reproduce on-model?) → **⬆ promote** (✨ appears on the version selector) → **🧹** →
+   record here → **P2 ACCEPTED**.
+4. **M5 gate (separate, non-blocking):** the sd35 spike — set `LOOM_TRAINER_SD35_GO=1`
+   (the flag IS the author's spike switch), stage a 60-step sd35-medium run, GO ⇒ keep the
+   flag + validate the preset values; NO-GO ⇒ unset + PEFT becomes sd35's path (built then).
+   Plus the R68 seed-semantics check: `+ version` off the promoted v1 → stage w/ init
+   `seed parent` @ 60 steps → the log's `[train-resume]` must report the step-0 seed.
+
+Docs synced this close: spec §12 Phase B entries 4–8 carry build-status markers; README
+Phase B block current. P2 remains OPEN until the author's stamps land (M2.9b · M7 · the
+M5 gate) — everything buildable without the rig is now built.

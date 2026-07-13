@@ -2372,4 +2372,4 @@ shutdowns. **Procedure (author, when the rig is stable — mirrors the harness):
 
 Docs synced this close: spec §12 Phase B entries 4–8 carry build-status markers; README
 Phase B block current. P2 remains OPEN until the author's stamps land (M2.9b · M7 · the
-M5 gate) — everything buildable without the rig is now built.
+M5 gate) — everything buildable without the rig is now built. **✅ PUSHED `ec155ec`.**

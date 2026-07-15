@@ -860,10 +860,18 @@ def cleanup_run(ws: Workspace, job: dict) -> dict:
 
 
 def preview_request(ws: Workspace, job: dict, *, prompt: str | None = None,
-                    seed: int | None = None) -> dict:
+                    seed: int | None = None, width: int | None = None,
+                    height: int | None = None, lora_weight: float | None = None,
+                    num_steps: int | None = None, with_lora: bool = True) -> dict:
     """P2-11: the submit payload for a sample generation with the FRESH (un-promoted)
     adapter loaded straight from the run dir — the author eyeballs it before promote.
-    zimage only for now (sd35 inference LoRA flags land with the M5 spike)."""
+    zimage only for now (sd35 inference LoRA flags land with the M5 spike).
+
+    Rig findings 2026-07-15: size defaults to the TRAINED resolution (the first rig
+    preview silently ran 1024² against a 512²-trained adapter — base-prior dilution +
+    4× the render time); `with_lora=False` = the same-seed A/B against the bare base
+    (does the adapter carry signal at all?); prompt/weight/steps are the author's
+    diagnosis levers."""
     params = _require_trainer_job(job)
     if params.get("base_family", "zimage") != "zimage":
         raise ws_mod.WorkspaceError(
@@ -876,25 +884,34 @@ def preview_request(ws: Workspace, job: dict, *, prompt: str | None = None,
     artifact = _find_artifact(job)
     settings = params.get("settings") or {}
     trigger = params.get("trigger_token") or version.get("trigger_token") or ""
+    trained_res = int(settings.get("resolution") or DEFAULT_ZIMAGE_SETTINGS["resolution"])
     sub_params = {
         "prompt": (prompt or f"{trigger}, front view, portrait, neutral expression").strip(),
         "seed": 12345 if seed is None else int(seed),
         "model_name": settings.get("model_name") or "zimage-base",
-        "lora_path": str(artifact),
-        "lora_weight": settings.get("lora_weight_default", 1.0),
+        "width": int(width or trained_res),
+        "height": int(height or trained_res),
     }
-    # Rig finding 2026-07-13 (`job_af29227d`): diffusers refuses `load_lora_weights`
-    # without PEFT — which lives ONLY in the trainer overlay (R103). The overlay rides
-    # the preview job so the runner prepends it to the worker's PYTHONPATH; the trainer
-    # job's own overlay wins over the rig default (same rule as staging).
-    overlay = params.get("runtime_overlay") or CONFIG.trainer_overlay
-    if overlay:
-        sub_params["runtime_overlay"] = str(overlay)
+    if num_steps is not None:
+        sub_params["num_steps"] = int(num_steps)
+    if with_lora:
+        sub_params["lora_path"] = str(artifact)
+        sub_params["lora_weight"] = (float(lora_weight) if lora_weight is not None
+                                     else settings.get("lora_weight_default", 1.0))
+        # Rig finding 2026-07-13 (`job_af29227d`): diffusers refuses `load_lora_weights`
+        # without PEFT — which lives ONLY in the trainer overlay (R103). The overlay
+        # rides the preview job so the runner prepends it to the worker's PYTHONPATH;
+        # the trainer job's own overlay wins over the rig default (same rule as staging).
+        overlay = params.get("runtime_overlay") or CONFIG.trainer_overlay
+        if overlay:
+            sub_params["runtime_overlay"] = str(overlay)
     return {
         "pipeline": "zimage",
         "mode": "t2i",
         "params": sub_params,
-        "requester_id": promo["asset_id"],
+        # Rig finding 2026-07-15: the grid filters on requester_id == the VERSION id
+        # (the P1 /generate convention) — the asset id here sent the tile to the Sandbox.
+        "requester_id": version["id"],
         "profile_version_id": version["id"],
         "stage": "D",
     }

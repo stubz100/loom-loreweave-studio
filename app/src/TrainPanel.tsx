@@ -76,6 +76,13 @@ export default function TrainPanel({
   // Rig feedback 2026-07-13: cleanup succeeded server-side but LOOKED like a failure —
   // nothing visible changes. Per-row confirmation notes fix that.
   const [rowNote, setRowNote] = useState<Record<string, string>>({});
+  // Rig feedback 2026-07-15: the fixed-prompt 1024² preview couldn't answer "is the
+  // adapter working?" — inline options (prompt/seed/size/weight + a same-seed A/B).
+  const [prevOpen, setPrevOpen] = useState<string | null>(null);
+  const [prevPrompt, setPrevPrompt] = useState("");
+  const [prevSeed, setPrevSeed] = useState("12345");
+  const [prevSize, setPrevSize] = useState("");     // blank = the TRAINED resolution
+  const [prevWeight, setPrevWeight] = useState(""); // blank = the run's default (1.0)
 
   const refresh = useCallback(async () => {
     try {
@@ -180,12 +187,26 @@ export default function TrainPanel({
     } catch (e) { onError(String(e)); } finally { setBusy(null); }
   };
   // M6 actions on a DONE trainer run: preview (P2-11) / promote (Stage E) / cleanup (R13).
-  const onPreview = async (jobId: string) => {
+  const previewBody = () => {
+    const size = prevSize.trim() ? Math.round(Math.min(2048, Math.max(256, Number(prevSize))) / 16) * 16 : undefined;
+    return {
+      prompt: prevPrompt.trim() || undefined,
+      seed: prevSeed.trim() ? Math.max(0, Number(prevSeed)) : undefined,
+      width: size, height: size,
+      lora_weight: prevWeight.trim() ? Math.min(4, Math.max(0, Number(prevWeight))) : undefined,
+    };
+  };
+  const onPreview = async (jobId: string, ab = false) => {
     setBusy(`m6:${jobId}`); onError(null);
     try {
       // the sample streams into the version grid via App's normal poll
-      const r = await previewTrainedLora(jobId, {});
-      setRowNote((n) => ({ ...n, [jobId]: `🖼 preview ${r.job_id} queued → grid` }));
+      const r = await previewTrainedLora(jobId, previewBody());
+      let note = `🖼 preview ${r.job_id} queued → grid`;
+      if (ab) {
+        const base = await previewTrainedLora(jobId, { ...previewBody(), with_lora: false });
+        note = `⚖ A/B queued → grid: ${r.job_id} (LoRA) vs ${base.job_id} (base, same seed)`;
+      }
+      setRowNote((n) => ({ ...n, [jobId]: note }));
     } catch (e) { onError(String(e)); } finally { setBusy(null); }
   };
   const onPromote = async (jobId: string) => {
@@ -506,7 +527,8 @@ export default function TrainPanel({
         <div className="train-jobs">
           <div className="muted">TRAINING JOBS (this version):</div>
           {trainJobs.map((j) => (
-            <div className="train-row" key={j.id}>
+            <div key={j.id}>
+            <div className="train-row">
               <span className="train-row-main">
                 {j.status === "done" ? "✅" : j.status === "failed" ? "❌"
                   : j.status === "canceled" ? "🚫" : j.status === "running" ? "⏳" : "🕐"}{" "}
@@ -527,10 +549,11 @@ export default function TrainPanel({
               )}
               {j.status === "done" && (
                 <>
-                  <button className="ghost" onClick={() => void onPreview(j.id)}
+                  <button className="ghost"
+                          onClick={() => setPrevOpen(prevOpen === j.id ? null : j.id)}
                           disabled={busy === `m6:${j.id}`}
-                          title="P2-11: one sample generation with the FRESH un-promoted adapter (from the run dir) — eyeball the character before promoting; the tile streams into the grid">
-                    🖼 preview
+                          title="P2-11: sample generations with the FRESH un-promoted adapter (from the run dir) — eyeball the character before promoting. Opens prompt/seed/size/weight options + a same-seed A/B vs the bare base.">
+                    🖼 preview {prevOpen === j.id ? "▾" : "▸"}
                   </button>
                   <button className="ghost" onClick={() => void onPromote(j.id)}
                           disabled={busy === `m6:${j.id}` || versionLocked}
@@ -558,6 +581,40 @@ export default function TrainPanel({
                   </button>
                 </>
               )}
+            </div>
+            {prevOpen === j.id && j.status === "done" && (
+              <div className="train-row prev-opts">
+                <input className="prev-prompt" value={prevPrompt}
+                       placeholder="(default: <trigger>, front view, portrait, neutral expression — include the trigger token!)"
+                       onChange={(e) => setPrevPrompt(e.target.value)}
+                       title="the sample prompt — e.g. 'char02_lw, front view, full body, standing in a T-pose, neutral expression'. The character only appears when the TRIGGER TOKEN is in the prompt." />
+                <label className="sm">seed
+                  <input value={prevSeed} inputMode="numeric"
+                         onChange={(e) => setPrevSeed(e.target.value.replace(/[^0-9]/g, ""))}
+                         title="fixed seed — keep it constant to compare weights / A vs B" />
+                </label>
+                <label className="sm">size
+                  <input value={prevSize} inputMode="numeric" placeholder="trained"
+                         onChange={(e) => setPrevSize(e.target.value.replace(/[^0-9]/g, ""))}
+                         title="square render size (÷16). Blank = the TRAINED resolution — most faithful to what the adapter learned (and fastest)" />
+                </label>
+                <label className="sm">weight
+                  <input value={prevWeight} placeholder="1.0"
+                         onChange={(e) => setPrevWeight(e.target.value.replace(/[^0-9.]/g, ""))}
+                         title="adapter scale 0–4: raise (1.2–1.5) if the identity is weak, 0 = effectively off" />
+                </label>
+                <button className="ghost" onClick={() => void onPreview(j.id)}
+                        disabled={busy === `m6:${j.id}`}
+                        title="one sample with the adapter — streams into the version grid">
+                  ▶
+                </button>
+                <button className="ghost" onClick={() => void onPreview(j.id, true)}
+                        disabled={busy === `m6:${j.id}`}
+                        title="A/B: TWO samples at the same seed — with the adapter vs the bare base model. If they look the same, the adapter isn't carrying signal (undertrained).">
+                  ⚖ A/B
+                </button>
+              </div>
+            )}
             </div>
           ))}
         </div>

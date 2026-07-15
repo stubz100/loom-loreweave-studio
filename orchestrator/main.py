@@ -328,11 +328,19 @@ class ReadinessPersistRequest(BaseModel):
 
 
 class LoraPreviewRequest(BaseModel):
-    """P2/M6 (P2-11) — sample-gen with the freshly trained, un-promoted adapter."""
+    """P2/M6 (P2-11) — sample-gen with the freshly trained, un-promoted adapter.
+
+    Size defaults to the TRAINED resolution (rig finding 2026-07-15); `with_lora=false`
+    queues the same-seed A/B against the bare base model."""
 
     model_config = ConfigDict(extra="forbid")
     prompt: str | None = Field(default=None, max_length=2000)
     seed: int | None = Field(default=None, ge=0)
+    width: int | None = Field(default=None, ge=256, le=2048, multiple_of=16)
+    height: int | None = Field(default=None, ge=256, le=2048, multiple_of=16)
+    lora_weight: float | None = Field(default=None, ge=0.0, le=4.0)
+    num_steps: int | None = Field(default=None, ge=1, le=200)
+    with_lora: bool = True
 
 
 class CaptionOverrideRequest(BaseModel):
@@ -1729,8 +1737,10 @@ def create_app() -> FastAPI:
         if job.get("status") != "done":
             raise HTTPException(409, "only a DONE trainer run can be previewed")
         try:
-            sub = training.preview_request(_require_ws(), job,
-                                           prompt=req.prompt, seed=req.seed)
+            sub = training.preview_request(
+                _require_ws(), job, prompt=req.prompt, seed=req.seed,
+                width=req.width, height=req.height, lora_weight=req.lora_weight,
+                num_steps=req.num_steps, with_lora=req.with_lora)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(400, str(e))
         preview_id = RUNNER.submit(
@@ -1769,14 +1779,14 @@ def create_app() -> FastAPI:
             items, anchor_path = readiness.embed_items(vdir, version)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(400, str(e))
-        detail = assets.get_asset(ws, asset_id)
         job_id = RUNNER.submit(
             pipeline="identity", mode="score",
             params={"mode": "score", "anchor_image": anchor_path,
                     "batch_items": items, "min_det_score": req.min_det_score},
             batch_id="rdn_" + version["id"].removeprefix("ver_"),
             index=0, batch_size=1,
-            requester_id=detail["profile"]["id"],
+            # requester = the VERSION id (the P1 /generate convention the grid filters on)
+            requester_id=version["id"],
             profile_version_id=version["id"], stage="D",
         )
         LOG.info("readiness embed queued: %s asset=%s version=%s (%d refs, anchor=%s)",

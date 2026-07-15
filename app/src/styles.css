@@ -171,6 +171,19 @@ body {
   border-radius: 4px; padding: 4px 6px;
 }
 .train-staged, .train-jobs { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+/* M6 preview options row (P2-11 diagnosis levers) */
+.prev-opts { flex-wrap: wrap; }
+.prev-opts .prev-prompt {
+  flex: 1 1 260px; background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--text); border-radius: 4px; padding: 3px 6px; font-size: 12px; min-width: 0;
+}
+.prev-opts label.sm {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted);
+}
+.prev-opts label.sm input {
+  width: 64px; background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--text); border-radius: 4px; padding: 3px 6px; font-size: 12px;
+}
 /* M4 readiness meter (advisory tiers) */
 .ready-tiers { display: flex; flex-direction: column; gap: 3px; font-size: 12px; padding: 2px 0 4px; }
 .ready-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

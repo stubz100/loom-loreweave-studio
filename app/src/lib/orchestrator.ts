@@ -1396,9 +1396,11 @@ export async function cleanupTrainingRun(jobId: string):
   return await res.json();
 }
 
-/** P2-11: queue one sample gen with the fresh, un-promoted adapter from the run dir. */
+/** P2-11: queue one sample gen with the fresh, un-promoted adapter from the run dir.
+ * Size defaults to the TRAINED resolution; with_lora=false = same-seed A/B vs the base. */
 export async function previewTrainedLora(jobId: string, body: {
-  prompt?: string; seed?: number;
+  prompt?: string; seed?: number; width?: number; height?: number;
+  lora_weight?: number; num_steps?: number; with_lora?: boolean;
 } = {}): Promise<{ job_id: string; trainer_job_id: string; prompt: string }> {
   const res = await fetch(`${orchestratorUrl()}/training/jobs/${jobId}/preview`, {
     method: "POST",

@@ -2418,3 +2418,41 @@ author's visual stamps remain. Still rig-owed: the **M7 stamp** (🖼 preview �
 eyeball — now unblocked by finding 1's fix; restart the app first so the new code
 runs), the **M5 sd35 spike** + **R68 seed check**. The trained char02 adapter is ready
 to promote. **✅ PUSHED `e86493e`.**
+## Rig findings 3+4 — preview scoping + "is the adapter even working?" levers (2026-07-15)
+
+**User ran the FIXED preview (`job_cf7c6038`, done, 987 s): the overlay fix works** — the
+manifest records the M1 adapter provenance (`lora` block w/ sha256, `set_adapters` @ 1.0),
+so the LoRA **was loaded and active**. Two new findings:
+
+**Finding 3 — the preview tile landed in the SANDBOX, not the character's grid.** The
+grid filters on `requester_id == the VERSION id` (the P1 /generate convention) but the
+M6 preview submitted `requester_id = the ASSET id` → matched nothing → Sandbox. **Fixed:**
+`preview_request` (and the M4 readiness-embed submit, same inconsistency) now use the
+version id.
+
+**Finding 4 — "a profile image of an asian guy", not the character.** Diagnosis, in
+order of likelihood: (1) **undertrained** — char02's dataset is **79 images**; the
+M1-accepted 500 steps ≈ **6 epochs**, light for a set this size (the M1 spike validated
+500 on a much smaller fixed set) — the "asian guy" is Z-Image's (Tongyi) base prior
+showing through a weak identity; (2) the preview silently rendered **1024² against a
+512²-trained adapter** (dilutes learned features, 4× the render time — 19 s/step ×50);
+(3) the default prompt asks for a *portrait* — the expected T-pose full-body needs a
+custom prompt, which the FE didn't expose. **Built (the diagnosis levers):**
+- `preview_request`: **size defaults to the TRAINED resolution** (settings.resolution);
+  overridable `prompt/seed/width/height/lora_weight/num_steps`; **`with_lora=false`** =
+  the same-seed A/B against the bare base (adapter-signal test); requester = version id.
+- FE: **🖼 preview ▸ opens an inline options row** on the done run — prompt (hint: include
+  the trigger token; T-pose example in the tooltip), seed, size (blank = trained), weight
+  (raise 1.2–1.5 if identity is weak) + **▶** and **⚖ A/B** (queues LoRA + base at the
+  same seed; the row note names both job ids).
+
+**Author's diagnosis path (next rig session):** ⚖ A/B at the trained res, same seed —
+**if the pair looks identical, the adapter carries no signal** → re-stage with more
+steps (≈1500–2500 for 79 images, i.e. ~20–30 epochs; the steps field + advanced row
+already take it) and consider rank/alpha 32/32; **if the pair differs but identity is
+weak**, try weight 1.2–1.5 first, then more steps. Either way the M7 stamp waits for a
+preview that reproduces the character (that IS the acceptance criterion), then ⬆ promote.
+
+**Tests +1 → 408 green** (scoping = version id · trained-res default · full override set
+· with_lora=false strips lora_path+overlay at the same seed · ÷16 bound), `tsc` + `vite
+build` clean.

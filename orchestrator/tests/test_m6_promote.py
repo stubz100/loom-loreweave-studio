@@ -257,3 +257,37 @@ def test_preview_rides_the_trainer_overlay_for_peft(client, monkeypatch):
     jid2, _ = _finished_trainer_job(client, asset)
     bare = client.post(f"/training/jobs/{jid2}/preview", json={}).json()
     assert "runtime_overlay" not in RUNNER.get(bare["job_id"])["params"]
+
+
+def test_preview_scopes_to_the_version_grid_and_defaults_to_trained_res(client):
+    """Rig 2026-07-15: the first real preview tile landed in the SANDBOX — the grid
+    filters on requester_id == the VERSION id (the P1 /generate convention) but the
+    submit used the asset id. And it silently rendered 1024² against a 512²-trained
+    adapter. Preview now scopes to the version and defaults to the trained resolution;
+    prompt/seed/size/weight are overridable; with_lora=false = the same-seed base A/B."""
+    from orchestrator.runner import RUNNER
+
+    asset = _curated_asset(client)
+    jid, staged = _finished_trainer_job(client, asset)
+
+    prev = client.post(f"/training/jobs/{jid}/preview", json={}).json()
+    pjob = RUNNER.get(prev["job_id"])
+    assert pjob["requester_id"] == staged["version_id"]          # the grid filter key
+    assert pjob["params"]["width"] == 512 and pjob["params"]["height"] == 512
+
+    tuned = client.post(f"/training/jobs/{jid}/preview", json={
+        "prompt": "mara_lw, front view, full body, standing in a T-pose",
+        "seed": 777, "width": 768, "height": 768, "lora_weight": 1.5, "num_steps": 30,
+    }).json()
+    tp = RUNNER.get(tuned["job_id"])["params"]
+    assert tp["width"] == 768 and tp["lora_weight"] == 1.5 and tp["num_steps"] == 30
+    assert tp["prompt"].endswith("T-pose") and tp["seed"] == 777
+
+    base = client.post(f"/training/jobs/{jid}/preview",
+                       json={"seed": 777, "with_lora": False}).json()
+    bp = RUNNER.get(base["job_id"])["params"]
+    assert "lora_path" not in bp and "runtime_overlay" not in bp   # bare base model
+    assert bp["seed"] == 777                                       # same-seed comparison
+
+    assert client.post(f"/training/jobs/{jid}/preview",
+                       json={"width": 700}).status_code == 422     # ÷16 bound holds

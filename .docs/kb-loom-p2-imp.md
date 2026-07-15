@@ -2455,4 +2455,4 @@ preview that reproduces the character (that IS the acceptance criterion), then �
 
 **Tests +1 → 408 green** (scoping = version id · trained-res default · full override set
 · with_lora=false strips lora_path+overlay at the same seed · ÷16 bound), `tsc` + `vite
-build` clean.
+build` clean. **✅ PUSHED `424aeaa`.**

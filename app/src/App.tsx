@@ -156,6 +156,7 @@ export default function App() {
   const [styles, setStyles] = useState<StylesInfo | null>(null);   // L1 style collection
   const [genStyleId, setGenStyleId] = useState("");                // which style for this gen/edit
   const [styleDraft, setStyleDraft] = useState("");
+  const [stylePickOpen, setStylePickOpen] = useState(false);   // visual style picker popover
   // M8 — L1 World view toggle (ASSETS bootstrap vs the WORLD authoring surface).
   const [view, setView] = useState<"assets" | "world">("assets");
   // M0b — L1 authoring sub-tab (rail nav for the World workspace): styles / world / spine.
@@ -2135,6 +2136,47 @@ export default function App() {
           {project?.open && (
             <div className="style-bar">
               <span className="style-label">L1 style</span>
+              {/* Author 2026-08-08: picking by NAME alone is guesswork — the L1 · World
+                  sample is what actually tells you what a style looks like. The chip shows
+                  the current one and opens a visual grid of the rest. */}
+              {(() => {
+                const cur = (styles?.styles ?? []).find((s) => s.id === genStyleId);
+                const curThumb = cur?.sample?.file
+                  ? styleSampleUrl(cur.id, cur.sample.set_at ?? undefined) : null;
+                return (
+                  <div className="style-pick-wrap">
+                    <button className={`style-pick ${stylePickOpen ? "sel" : ""}`}
+                            onClick={() => setStylePickOpen(!stylePickOpen)}
+                            title={cur ? `${cur.name} — click to pick visually` : "pick a style"}>
+                      {curThumb ? <img src={curThumb} alt={cur?.name ?? ""} />
+                                : <span className="style-pick-ph">no<br/>sample</span>}
+                    </button>
+                    {stylePickOpen && (
+                      <div className="style-pop">
+                        {(styles?.styles ?? []).map((st) => {
+                          const th = st.sample?.file
+                            ? styleSampleUrl(st.id, st.sample.set_at ?? undefined) : null;
+                          return (
+                            <button key={st.id}
+                                    className={`style-pop-item ${st.id === genStyleId ? "sel" : ""}`}
+                                    onClick={() => { onSelectGenStyle(st.id); setStylePickOpen(false); }}
+                                    title={st.fragment || st.name}>
+                              {th ? <img src={th} alt={st.name} />
+                                  : <span className="style-pick-ph">no sample</span>}
+                              <span className="style-pop-name">
+                                {st.name}{styles && st.id === styles.active_style_id ? " ★" : ""}
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {(styles?.styles ?? []).length === 0 && (
+                          <span className="muted sm">No styles yet — add one in L1 · World.</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               <select className="style-sel" value={genStyleId}
                       onChange={(e) => onSelectGenStyle(e.target.value)}
                       title="which L1 style applies to THIS generation (★ = the project default). Edit its fragment here; add/delete/set-default in L1·World.">

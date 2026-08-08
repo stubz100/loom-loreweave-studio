@@ -3076,3 +3076,74 @@ what remains from the earlier list is the **R68 seed-semantics check** (prepped,
 run) and the **M7 acceptance stamp** (author's call — see the ledger entry).
 
 **✅ PUSHED `17dd1c5`.**
+
+## ⭐ Styles pass 1 — durable provenance + the double-styling fix (author's UI facelift, obs. 1) (2026-08-08 19:00–19:55 CEDT)
+
+**Author's report:** *"styles in general are handled poorly during the whole process"* — three
+parts: (a) picking a style by NAME is guesswork without the L1 sample; (b) *"when a style
+prompt is merged with the original prompt, further processing will not result in a clean
+output, as it will contain two different style definitions"*; (c) i2i/postproc carry the input
+image's style baked in, *"but it would still be handy to track what style the original
+image(s) had"*.
+
+**(b) and (c) are the same two gaps the M2.12 spike had just measured independently** —
+findings 1 and 3. That convergence is why this landed first (author's sequencing choice).
+
+### (c) A generated image now RECORDS its style
+
+`runner.submit(..., style_id=...)` stamps the **resolved** L1 id on the job — one style per
+run, `None` when the gate was off (which is real provenance, not a gap). Wired at **all five**
+generation submit sites: `/generate` ×2 (multi lineup + count loop) and Stage-B ×3 (warm flux2
+cells, warm i2i/inpaint cells, cold batch). `keep_ref` now falls back to the job's stamp when
+per-output meta has none, so curated refs inherit provenance from every path — not just the
+Stage-B cells M2.8 #7 covered.
+
+The fact graph emits `job|image --generated_under_style--> sty_X`, so the spike's
+`style_of_output` **resolves directly instead of walking and failing**. The report's verdict
+is now computed, not hardcoded: it flips to `answerable` once the stamped edges exist (legacy
+artifacts predate the stamp and stay unresolvable — honest, not retrofitted).
+
+### (b) Postproc stops stacking two style definitions
+
+Root cause: a postproc step inherits the **source image's prompt**, which already ends in the
+fragment that generated it (R104 appends), and then StyleLock/any styled path appended the
+*current* style on top — so the prompt described two different looks at once. The style is
+baked into the source pixels; text cannot un-bake it.
+
+**New default: inherit, never restate** — the M2.10 route-1 rule generalised from flux2
+Stage-B to the whole postproc stack (author's chosen option). **Override:** `apply_style: true`
+(+ optional `style_id`) deliberately re-styles, and `bible.strip_style_fragment` removes the
+**inherited** fragment first so exactly one definition survives. The strip is deliberately
+conservative — exact case-insensitive match of a known fragment plus its joining comma, never
+a fuzzy chunk of the author's own wording — and it uses the source job's stamped `style_id` to
+know which fragment to remove, falling back to trying every defined style for legacy images.
+StyleLock keeps applying by default; that IS its job. `apply_style`/`style_id` are now allowed
+params on every i2i preset, not just StyleLock.
+
+### Finding 2 closed as a side-effect: ONE authoritative derivation edge
+
+`chained_from` existed in the schema but was populated on **0 of 661** real jobs, because only
+the auto-chained passes set it and the author uses the manual postproc surface. That surface
+now records it, and the fact graph reads it **first**, leaving `postproc_stacks.json` and the
+`[X postproc of Y]` prompt string as pure legacy fill-in (each derivation edge is labelled with
+its `via`, so the mix stays measurable). This is also the robustness the author asked for in
+observation 2 — *"our tracking of post-processed images should also be more robust, so we could
+easily track any post-proc image what was its generated based on"* — and it is the foundation
+the grouped tree needs to be accurate, which is why it came before the tree.
+
+### (a) The style picker shows its sample
+
+A 30 px chip in the L1 style bar renders the **current** style's `bible/styles/` sample and
+opens a grid popover of every style with its own sample (name + ★ default marker, fragment on
+hover). The `<select>` stays for keyboard/accessibility. Styles without a sample show a
+placeholder rather than an empty box.
+
+**Tests +4 → 430 green** (a generated image records its style and records `None` honestly when
+the gate is off · postproc inherits exactly ONE definition and stamps the inherited style ·
+a deliberate restyle REPLACES rather than stacks and keeps the author's own wording ·
+`chained_from` is emitted as the authoritative edge and the spike's degraded queries flip to
+answerable). `tsc` + `vite build` clean.
+
+**Next (author's pass 2):** the grouped/collapsible tree view — operation groups at top level
+(keyed on `batch_id`) with postproc derivations nested under their source, a toggle beside the
+existing flat grid, and group operations including group delete.

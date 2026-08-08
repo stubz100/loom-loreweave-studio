@@ -145,6 +145,42 @@ def resolve_l1(ws: Workspace, apply_style_req: bool | None,
             (sty.get("global_negative") or "").strip(), sty.get("id"))
 
 
+def strip_style_fragment(ws: Workspace, prompt: str, *, style_id: str | None = None) -> str:
+    """Remove a previously-appended L1 style fragment from `prompt` (author 2026-08-08).
+
+    A postproc step inherits the source image's prompt, which ends in the fragment that
+    generated it (R104 appends). Applying a NEW style on top would leave two style
+    definitions fighting in one prompt — the thing the author reported as "not a clean
+    output". `style_id` names the style the source was generated under (the job's stamped
+    provenance); when it is unknown we fall back to trying EVERY defined style, so legacy
+    images with no stamp still get cleaned.
+
+    Conservative by design: only an exact fragment match (case-insensitive, with its
+    joining comma) is removed — never a fuzzy chunk of the author's own wording."""
+    text = (prompt or "").strip()
+    if not text:
+        return text
+    story = load_story(ws)
+    styles = story.get("styles") or []
+    if style_id:
+        cands = [s for s in styles if s["id"] == style_id] or styles
+    else:
+        cands = styles
+    for sty in cands:
+        frag = (sty.get("fragment") or "").strip()
+        if not frag:
+            continue
+        low, flow = text.lower(), frag.lower()
+        idx = low.find(flow)
+        if idx == -1:
+            continue
+        head, tail = text[:idx], text[idx + len(frag):]
+        text = (head.rstrip().rstrip(",").rstrip() + " " + tail.lstrip().lstrip(",").lstrip()).strip()
+        text = text.rstrip(",").strip()
+        break
+    return text
+
+
 def join_negative(existing: str | None, global_negative: str) -> str | None:
     """Append the L1 global negative to a request's negative_prompt (M8). Returns the
     merged string, or the original when there's nothing to add."""

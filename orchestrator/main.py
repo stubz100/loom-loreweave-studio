@@ -1126,7 +1126,8 @@ def create_app() -> FastAPI:
         # stored but never consulted). **Appended, not prepended** (user decision 2026-06-10,
         # amends R104's wording): the character/user prompt leads — front tokens dominate,
         # and the style mostly restates the look the model already renders.
-        _apply, fragment, global_neg, _sid = bible.resolve_l1(ws, req.apply_style, req.style_id)
+        _apply, fragment, global_neg, gen_style_id = bible.resolve_l1(
+            ws, req.apply_style, req.style_id)
         if fragment:
             base["prompt"] = f"{base['prompt']}, {fragment}"
         # L1 global negative (M8) pairs with the fragment under the same gate. Skipped for
@@ -1212,7 +1213,8 @@ def create_app() -> FastAPI:
                         pipeline=pl, mode="t2i", params=p,
                         batch_id=batch_id, index=len(job_ids), batch_size=total,
                         requester_id=requester_id, profile_version_id=profile_version_id,
-                        stage=req.stage, post_passes=post_passes, warm_group=wg))
+                        stage=req.stage, post_passes=post_passes, warm_group=wg,
+                        style_id=gen_style_id))
         else:
             for i in range(req.count):
                 params = dict(base)
@@ -1223,7 +1225,7 @@ def create_app() -> FastAPI:
                     batch_id=batch_id, index=i, batch_size=req.count,
                     requester_id=requester_id,          # project or asset version (R98)
                     profile_version_id=profile_version_id, stage=req.stage,
-                    post_passes=post_passes))
+                    post_passes=post_passes, style_id=gen_style_id))
         LOG.info("generate: %s %s (%s%s) for %s%s",
                  "cast" if is_multi else "batch", batch_id,
                  req.ideation_mode if is_multi else req.pipeline,
@@ -2315,7 +2317,7 @@ def create_app() -> FastAPI:
                     pipeline="flux2", mode="ref", params=cparams,
                     batch_id=batch_id, index=i, batch_size=len(cells),
                     requester_id=vid, profile_version_id=vid, stage="B",
-                    coverage_cell=c["coverage_cell"], warm_group=wg,
+                    coverage_cell=c["coverage_cell"], warm_group=wg, style_id=style_sid,
                     post_passes=post_passes))   # Phase 2b: each cell chains its own post-passes
         else:
           for gmode, gcells, gstrength in groups:
@@ -2342,7 +2344,7 @@ def create_app() -> FastAPI:
                         pipeline=req.pipeline, mode=gmode, params=cparams,
                         batch_id=batch_id, index=len(job_ids), batch_size=len(cells),
                         requester_id=vid, profile_version_id=vid, stage="B",
-                        coverage_cell=c["coverage_cell"], warm_group=wg,
+                        coverage_cell=c["coverage_cell"], warm_group=wg, style_id=style_sid,
                         post_passes=post_passes))   # Phase 2b: each cell chains its own post-passes
                 continue
             # Cold batch fallback (post-passes present): ONE --jobs-file job per group, post-passes
@@ -2371,7 +2373,7 @@ def create_app() -> FastAPI:
                 pipeline=req.pipeline, mode=gmode, params=params,
                 batch_id=batch_id, index=len(job_ids), batch_size=len(groups),
                 requester_id=vid, profile_version_id=vid, stage="B",
-                post_passes=post_passes))
+                post_passes=post_passes, style_id=style_sid))
         LOG.info("stage-b: %s preset=%s realize=%s -> %d batch job(s) %s for %s (hero %s)",
                  batch_id, req.preset, req.realize, len(job_ids), split, vid, hero_path.name)
         return {"batch_id": batch_id, "preset": req.preset, "count": len(job_ids),
@@ -2727,7 +2729,10 @@ def create_app() -> FastAPI:
                 version_id=vid, pipeline=job.get("pipeline"),
                 seed=ometa.get("seed", result.get("seed")),
                 method=ometa.get("method", job.get("mode")),
-                style_id=ometa.get("style_id"))   # M2.8 #7 — the style the cell ran under
+                # M2.8 #7 — the style the cell ran under. Per-output meta first (Stage-B
+                # stamps it there), then the JOB's own stamp (2026-08-08), which covers every
+                # other generation path — /generate, casting and postproc outputs included.
+                style_id=ometa.get("style_id") or job.get("style_id"))
         except (ws_mod.WorkspaceError, coverage.CoverageError) as e:
             raise HTTPException(400, str(e))
         LOG.info("curate keep: job %s -> asset %s (%d refs)",
@@ -2875,8 +2880,11 @@ def create_app() -> FastAPI:
             raise HTTPException(422, f"{req.preset!r} backend is fixed ({spec['backend']})")
         if is_i2i:
             allowed = {"strength", "prompt", "negative_prompt", "model_name"}
-            if req.preset == "stylelock":
-                allowed |= {"style_id"}   # pin a specific L1 style (default: the active one)
+            # Author 2026-08-08 — the per-step style override. Default is OFF for every i2i
+            # preset (the source's style is already baked in; restating it stacked two
+            # definitions in one prompt); `apply_style: true` deliberately RE-styles, and
+            # `style_id` picks which. StyleLock keeps applying by default — that IS its job.
+            allowed |= {"apply_style", "style_id"}
             # M0e Part B — an optional OUTPUT SIZE (scale factor + explicit W×H) so a Clean/Refine
             # step can re-diffuse larger = an i2i creative upscale. zimage/sd35 only: flux2 i2i
             # (the M0d dev-JSON re-pose) keeps source dims — its job is edit-in-place, not enlarge.
@@ -2983,6 +2991,9 @@ def create_app() -> FastAPI:
         needs_prompt = mode in ("img2img", "cn-inpaint")
         is_io = mode == "restore"
         item_prompt = ""
+        # Bound here, not inside the branch: an io-only preset (restore/resize) never touches
+        # a prompt but still has to record which style its OUTPUT carries (the inherited one).
+        want_style, _ssid = False, None
         if needs_prompt:
             pmeta = (parent.get("result") or {}).get("output_meta") or {}
             src_prompt = ((pmeta.get(src) or {}).get("prompt")
@@ -2991,14 +3002,24 @@ def create_app() -> FastAPI:
             if not item_prompt:
                 raise HTTPException(422, "this image has no source prompt to re-render from — "
                                          "type a prompt for the clean/refine/upscale step")
-            # M2.10 route 3 — StyleLock: append the L1 style fragment, resolved FRESH at queue
-            # time (style edits count; step param `style_id` pins one, else the active style),
-            # after the content prompt (the R104 placement rule).
-            if step.get("preset") == "stylelock":
+            # Author 2026-08-08: a postproc step inherits the SOURCE image's prompt, which
+            # already carries the fragment that generated it — so appending a second style
+            # definition produced prompts describing two different looks at once. The style
+            # is baked into the source pixels; text cannot un-bake it. Therefore:
+            #   default  → apply NOTHING, inherit the source's style (M2.10 route 1,
+            #              generalised from flux2 Stage-B to the whole postproc stack);
+            #   override → `apply_style` (or the StyleLock preset) applies exactly ONE
+            #              style, STRIPPING the inherited fragment first so they can't stack.
+            want_style = params_in.get("apply_style")
+            if want_style is None:
+                want_style = step.get("preset") == "stylelock"
+            if want_style:
                 _sap, frag, _sneg, _ssid = bible.resolve_l1(ws, True, params_in.get("style_id"))
                 if not frag:
-                    raise HTTPException(409, "StyleLock needs an L1 style — add one in "
-                                             "L1 · World › Visual styles first")
+                    raise HTTPException(409, "applying a style needs an L1 style — add one "
+                                             "in L1 · World › Visual styles first")
+                item_prompt = bible.strip_style_fragment(
+                    ws, item_prompt, style_id=parent.get("style_id"))
                 if frag.lower() not in item_prompt.lower():
                     item_prompt = f"{item_prompt}, {frag}"
         w, h = _image_dims(src_abs)   # source dims (restore + flux2 i2i preserve these)
@@ -3065,9 +3086,17 @@ def create_app() -> FastAPI:
         else:
             requester = parent.get("requester_id") or ws.load_project()["id"]
             pvid, stage = parent.get("profile_version_id"), parent.get("stage")
+        # `chained_from` is THE authoritative derivation edge (M2.12 finding 2: it existed in
+        # the schema but was populated on 0 of 661 jobs, so provenance had to be reconstructed
+        # from `postproc_stacks.json` plus a `[X postproc of Y]` PROMPT STRING, and neither was
+        # complete). The manual postproc surface now records it like the auto-chained passes do.
+        # `style_id` rides along: unless this step deliberately applied one, the output carries
+        # the source's style — it is baked into the pixels.
         jid = RUNNER.submit(pipeline=backend, mode=mode, params=job_params,
                             batch_id="", index=0, batch_size=1, requester_id=requester,
-                            profile_version_id=pvid, stage=stage, pass_name=step["preset"])
+                            profile_version_id=pvid, stage=stage, pass_name=step["preset"],
+                            chained_from=parent.get("id"),
+                            style_id=(_ssid if want_style else parent.get("style_id")))
         try:
             return postproc.mark_queued(ws, step_id=step_id, job_id=jid)
         except ws_mod.WorkspaceError as e:

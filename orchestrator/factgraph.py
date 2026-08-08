@@ -145,6 +145,21 @@ def _derivation_facts(ws: Workspace) -> list[dict]:
     out: list[dict] = []
     seen: set[tuple[str, str]] = set()
 
+    # `chained_from` is the AUTHORITATIVE edge (populated since 2026-08-08 on both the
+    # auto-chained passes and the manual postproc surface). It is read FIRST so the two
+    # legacy reconstructions below only ever fill in history.
+    for job in _jobs(ws).values():
+        parent = job.get("chained_from")
+        name = (job.get("result") or {}).get("output_name")
+        if not parent or not name:
+            continue
+        pres = (_jobs(ws).get(parent) or {}).get("result") or {}
+        src = pres.get("output_name")
+        if src and (name, src) not in seen:
+            seen.add((name, src))
+            out.append(_fact(name, "derived_from", src, via="chained_from",
+                             preset=job.get("pass"), job_id=job.get("id")))
+
     stacks = []
     sp = ws.path / "postproc_stacks.json"
     if sp.is_file():
@@ -185,8 +200,16 @@ def _job_facts(ws: Workspace) -> list[dict]:
                          stage=job.get("stage")))
         if job.get("profile_version_id"):
             out.append(_fact(jid, "for_version", job["profile_version_id"]))
-        for name in (job.get("result") or {}).get("output_names") or []:
+        names = (job.get("result") or {}).get("output_names") or []
+        for name in names:
             out.append(_fact(jid, "produced", name))
+        # 2026-08-08 — the durable style edge finding 3 said had to be written at generation
+        # time. Stamped on the JOB (one resolved style per run) and projected onto each image
+        # it produced, so `style_of_output` resolves without walking anywhere.
+        if job.get("style_id"):
+            out.append(_fact(jid, "generated_under_style", job["style_id"]))
+            for name in names:
+                out.append(_fact(name, "generated_under_style", job["style_id"]))
     return out
 
 
@@ -310,11 +333,14 @@ def style_of_output(facts: list[dict], output: str) -> dict:
     index must close** — one durable `generated_under_style` edge at generation time."""
     walk = derivation_chain(facts, output)
     by = _index(facts)
-    styled_outputs = {f["s"]: f["o"] for f in by.get("used_style", [])}
+    styled = {f["s"]: f["o"] for f in by.get("generated_under_style", [])}
+    styled.update({f["s"]: f["o"] for f in by.get("used_style", [])})
     path = [output] + [c["source"] for c in walk["chain"]]
-    hit = next((styled_outputs[p] for p in path if p in styled_outputs), None)
+    hit = next((styled[p] for p in path if p in styled), None)
     return {"output": output, "origin": walk["origin"], "hops": walk["hops"],
-            "style_id": hit, "resolved": hit is not None}
+            "style_id": hit, "resolved": hit is not None,
+            "via": ("direct" if output in styled else
+                    "inherited" if hit else None)}
 
 
 def report(ws: Workspace) -> dict:
@@ -346,9 +372,15 @@ def report(ws: Workspace) -> dict:
             "refs_using_style": ("answerable" if styled_refs else
                                  "DEGRADED — no ref carries a style edge (L1 gate off; "
                                  "style arrives via the hero reference)"),
-            "derivation_chain": "answerable (union of stack + prompt edges)",
-            "style_of_output": ("DEGRADED — no durable generated_under_style edge exists "
+            "derivation_chain": ("answerable (authoritative chained_from edges present)"
+                                 if via.get("chained_from")
+                                 else "answerable (reconstructed from stack + prompt edges)"),
+            # Answerable once images carry the durable edge written at generation time
+            # (2026-08-08). Legacy artifacts predate the stamp and stay unresolvable.
+            "style_of_output": ("answerable" if by.get("generated_under_style") else
+                                "DEGRADED — no durable generated_under_style edge exists "
                                 "on an image; the style lives only in the job request"),
         },
+        "style_edges": len(by.get("generated_under_style", [])),
         **stats(facts),
     }

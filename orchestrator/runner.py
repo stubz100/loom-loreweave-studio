@@ -560,7 +560,8 @@ class JobRunner:
                coverage_cell: dict | None = None,
                post_passes: list | None = None,
                chained_from: str | None = None, pass_name: str | None = None,
-               resumable: bool = False, warm_group: str | None = None) -> str:
+               resumable: bool = False, warm_group: str | None = None,
+               style_id: str | None = None) -> str:
         job_id = new_id("job", 8)
         with self._cv:
             self.jobs[job_id] = {
@@ -573,6 +574,12 @@ class JobRunner:
                 "profile_version_id": profile_version_id,   # P1: AssetProfile version (lineage)
                 "stage": stage,                             # P1: bootstrap stage A|B|C
                 "coverage_cell": coverage_cell,             # P1/M3: Stage-B recipe cell (→ ref_set, P2)
+                # The RESOLVED L1 style this job generated under (None = the gate was off).
+                # Author 2026-08-08 + the M2.12 spike's finding 3: style provenance lived only
+                # in the request, never on the artifact, so nothing downstream could answer
+                # "what style is this image?". Stamped on EVERY generation path and INHERITED
+                # by postproc (the style is baked into the source pixels).
+                "style_id": style_id,
                 "post_passes": post_passes or [],           # clean/polish chained after success
                 "chained_from": chained_from,               # parent job when THIS is a pass
                 "pass": pass_name,                          # "clean" | "polish" | None

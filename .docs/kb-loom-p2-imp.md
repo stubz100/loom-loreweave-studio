@@ -2819,3 +2819,5 @@ stylised art, and the offsets are a first-order additive model fitted by eye to 
 **That is the author's planned second cycle**, and §7 already routes the real answer through
 the **P4 VLM** (richer on-model judgement + semantic coverage). These constants are documented
 where they are precisely so that pass can move them.
+
+**✅ PUSHED `7ff587a`.**

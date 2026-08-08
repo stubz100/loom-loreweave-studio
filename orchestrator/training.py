@@ -25,6 +25,7 @@ from typing import Any
 from . import assets
 from . import bible
 from . import coverage
+from . import model_catalog
 from . import workspace as ws_mod
 from .config import CONFIG
 from .workspace import Workspace, new_id
@@ -871,6 +872,15 @@ def cleanup_run(ws: Workspace, job: dict) -> dict:
 # `pose_key` matches the M2.11 `bible/poses/` icon key, so the picker reuses the icons the
 # L1 · Poses tab already generates (the four cell poses usually have one already).
 
+# base_family -> (inference pipeline, its default model variant) for the M6 preview.
+# A family belongs here ONLY once its worker can load a LoRA at inference: zimage since M1,
+# sd35 since the M5 spike passed (2026-08-08). The adapter is trained against a specific
+# base, so previewing through any other pipeline would just render the wrong model's prior.
+PREVIEW_PIPELINES: dict[str, tuple[str, str]] = {
+    "zimage": ("zimage", "zimage-base"),
+    "sd35": ("sd35", "sd3.5-medium"),
+}
+
 PREVIEW_POSE_DEFAULT = "portrait"
 
 PREVIEW_POSES: list[dict[str, Any]] = [
@@ -963,10 +973,15 @@ def preview_request(ws: Workspace, job: dict, *, prompt: str | None = None,
     `portrait` — unchanged from the old fixed prompt). An explicit `prompt` still wins,
     so the free-text lever is untouched."""
     params = _require_trainer_job(job)
-    if params.get("base_family", "zimage") != "zimage":
+    # M5 spike GO (2026-08-08 — `job_a5edadc9`: sd35-medium, 500 steps @ 512², 342 s): sd35
+    # trains, so it must also preview. The preview pipeline follows the family the adapter
+    # was trained on — loading a LoRA into the wrong base would silently produce the base
+    # prior (the 2026-07-15 resolution lesson, in a different disguise).
+    base_family = params.get("base_family") or "zimage"
+    if base_family not in PREVIEW_PIPELINES:
         raise ws_mod.WorkspaceError(
-            "preview supports the zimage base for now — sd35 inference LoRA loading "
-            "lands with the M5 sd35 spike")
+            f"preview supports {sorted(PREVIEW_PIPELINES)} — no inference LoRA path for "
+            f"base_family {base_family!r}")
     promo = params.get("promotion") or {}
     if not promo.get("asset_id"):
         raise ws_mod.WorkspaceError("trainer job carries no promotion target")
@@ -975,11 +990,19 @@ def preview_request(ws: Workspace, job: dict, *, prompt: str | None = None,
     settings = params.get("settings") or {}
     trigger = params.get("trigger_token") or version.get("trigger_token") or ""
     trained_res = int(settings.get("resolution") or DEFAULT_ZIMAGE_SETTINGS["resolution"])
+    pipeline, default_model = PREVIEW_PIPELINES[base_family]
+    # The preset's `model_name` is the TRAINER's identifier and does not always match an
+    # inference variant id — zimage's "zimage-base" happens to be both, but sd35 trains as
+    # "sd35-medium" while the worker keys on "sd3.5-medium". Trusting it blindly would hand
+    # the worker an unknown model. Accept it only when the catalog knows it for THIS
+    # pipeline; otherwise fall back to the family's default variant.
+    known = {v["id"] for v in model_catalog.CATALOG[pipeline]["variants"]}
+    trained_model = settings.get("model_name")
     sub_params = {
         "prompt": (prompt
                    or preview_pose_prompt(pose or PREVIEW_POSE_DEFAULT, trigger)).strip(),
         "seed": 12345 if seed is None else int(seed),
-        "model_name": settings.get("model_name") or "zimage-base",
+        "model_name": trained_model if trained_model in known else default_model,
         "width": int(width or trained_res),
         "height": int(height or trained_res),
     }
@@ -997,7 +1020,7 @@ def preview_request(ws: Workspace, job: dict, *, prompt: str | None = None,
         if overlay:
             sub_params["runtime_overlay"] = str(overlay)
     return {
-        "pipeline": "zimage",
+        "pipeline": pipeline,
         "mode": "t2i",
         "params": sub_params,
         # Rig finding 2026-07-15: the grid filters on requester_id == the VERSION id

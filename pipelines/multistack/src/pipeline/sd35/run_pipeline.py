@@ -53,6 +53,10 @@ def run(
     controlnets: list[str] | None = None,
     controlnet_conditioning_scale: float | list[float] = 1.0,
     strength: float = 1.0,
+    # --- P2/M5: character LoRA (the sd35 trainer's own output) ---
+    lora_path: str | None = None,
+    lora_name: str = "loom_character",
+    lora_weight: float = 1.0,
 ) -> PipelineManifest:
     """Run the full SD 3.5 image generation pipeline.
 
@@ -155,6 +159,7 @@ def run(
         "load_pipeline",
         stage1_load_pipeline.get_manifest_inputs(
             model_name, device, cpu_offload, drop_t5, mode, controlnet, controlnets,
+            lora_path=lora_path, lora_name=lora_name, lora_weight=lora_weight,
         ),
     )
     try:
@@ -167,6 +172,9 @@ def run(
             mode=mode,
             controlnet=controlnet,
             controlnets=controlnets,
+            lora_path=lora_path,
+            lora_name=lora_name,
+            lora_weight=lora_weight,
         )
         manifest.end_stage(
             rec,
@@ -268,7 +276,9 @@ def run(
 # Restricted to the plain modes (t2i/img2img/inpaint) -- the ControlNet modes need
 # per-item conditioning images and stay single-run.
 
-_BATCH_SHARED_ONLY = ("mode", "model_name", "dtype", "cpu_offload", "drop_t5", "device")
+_BATCH_SHARED_ONLY = ("mode", "model_name", "dtype", "cpu_offload", "drop_t5", "device",
+                      # P2/M5: load-bound like the model itself — never per-item
+                      "lora_path", "lora_name", "lora_weight")
 _BATCH_MODES = ("t2i", "img2img", "inpaint")
 
 
@@ -451,6 +461,11 @@ def run_jobs(jobs_file: str, output_dir: str = "src/assets/pics", device: str = 
             mode=mode,
             controlnet=None,
             controlnets=None,
+            # P2/M5: the adapter is load-bound, so it is shared across the whole batch —
+            # loaded once with the pipeline, exactly like model_name/dtype.
+            lora_path=shared.get("lora_path"),
+            lora_name=shared.get("lora_name", "loom_character"),
+            lora_weight=shared.get("lora_weight", 1.0),
         )
     except Exception as e:
         _skip_rest(0, "pipeline load failed")
@@ -633,6 +648,13 @@ def main():
     parser.add_argument("--drop-t5", action="store_true",
                         help="Drop T5-XXL to save ~5GB VRAM. Hurts long-prompt comprehension.")
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16"])
+    # --- P2/M5: character LoRA (needs PEFT — supplied by the trainer overlay, R103) ---
+    parser.add_argument("--lora-path", default=None,
+                        help="Local Diffusers-compatible LoRA file or directory.")
+    parser.add_argument("--lora-name", default="loom_character",
+                        help="Adapter name registered in the pipeline.")
+    parser.add_argument("--lora-weight", type=float, default=1.0,
+                        help="Runtime adapter scale (0 = effectively off).")
     # --- Skip Layer Guidance (anatomy + composition fix) ---
     parser.add_argument("--no-skip-layer-guidance", action="store_true",
                         help="Disable Skip Layer Guidance (default ON for medium+large; "
@@ -727,6 +749,9 @@ def main():
         controlnets=parsed_controlnets,
         controlnet_conditioning_scale=parsed_cn_scale,
         strength=args.strength,
+        lora_path=args.lora_path,
+        lora_name=args.lora_name,
+        lora_weight=args.lora_weight,
     )
 
 

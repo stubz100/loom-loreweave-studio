@@ -3000,3 +3000,77 @@ walk unions both mechanisms and still fails to resolve style · the report state
 work · the embedding-free source contract), `tsc` + `vite build` clean.
 
 **✅ PUSHED `c9ab8ae`.**
+
+## ⭐⭐ M5 sd35 SPIKE = **GO** + sd35 inference LoRA / preview (2026-08-08 18:05–18:50 CEDT)
+
+### The last 🔴 R&D gate in P2 is passed
+
+**The author trained an sd35 LoRA on the rig: `job_a5edadc9` — sd35-medium, base_family
+`sd35`, 500 steps @ 512², `status: completed`, artifact real, `note: step 499/500 · loss
+0.469`.** So the M5 front-gate question — *does ai-toolkit train an SD3.5 LoRA on
+RX 9070 XT / ROCm / 16 GB at all?* — is answered **GO**.
+
+**Wall clock: 341.95 s — 1.8× FASTER than zimage's 612 s for the same 500 steps** (0.68 s/it
+vs 1.34), despite sd35-medium being the larger model. Worth noting for preset sizing.
+
+**Consequence: the diffusers-PEFT backend is OFF the critical path.** R115 kept it as sd35's
+fallback *if* ai-toolkit couldn't train SD3.5; it can, so PEFT stays `DECLARED` only
+(`{"backend":"peft"}` → 400/R115) and **the one branch that could still have enlarged P2 is
+closed.** `LOOM_TRAINER_SD35_GO=1` stays set; the sd35 preset values are validated by a real
+run (512², rank/alpha 16/16, qfloat8, low-vram, grad-checkpointing all held).
+
+### The wall the author hit: a trained sd35 LoRA could not be previewed
+
+**`preview_request` was hardwired to zimage** ("preview supports the zimage base for now —
+sd35 inference LoRA loading lands with the M5 spike"). The spike has now landed, so that
+sentence had to become code. It was not a one-line guard flip — **the sd35 worker had NO
+LoRA support whatsoever** (`grep lora pipelines/…/sd35/*.py` → nothing). Built, mirroring the
+zimage path exactly:
+
+- **Worker** `sd35/stage1_load_pipeline.py`: `lora_path`/`lora_name`/`lora_weight`; the
+  adapter is resolved **before** the slow pipeline load so a bad path fails fast, attached
+  via `load_lora_weights` + `set_adapters` **before** offload/placement so the hooks wrap the
+  merged modules, and reported in the manifest (`lora` block, the zimage convention).
+- **Worker** `sd35/run_pipeline.py`: the three args on `run()`, three CLI flags, the single-run
+  call site, and the **batch** loader — where they join `_BATCH_SHARED_ONLY`, because an
+  adapter is load-bound exactly like the model itself and must never be per-item.
+- **Catalog** `sd35.params`: the three flags (`--lora-path/-name/-weight`).
+- **Adapter** `sd35.WIRED_PARAMS`: the three params, so argv actually carries them.
+- **`PREVIEW_PIPELINES`** replaces the zimage special-case — `base_family → (pipeline,
+  default variant)`. A family belongs there **only once its worker can load a LoRA at
+  inference**; anything else refuses loudly rather than previewing through the wrong base.
+  That matters: rendering an sd35 adapter through the zimage worker would silently produce
+  zimage's prior — the 2026-07-15 resolution lesson wearing a different hat.
+
+**PEFT rides along unchanged:** sd35's `load_lora_weights` needs it just as zimage's does, so
+the preview job keeps carrying `runtime_overlay` (R103) and the runner keeps prepending it to
+the worker's PYTHONPATH.
+
+⚠ **Bug the test caught before it shipped:** the preview reused `settings["model_name"]`
+blindly, but that is the **TRAINER's** identifier — zimage's `zimage-base` happens to be a
+valid inference variant too, while sd35 trains as **`sd35-medium`** and the worker keys on
+**`sd3.5-medium`**. The preview would have handed the worker an unknown model. It now accepts
+the trained name only when the **catalog knows it for that pipeline**, else falls back to the
+family's default variant.
+
+⚠ **Vendor drift guard fired (R162), correctly:** `sd35/run_pipeline.py` is a byte-matched
+mirror of the monorepo source. Both touched files (`run_pipeline.py`,
+`stage1_load_pipeline.py`) were **re-vendored to `src/pipeline/sd35/`** so the guard is green
+— the monorepo stays the source of truth.
+
+**Tests +2 → 426 green** (the sd35 preview submits to the **sd35** pipeline with the right
+variant, the artifact, the overlay, stage D + version scope, and the pose/trained-res defaults
+working identically across families — plus source contracts asserting the worker, catalog and
+adapter all really carry the LoRA flags; and a family with no inference LoRA path refuses).
+`tsc` + `vite build` clean.
+
+**Rig-owed (small):** the sd35 preview eyeball itself — `🖼 preview ▸ ▶` on `job_a5edadc9`
+(restart the orchestrator first so the new worker code and the `LOOM_TRAINER_SD35_GO` flag are
+live). Then ⚖ A/B against the bare base, exactly as for zimage.
+
+### P2 ledger
+
+**M5 is now ✅ complete on its own terms** (preset registry · gate-as-code · generalized
+`/lora/stage` · R68 plumbing · **the spike itself GO** · sd35 inference LoRA + preview);
+what remains from the earlier list is the **R68 seed-semantics check** (prepped, one 60-step
+run) and the **M7 acceptance stamp** (author's call — see the ledger entry).

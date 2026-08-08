@@ -54,6 +54,9 @@ WIRED_PARAMS = (
     "prompt", "mode", "width", "height", "seed", "model_name",
     "num_steps", "guidance_scale", "negative_prompt",
     "init_image", "mask_image", "strength",
+    # P2/M5 (spike GO 2026-08-08) — load a trained character LoRA at inference, so the
+    # M6 preview/promote path works for sd35 exactly as it does for zimage.
+    "lora_path", "lora_name", "lora_weight",
     # M0e Part C — single-run cn-inpaint (tile-CN creative upscale): the conditioning image +
     # CN repo key + conditioning scale. emit_argv gates these to mode=cn-inpaint (catalog `modes`).
     "controlnet", "control_image", "cn_scale",

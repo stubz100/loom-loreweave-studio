@@ -63,14 +63,17 @@ def _curated_asset(client, *, n=2):
     return a
 
 
-def _finished_trainer_job(client, asset, *, trigger="mara_lw"):
+def _finished_trainer_job(client, asset, *, trigger="mara_lw", base_family=None):
     """Stage → queue → hand-finish the trainer job the way the wrapper would: the adapter
     lands in the run dir's <job_name>/ checkpoint layout + a trainer manifest in the
-    job's out dir, and the parsed result points at both."""
+    job's out dir, and the parsed result points at both. `base_family` picks the trained
+    base (sd35 needs its spike gate open — the caller sets it)."""
     from orchestrator.runner import RUNNER
 
-    staged = client.post(f"/assets/{asset['id']}/lora/stage",
-                         json={"trigger_token": trigger, "steps": 60}).json()
+    body = {"trigger_token": trigger, "steps": 60}
+    if base_family:
+        body["base_family"] = base_family
+    staged = client.post(f"/assets/{asset['id']}/lora/stage", json=body).json()
     jid = client.post(f"/training/staged/{staged['id']}/queue").json()["job_id"]
     job = RUNNER.jobs[jid]
     params = job["params"]
@@ -425,3 +428,58 @@ def test_stage_d_grid_admits_only_image_producing_jobs(client):
                / "app" / "src" / "App.tsx").read_text(encoding="utf-8")
     assert 'j.pipeline !== "zimage_trainer" && j.mode !== "score"' in app_tsx
     assert 'gridStage !== "D" || makesAnImage(j)' in app_tsx
+
+
+def test_sd35_preview_uses_the_sd35_pipeline_after_the_spike_go(client, monkeypatch):
+    """M5 spike GO 2026-08-08 (`job_a5edadc9`: sd35-medium, 500 steps @ 512², 342 s) — sd35
+    trains, so it must also PREVIEW. The author hit exactly this wall: a finished sd35 run
+    could not be eyeballed because `preview_request` was hardwired to zimage.
+
+    An adapter is trained against ONE base, so the preview pipeline must FOLLOW the trained
+    family — previewing an sd35 LoRA through the zimage worker would just render zimage's
+    prior (the 2026-07-15 resolution lesson in another disguise). The overlay still rides
+    along, because sd35's `load_lora_weights` needs PEFT just as zimage's does (R103)."""
+    from orchestrator.runner import RUNNER
+
+    monkeypatch.setenv("LOOM_TRAINER_SD35_GO", "1")     # the spike passed
+    monkeypatch.setenv("LOOM_TRAINER_OVERLAY", r"X:itk-overlay")
+    asset = _curated_asset(client)
+    jid, staged = _finished_trainer_job(client, asset, base_family="sd35")
+
+    prev = client.post(f"/training/jobs/{jid}/preview", json={})
+    assert prev.status_code == 200, prev.text
+    pjob = RUNNER.get(prev.json()["job_id"])
+    assert pjob["pipeline"] == "sd35"                           # NOT zimage
+    assert pjob["params"]["model_name"] == "sd3.5-medium"
+    assert pjob["params"]["lora_path"].endswith(".safetensors")
+    assert pjob["params"]["runtime_overlay"] == r"X:itk-overlay"   # PEFT, same as zimage
+    assert pjob["stage"] == "D" and pjob["requester_id"] == staged["version_id"]
+    # the pose picker + trained-res default work identically across families
+    assert pjob["params"]["width"] == 512 and pjob["params"]["height"] == 512
+    assert pjob["params"]["prompt"] == "mara_lw, front view, portrait, neutral expression"
+
+    # the sd35 worker + catalog + adapter must actually carry the three LoRA flags, or the
+    # job above would be silently dropped on the floor at argv time
+    from orchestrator import model_catalog
+    from orchestrator.adapters import sd35 as sd35_adapter
+
+    names = {p["name"] for p in model_catalog.CATALOG["sd35"]["params"]}
+    assert {"lora_path", "lora_name", "lora_weight"} <= names
+    assert {"lora_path", "lora_name", "lora_weight"} <= set(sd35_adapter.WIRED_PARAMS)
+    worker = (Path(__file__).resolve().parents[2] / "pipelines" / "multistack" / "src"
+              / "pipeline" / "sd35" / "stage1_load_pipeline.py").read_text(encoding="utf-8")
+    assert "load_lora_weights" in worker and "set_adapters" in worker
+
+
+def test_preview_refuses_a_family_with_no_inference_lora_path(client):
+    """The guard is a roster, not a zimage special-case: a family that cannot load a LoRA
+    at inference must refuse loudly rather than preview through the wrong base."""
+    from orchestrator import training
+    from orchestrator.runner import RUNNER
+
+    assert set(training.PREVIEW_PIPELINES) == {"zimage", "sd35"}
+    asset = _curated_asset(client)
+    jid, _staged = _finished_trainer_job(client, asset)
+    RUNNER.get(jid)["params"]["base_family"] = "flux2"      # never trained/loadable here
+    r = client.post(f"/training/jobs/{jid}/preview", json={})
+    assert r.status_code == 400 and "flux2" in r.text

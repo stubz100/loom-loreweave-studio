@@ -32,6 +32,7 @@ training data overlap with SD 3.
 
 import os
 import time
+from pathlib import Path
 
 import torch
 from diffusers import (
@@ -110,6 +111,9 @@ def run(
     mode: str = "t2i",
     controlnet: str | None = None,
     controlnets: list[str] | None = None,
+    lora_path: str | None = None,
+    lora_name: str = "loom_character",
+    lora_weight: float = 1.0,
 ) -> dict:
     """Load the SD 3.5 pipeline (and optional ControlNet) and return it.
 
@@ -124,9 +128,17 @@ def run(
         controlnets: List of ControlNet repos for cn-inpaint-mc; first MUST be
             an inpaint CN (extra_conditioning_channels>0, e.g. alimama),
             second+ can be any non-inpaint CN (e.g. depth).
+        lora_path: Optional local Diffusers-compatible LoRA file or directory
+            (P2/M5 — the sd35 trainer's own output, once the spike passed).
+        lora_name: Adapter name registered in the pipeline.
+        lora_weight: Runtime adapter scale.
 
     Returns dict with keys: pipe, model_info, model_name, device, mode,
-        controlnet_repo (str or list[str] or None), timings.
+        controlnet_repo (str or list[str] or None), lora, timings.
+
+    NOTE: `load_lora_weights` needs the **PEFT** backend, which lives only in the
+    isolated trainer dependency overlay (R103) — the orchestrator rides it onto
+    LoRA-loaded jobs via `runtime_overlay`, exactly as it does for zimage.
     """
     if mode not in ("t2i", "img2img", "inpaint", "cn-inpaint", "cn-inpaint-mc"):
         raise ValueError(
@@ -145,6 +157,24 @@ def run(
     repo_id = model_info["repo_id"]
     torch_dtype = torch.bfloat16 if dtype == "bfloat16" else torch.float16
     timings: dict[str, float] = {}
+
+    # P2/M5: resolve the adapter BEFORE the (slow) pipeline load so a bad path fails fast.
+    # Mirrors the zimage loader exactly — a file loads via its parent dir + weight_name,
+    # a directory loads as-is.
+    lora: dict | None = None
+    lora_root: Path | None = None
+    lora_kwargs: dict = {}
+    if lora_path:
+        lpath = Path(lora_path).expanduser().resolve()
+        if not lpath.exists():
+            raise FileNotFoundError(f"LoRA path does not exist: {lpath}")
+        if not lora_name.strip():
+            raise ValueError("lora_name must not be empty when lora_path is set")
+        lora_root = lpath.parent if lpath.is_file() else lpath
+        lora_kwargs = {"adapter_name": lora_name}
+        if lpath.is_file():
+            lora_kwargs["weight_name"] = lpath.name
+        lora = {"path": str(lpath), "name": lora_name, "weight": float(lora_weight)}
 
     load_kwargs: dict = {"torch_dtype": torch_dtype}
     if drop_t5:
@@ -222,6 +252,11 @@ def run(
                 f"-- hidden=1536; use --sd35-model sd3.5-medium with them.)"
             )
 
+    # Attach the adapter before offload/placement so the hooks wrap the merged modules.
+    if lora_root is not None:
+        pipe.load_lora_weights(str(lora_root), **lora_kwargs)
+        pipe.set_adapters(lora_name, adapter_weights=float(lora_weight))
+
     if cpu_offload:
         pipe.enable_model_cpu_offload()
     else:
@@ -239,6 +274,7 @@ def run(
         "dtype": dtype,
         "mode": mode,
         "controlnet_repo": cn_repo,
+        "lora": lora,
         "timings": timings,
     }
 
@@ -247,12 +283,18 @@ def get_manifest_inputs(
     model_name: str, device: str, cpu_offload: bool, drop_t5: bool,
     mode: str = "t2i", controlnet: str | None = None,
     controlnets: list[str] | None = None,
+    lora_path: str | None = None, lora_name: str | None = None,
+    lora_weight: float | None = None,
 ) -> dict:
     return {
         "model_name": model_name, "device": device, "cpu_offload": cpu_offload,
         "drop_t5": drop_t5, "mode": mode,
         "controlnet": _resolve_controlnet_repo(controlnet) if controlnet else None,
         "controlnets": [_resolve_controlnet_repo(c) for c in controlnets] if controlnets else None,
+        # P2/M5 — adapter provenance in the manifest (the zimage convention)
+        "lora_path": lora_path,
+        "lora_name": lora_name if lora_path else None,
+        "lora_weight": lora_weight if lora_path else None,
     }
 
 
@@ -268,6 +310,7 @@ def get_manifest_outputs(result: dict) -> dict:
         "dtype": result["dtype"],
         "mode": result["mode"],
         "controlnet_repo": result.get("controlnet_repo"),
+        "lora": result.get("lora"),      # P2/M5 — which adapter was actually attached
         "timings": result["timings"],
     }
 

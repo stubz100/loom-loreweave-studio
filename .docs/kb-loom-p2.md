@@ -1474,6 +1474,17 @@ author's visual sign-off.
    PEFT/TRL deps live in a dependency overlay like ai-toolkit's (`.tmp/ai-toolkit-deps` extended,
    or a sibling `peft-deps` overlay baked at stage time via the same `runtime_overlay` channel) —
    never installed into the shared inference venv.
+   *(⭐ **SPIKE = GO, 2026-08-08 — the last 🔴 R&D gate in P2 is passed.** `job_a5edadc9`:
+   sd35-medium, 500 steps @ 512², completed, artifact real — and in **342 s, 1.8× FASTER than
+   zimage's 612 s** for the same step count (0.68 vs 1.34 s/it). **The diffusers-PEFT backend is
+   therefore OFF the critical path** — R115 kept it as sd35's fallback only *if* ai-toolkit
+   couldn't train SD3.5; it can, so PEFT stays DECLARED-only and the one branch that could have
+   enlarged P2 is closed. Same session: **sd35 inference LoRA + preview built** — the worker had
+   no LoRA support at all, so `stage1_load_pipeline` gained the zimage load/`set_adapters` path
+   (+ manifest provenance), `run_pipeline` the args/flags/batch-shared wiring, plus catalog +
+   adapter params; `PREVIEW_PIPELINES` replaces the zimage special-case so a preview always runs
+   on the family the adapter was trained against. Re-vendored to the monorepo (R162). Journal:
+   "M5 sd35 SPIKE = GO".)*
    *(🟡 no-GPU slice ✅ built 2026-07-13 — journal "M5": preset registry + `GET /training/presets`,
    the gate AS CODE (`LOOM_TRAINER_SD35_GO`), generalized `POST /assets/{id}/lora/stage`,
    R68 seed-from-parent step-0-checkpoint plumbing. RIG-OWED: the sd35 spike itself, the

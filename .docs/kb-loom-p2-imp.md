@@ -2672,3 +2672,5 @@ of the advisory rollup. (3) is the one that matches what the tier is actually fo
 **Interim reading for the author:** treat char02's dupes warning as noise. Coverage 1.0 with
 78 distinct cells over 79 refs is close to an ideal set, and the adapter trained from it
 reproduces the character — the advisory `recommended: false` is an artifact, not a verdict.
+
+**✅ PUSHED `eba0202`.**

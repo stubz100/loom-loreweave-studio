@@ -3074,3 +3074,5 @@ live). Then ⚖ A/B against the bare base, exactly as for zimage.
 `/lora/stage` · R68 plumbing · **the spike itself GO** · sd35 inference LoRA + preview);
 what remains from the earlier list is the **R68 seed-semantics check** (prepped, one 60-step
 run) and the **M7 acceptance stamp** (author's call — see the ledger entry).
+
+**✅ PUSHED `17dd1c5`.**

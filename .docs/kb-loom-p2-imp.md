@@ -2568,3 +2568,4 @@ the **🔬 readiness scan** (M4, never run for real), **one re-stage** so captio
 are M3-era, then preview → promote on that run. Still open and unchanged: the **M5 sd35
 spike** (🔴 gate, `LOOM_TRAINER_SD35_GO`), the **R68 seed check**, **M2.12** GraphRAG spike
 (non-gating), and the **hardware blocker** (now off the critical path, still undiagnosed).
+**✅ PUSHED `36039c7`.**

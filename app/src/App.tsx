@@ -155,7 +155,6 @@ export default function App() {
   const [style, setStyleState] = useState<StyleInfo | null>(null);
   const [styles, setStyles] = useState<StylesInfo | null>(null);   // L1 style collection
   const [genStyleId, setGenStyleId] = useState("");                // which style for this gen/edit
-  const [styleDraft, setStyleDraft] = useState("");
   const [stylePickOpen, setStylePickOpen] = useState(false);   // visual style picker popover
   // M8 — L1 World view toggle (ASSETS bootstrap vs the WORLD authoring surface).
   const [view, setView] = useState<"assets" | "world">("assets");
@@ -622,8 +621,6 @@ export default function App() {
       setStyleState(s);
       setStyles(st);
       setGenStyleId(st.active_style_id);   // per-gen selection resets to the active default
-      const sel = st.styles.find((x) => x.id === st.active_style_id);
-      setStyleDraft(sel?.fragment ?? s.fragment);
       setApplyStyle(s.enabled_default);
     } catch {
       /* no project / transient */
@@ -639,12 +636,9 @@ export default function App() {
     } catch { /* transient */ }
   };
 
-  // Pick which L1 style applies to the next generation (and is the one the bar edits).
-  const onSelectGenStyle = (id: string) => {
-    setGenStyleId(id);
-    const sel = styles?.styles.find((x) => x.id === id);
-    if (sel) setStyleDraft(sel.fragment);
-  };
+  // Pick which L1 style applies to the next generation. Selection only — editing lives in
+  // L1 · World › Visual styles (author 2026-08-08).
+  const onSelectGenStyle = (id: string) => setGenStyleId(id);
 
   // Load the library + style whenever the open project changes.
   useEffect(() => {
@@ -1177,20 +1171,6 @@ export default function App() {
     }
   };
 
-  const onSaveStyle = async () => {
-    try {
-      // Save the fragment into the SELECTED style (genStyleId) + the on/off gate (review:
-      // enabled_default must be settable, not just stored). 2026-06-13: styles are a
-      // collection, so the bar edits whichever style is picked.
-      const s = await setStyle(styleDraft, applyStyle, undefined, genStyleId || undefined);
-      setStyleState(s);
-      await refreshStyles();
-      log.info("style saved", genStyleId ? `(${genStyleId})` : "", "apply:", applyStyle);
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
   // Explicit, on-demand model fetch (R163) when the launch gate reports a missing
   // P0-essential weight — the no-surprise alternative to auto-downloading at startup.
   const onFetchWeights = async () => {
@@ -1576,6 +1556,13 @@ export default function App() {
               onStubCreated={() => void refreshAssets()}
               onStylesChanged={() => { void refreshStyles(); void refreshAssets(); }}
               onView={(src) => setViewer(src)}
+              styleDefaultOn={style?.enabled_default ?? true}
+              onSetStyleDefault={async (on) => {
+                try {
+                  setStyleState(await setStyle(undefined, on));
+                  setApplyStyle(on);
+                } catch (e) { setError(String(e)); }
+              }}
             />
           ) : (
           <>
@@ -2177,28 +2164,14 @@ export default function App() {
                   </div>
                 );
               })()}
-              <select className="style-sel" value={genStyleId}
-                      onChange={(e) => onSelectGenStyle(e.target.value)}
-                      title="which L1 style applies to THIS generation (★ = the project default). Edit its fragment here; add/delete/set-default in L1·World.">
-                {(styles?.styles ?? []).map((st) => (
-                  <option key={st.id} value={st.id}>
-                    {st.name}{styles && st.id === styles.active_style_id ? " ★" : ""}
-                  </option>
-                ))}
-              </select>
-              <input
-                className="style-frag"
-                placeholder="style fragment (auto-applied — appended; full editor in L1·World)…"
-                value={styleDraft}
-                onChange={(e) => setStyleDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") onSaveStyle();
-                }}
-              />
-              <button className="proj-btn" onClick={onSaveStyle}
-                      disabled={styleDraft === (styles?.styles.find((x) => x.id === genStyleId)?.fragment ?? "")
-                                && applyStyle === (style?.enabled_default ?? true)}>
-                Save
+              {/* Author 2026-08-08: the bar is a PICKER, not an editor — styles are authored
+                  in L1 · World › Visual styles and nowhere else. The fragment field, the Save
+                  button and the name dropdown are all gone; the sample chip above selects
+                  visually, and the name here just says which one is live. */}
+              <button className="style-name" onClick={() => setStylePickOpen(!stylePickOpen)}
+                      title="which L1 style applies to THIS generation (★ = the project default). Pick from the samples; edit in L1 · World › Visual styles.">
+                {(styles?.styles ?? []).find((s) => s.id === genStyleId)?.name ?? "— no style —"}
+                {styles && genStyleId === styles.active_style_id ? " ★" : ""}
               </button>
               {/* M2.10 UX (author, 2nd pass): ONE apply toggle, here — stage-aware. A·Cast
                   binds the global applyStyle (default on, Save persists it); B·Expansion
@@ -2784,13 +2757,18 @@ function GridCell({
 
 // M8 — L1 World authoring: world prose, the style fragment + global negative, and the
 // story spine (premise + characters that materialize into stub AssetProfiles, R55).
-function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged, onView }: {
+function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged, onView,
+                         styleDefaultOn, onSetStyleDefault }: {
   project: ProjectInfo | null;
   tab: "styles" | "world" | "spine" | "poses";   // M0b rail sub-tab (+ M2.11 poses)
   onError: (e: string) => void;
   onStubCreated: () => void;
   onStylesChanged: () => void;    // tell the parent to reload styles (the L2 bar selector)
   onView: (src: string) => void;  // Pass 2 — open a style sample in the full-res lightbox
+  // Author 2026-08-08: the project-level apply gate moved HERE with the rest of style
+  // authoring — the L2 bar is a picker now and no longer persists anything.
+  styleDefaultOn: boolean;
+  onSetStyleDefault: (on: boolean) => void;
 }) {
   const [bible, setBible] = useState<BibleInfo | null>(null);
   const [stylesData, setStylesData] = useState<StylesInfo | null>(null);
@@ -2916,6 +2894,12 @@ function WorldWorkspace({ project, tab, onError, onStubCreated, onStylesChanged,
                  onKeyDown={(e) => { if (e.key === "Enter") void onAddStyle(); }} />
           <button className="proj-btn" disabled={busy || !newStyleName.trim()}
                   onClick={() => void onAddStyle()}>+ add style</button>
+          <label className="apply-style"
+                 title="apply the selected style to new generations by default (R104). The L2 bar's tick still overrides it per generation.">
+            <input type="checkbox" checked={styleDefaultOn}
+                   onChange={(e) => onSetStyleDefault(e.target.checked)} />
+            apply by default
+          </label>
         </div>
         <div className="style-tiles">
           {(stylesData?.styles ?? []).map((st) => (

@@ -3149,3 +3149,24 @@ answerable). `tsc` + `vite build` clean.
 existing flat grid, and group operations including group delete.
 
 **✅ PUSHED `7453195`.**
+
+### Style bar → picker-only (author, same day)
+
+*"there is really no need for the style description and the save button to be there, it just
+takes up space — also, styles should only be edited at L1/Visual Styles… would it be possible
+to select the style by only using the images?"*
+
+**Yes — the popover already selected visually, so the dropdown was redundant.** The L2 style
+bar is now **selection only**: the sample chip (opens the visual grid), the style's name (also
+opens it, and says which one is live + ★ if it is the project default), and the stage-aware
+**apply** tick. Removed: the fragment `<input>`, the **Save** button, and the name `<select>` —
+with `styleDraft`, `setStyleDraft` and `onSaveStyle` deleted rather than left dangling.
+
+⚠ **One thing Save was quietly doing:** it persisted `enabled_default` (the project-level
+"apply by default" gate) as well as the fragment — and that gate was settable from **nowhere
+else**, so deleting the button would have stranded it at whatever it already was. It moved to
+**L1 · World › Visual styles** with the rest of style authoring, as an *"apply by default"*
+tick beside `+ add style`; the L2 bar's tick still overrides it per generation. Styles are now
+authored in exactly one place, which is what the author asked for.
+
+**430 tests green** (unchanged — this pass is FE-only), `tsc` + `vite build` clean.

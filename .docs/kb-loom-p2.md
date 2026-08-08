@@ -1405,6 +1405,21 @@ author's visual sign-off.
    queries ("which curated refs used style X?", "which cells lack a kept ref?"). **Non-gating**
    (R170: never blocks the P2 done-line or training); sequencing at the author's call —
    naturally after M4 readiness, whose queries it overlaps.
+   *(✅ **BUILT 2026-08-08** — `orchestrator/factgraph.py`, CPU-only + **embedding-free by
+   construction** (P4's embedding model owns the vector half, R137); typed triples rebuilt from
+   disk to **`context/project_facts.jsonl`** (the path `kb-loom-p4.md` §5 reserves);
+   `GET /context/facts` + `GET /context/query`. **1 675 facts** off the live project.
+   **Verdict: feasible and cheap** (a full rebuild over ~700 jobs is ≪1 s — P4 needs no
+   incremental index at this size). "Which cells lack a kept ref?" is **fully answerable**
+   (char02: 78 of 120 filled; the whole `back` column missing). "Which refs used style X?" is
+   **structurally degraded**: `style_id` is null on all 79 refs because post-M2.10 route 1 runs
+   flux2 expansion with the L1 gate OFF — the **hero reference carries the style**, so style is
+   transitive through the hero rather than a ref attribute (correct provenance, NOT the M2.8 #7
+   gap regressing). Two further findings: derivation lives in **three** mechanisms and none is
+   complete (24 stack edges · 11 prompt-string edges · `job.chained_from` **0 of 661** — the
+   author's hero needs BOTH to walk its 2 hops), and **no durable `generated_under_style` edge
+   exists on an image**. **P4 must add those two edges AT WRITE TIME** — no index can recover
+   them later. Journal: "M2.12 — GraphRAG retrieval-index SPIKE".)*
 
 ### Phase B — Thicken (all VLM-free)
 

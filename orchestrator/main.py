@@ -61,6 +61,7 @@ try:
     from . import flux2_prompt
     from . import training
     from . import readiness
+    from . import factgraph
 except ImportError:  # pragma: no cover - direct-run convenience
     from config import CONFIG  # type: ignore
     from adapters import JobSpec  # type: ignore
@@ -90,6 +91,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     import flux2_prompt  # type: ignore
     import training  # type: ignore
     import readiness  # type: ignore
+    import factgraph  # type: ignore
     __version__ = "0.0.1"
     SCHEMA_VERSION = 1
 
@@ -1726,6 +1728,46 @@ def create_app() -> FastAPI:
         LOG.info("training temp cleaned: job=%s dir=%s (existed=%s)",
                  job_id, res["run_dir"], res["cleaned"])
         return res
+
+    @app.get("/context/facts")
+    def get_project_facts(rebuild: bool = False) -> dict:
+        """P2/M2.12 — the GraphRAG **spike**'s verdict over the live workspace (R170,
+        non-gating): fact/node/edge counts, style-provenance coverage, and which of the
+        named relational queries the data can actually answer. `rebuild=true` also writes
+        `context/project_facts.jsonl`. Read-only, CPU-only, embedding-free — P4 builds the
+        real persistent index alongside the embedding model (R137)."""
+        ws = _require_ws()
+        report = factgraph.report(ws)
+        if rebuild:
+            report["written"] = factgraph.write(ws)
+        return report
+
+    @app.get("/context/query")
+    def query_project_facts(q: str, version_id: str | None = None,
+                            style_id: str | None = None,
+                            output: str | None = None) -> dict:
+        """P2/M2.12 — run one canned relational query against the freshly-built facts.
+        `q` ∈ cells_without_kept_ref | refs_using_style | derivation_chain | style_of_output."""
+        ws = _require_ws()
+        facts = factgraph.build(ws)
+        try:
+            if q == "cells_without_kept_ref":
+                if not version_id:
+                    raise HTTPException(400, "version_id is required for this query")
+                return factgraph.cells_without_kept_ref(facts, version_id)
+            if q == "refs_using_style":
+                if not style_id:
+                    raise HTTPException(400, "style_id is required for this query")
+                return factgraph.refs_using_style(facts, style_id)
+            if q in ("derivation_chain", "style_of_output"):
+                if not output:
+                    raise HTTPException(400, "output is required for this query")
+                fn = (factgraph.derivation_chain if q == "derivation_chain"
+                      else factgraph.style_of_output)
+                return fn(facts, output)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(400, str(e))
+        raise HTTPException(400, f"unknown query {q!r}")
 
     @app.get("/training/preview-poses")
     def get_preview_poses(asset_id: str | None = None,

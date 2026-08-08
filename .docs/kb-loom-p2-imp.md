@@ -2896,3 +2896,105 @@ answer to the **P4 VLM**, and the author has a **second fine-tuning cycle** plan
 inference settings, possibly base models). Neither is a P2 deliverable.
 
 **✅ PUSHED `25c69ce`.**
+
+## ⭐ M2.12 — GraphRAG retrieval-index SPIKE ✅ + M5/R68 rig prep (started 2026-08-08 12:10, finished 17:55 CEDT)
+
+Author's list for the P2 remainder: **(1) M5 sd35 spike · (2) R68 seed check · (3) M2.12
+GraphRAG spike**, then a UI facelift. (1) and (2) need the GPU, so they are **prepped to
+one-click** here; (3) is no-GPU and is **built**. ⚠ Noted for the author: **M7 acceptance
+was not on the list** — dropping it is a legitimate call (keep the current adapter, log the
+pre-M3 provenance as a caveat) but it is what actually stamps P2.
+
+### M5 + R68 — prepped, nothing left but the author's run
+
+- **Weights are local and complete:** `stabilityai/stable-diffusion-3.5-medium` is fully
+  cached (**34 GB**, diffusers layout + all text encoders). No download, no gated repo.
+- **Gate opened:** `LOOM_TRAINER_SD35_GO=1` added to `.env.local` with the GO/NO-GO
+  semantics written beside it. ⚠ **Requires an orchestrator restart to take effect.**
+- **UI already exposes both**, so neither needs code: Train panel → **`base: sd35 ⚗`** and
+  **`init: seed parent`** dropdowns (`TrainPanel.tsx`).
+- **Preset for the spike:** sd35-medium · arch `sd3` · **512²** (`resolution_max` 512, vs
+  zimage's 768) · rank/alpha 16/16 · qfloat8 · low-vram · grad-checkpointing.
+- **Procedure:** stage a **60-step** sd35 run → GO ⇒ keep the flag + validate the preset
+  values against what ran; **NO-GO ⇒ unset the flag**, and diffusers-PEFT becomes sd35's
+  primary path — today `DECLARED` only (`{"backend":"peft"}` → 400/R115) and **would have
+  to be built**. That branch is the one thing that could still enlarge P2.
+- **R68:** `+ version` off the promoted v1 → stage with `init: seed parent` @ 60 steps →
+  `_resolve_parent_lora` seeds from v1's promoted adapter → the log's `[train-resume]` must
+  report the step-0 seed.
+
+⚠ **Test-isolation bug the flag exposed (fixed):** two M5 gate tests asserted the CLOSED
+state but read it through `config._get`, which falls back to the `.env.local`-loaded dict —
+so opening the gate locally turned them red. `delenv` does not help (it re-exposes the file
+value); an **empty real env var** is what deterministically shuts it. Both tests now set
+`LOOM_TRAINER_SD35_GO=""` and are `.env.local`-proof. **A gate test must not depend on
+whether the author has run the spike.**
+
+### M2.12 — the spike: BUILT, and it found three things
+
+`orchestrator/factgraph.py` — CPU-only, **embedding-free by construction** (a test greps
+the source for `torch`/`faiss`/`cosine`/… because the embedding model ships in P4 and the
+real index uses that same family, R137/R170 — anything vector-shaped here would be
+throwaway). Facts are plain typed triples rebuilt from disk on demand and written to
+**`context/project_facts.jsonl`**, the path `kb-loom-p4.md` §5 already reserves. Surfaces:
+`GET /context/facts[?rebuild=true]` (the verdict) and `GET /context/query?q=…`.
+
+**On the author's live project it extracts 1 675 facts:** 2 assets · 2 versions · 19 styles ·
+80 pose icons · 661 jobs · 79 refs · **29 derivation edges**.
+
+**Named query 2 — "which cells lack a kept ref?" → ✅ FULLY ANSWERABLE.** char02: the frozen
+vocabulary enumerates **120** cells (4 shot × 6 angle × 5 expression), **78 filled, 42
+missing**, and the missing list is exact and actionable (it opens with the entire `back`
+column — `face_closeup__back__*`, `full_body__back__*`). This query alone justifies the
+index: it is the "re-roll just these" guidance §7 promised, computed for free.
+
+**Named query 1 — "which curated refs used style X?" → ⚠ DEGRADED, and the reason is
+structural.** `style_id` is null on **all 79** curated refs. **This is NOT the M2.8 #7 gap
+regressing** — that remediation landed correctly (`keep_ref` takes `style_id`, Stage-B
+stamps it on each cell's meta). It is null because **`bible.resolve_l1` returns a null id
+when the L1 gate is OFF**, and post-**M2.10 route 1** the author runs flux2 expansion with
+the style coming from the **hero reference image**, not from L1 text. So null is *correct
+provenance* — no L1 style was applied. The consequence is the real finding: **style is a
+TRANSITIVE property of the hero, not an attribute of the ref**, so a direct
+`ref --used_style--> style` edge can never answer this for the dominant path. The query
+therefore reports its own blind spot (`unattributed`, plus a note) rather than returning a
+misleading empty list.
+
+**Finding 2 — derivation provenance is split across THREE mechanisms and none is complete.**
+Measured on the live project (661 jobs):
+
+| mechanism | edges | note |
+| --- | --- | --- |
+| `postproc_stacks.json` steps | **24** | the M0c stack surface — structured |
+| `[X postproc of Y]` prompt string | **11** (clean 9 · refine 1 · resize 1) | a *string*, not a field; 6 overlap the stacks file |
+| `job.chained_from` | **0 of 661** | the field designed for this, populated nowhere |
+
+The union is **29**. That this matters is not theoretical: walking the author's **starred
+hero** back to its origin takes **2 hops and needs BOTH sources** — hop 1 `postproc_stack`
+(resize), hop 2 `prompt_convention` (clean) — reaching
+`job_6c400fcf/sd35_20260704_150332…`. Either source alone loses the trail.
+
+**Finding 3 — no durable `generated_under_style` edge exists on an image.** `style_of_output`
+walks the chain to the origin and still resolves `null`: the style lived only in the *job
+request*, never on the artifact. Combined with finding 1, this is **the concrete thing P4's
+index must add** — one style edge stamped at generation time, on the image.
+
+### Verdict for P4 (the spike's actual deliverable)
+
+**Feasible and cheap** — a full rebuild over ~700 jobs is well under a second, so P4 needs no
+incremental index for a project this size; a rebuildable derived view is the right shape, and
+`project_facts.jsonl` is the right home. The graph spine (asset → version → ref → cell, plus
+job/produced/derived_from) is **already fully supported by what P2 writes**. Two edges must be
+added *at write time*, because no amount of indexing can recover them later:
+1. **`generated_under_style`** on the produced image (findings 1+3), and
+2. **one authoritative derivation edge** — populate `job.chained_from` and retire the prompt
+   convention (finding 2).
+
+Both are small additive writes at generation/postproc time. **Neither is P2 work** and neither
+is proposed here: R170 keeps M2.12 non-gating, and the author's second fine-tuning cycle is the
+natural home. Recorded so P4 inherits the finding rather than rediscovering it.
+
+**Tests +6 → 424 green** (rebuild + persist to the P4 path + idempotence · query 2 exact
+against the frozen 120-cell matrix · query 1 names its blind spot both ways · the derivation
+walk unions both mechanisms and still fails to resolve style · the report states which queries
+work · the embedding-free source contract), `tsc` + `vite build` clean.

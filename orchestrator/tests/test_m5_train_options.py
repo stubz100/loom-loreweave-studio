@@ -63,6 +63,10 @@ def _curated_asset(client, *, n=2):
 
 
 def test_presets_roster_gates_sd35_until_the_spike(client, monkeypatch):
+    # The gate's CLOSED state must be testable on a rig where the author has already
+    # opened it: `_get` falls back to the .env.local-loaded dict, so an empty real env var
+    # is what deterministically shuts it (delenv would just expose the file value again).
+    monkeypatch.setenv("LOOM_TRAINER_SD35_GO", "")
     r = client.get("/training/presets")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -84,6 +88,7 @@ def test_presets_roster_gates_sd35_until_the_spike(client, monkeypatch):
 
 
 def test_sd35_staging_refused_until_gate_then_writes_sd3_config(client, monkeypatch):
+    monkeypatch.setenv("LOOM_TRAINER_SD35_GO", "")   # see the roster test — .env.local-proof
     asset = _curated_asset(client)
     r = client.post(f"/assets/{asset['id']}/lora/stage", json={"base_family": "sd35"})
     assert r.status_code == 400 and "front-gate" in r.text

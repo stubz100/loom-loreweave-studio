@@ -1446,13 +1446,24 @@ export interface Readiness {
     score: number; ref_count: number; distinct_cells: number;
     axes: Record<string, { present: Record<string, number>; missing: string[] }>;
   };
-  dupes: ReadinessTier & { extras: number; duplicate_groups: string[][]; ratio: number };
+  dupes: ReadinessTier & {
+    extras: number; duplicate_groups: string[][]; ratio: number;
+    scope?: string; cells_compared?: number; cells_total?: number;
+  };
   captions: ReadinessTier & { count: number; edited: number; missing_trigger: string[] };
   on_model: ReadinessTier & {
     mode?: string; mean_cos?: number | null; outliers?: string[];
     scored?: number; faces?: number; job_id?: string;
+    // "used" = scored against the anchor · "no_face" = anchor set but undetectable
+    // (R120 centroid fallback) · "absent" = no anchor on the version
+    anchor_status?: "used" | "no_face" | "absent";
+    outlier_scope?: string; outlier_ratio?: number;
+    bands?: Record<string, Record<string, { n: number; mean: number; offset: number;
+                                            reference: string }>>;
   };
-  advisory: { status: string; recommended: boolean; reasons: string[] };
+  // `blocking` is always false — the meter recommends, it never gates (R14, §7).
+  advisory: { status: string; recommended: boolean; reasons: string[];
+              notes?: string[]; blocking?: boolean };
 }
 
 /** Live readiness view (recomputed fresh; on_model = last persisted scan). Read-only. */

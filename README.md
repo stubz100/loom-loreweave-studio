@@ -123,8 +123,17 @@ invoked); GPU batch smoke verified.
 > builder and reuse the L1 · Poses icons; T-pose is flagged out-of-vocabulary) and the
 > **Stage-D grid fix** (previews were stage `D` while the grid filter only accepted `A`/`B`, so
 > they fell to the Sandbox; D now shows its own tiles).
-> **The P2 stamp = the author's rig run** (journal "M7" / "Rig finding 5"): the owed 🔬 readiness
-> scan + one re-stage (the promoted run's captions predate M3) → preview → promote.
+> **⭐ M4 run on real data + retuned (2026-08-08, 418 tests):** the 🔬 scan is done
+> (`job_f8cf9b0c`), and the first real run showed 2 of 4 tiers crying wolf on a clean set —
+> **dupes now compare only WITHIN a coverage cell** (57 flagged → 1 true positive) and
+> **on-model judges each ref against what its own cell should score** (additive shot_size +
+> angle + expression offsets; all three frozen axes move a face embedding, `full_body −0.097`
+> hardest) plus an outlier-ratio gate. A **rejected face anchor is now reported** rather than
+> silently degrading to centroid. char02 reads **ok · recommended: true**. The meter is
+> **explicitly non-blocking** — `blocking: false` and a test asserting a `warn` version still
+> stages and queues.
+> **The P2 stamp = the author's rig run** (journal "M7" / "Rig finding 5"): one re-stage
+> (the promoted run's captions predate M3) → preview → promote.
 > Spec:
 > [`kb-loom-p1.md`](.docs/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](.docs/kb-storyboard01.md) §10.0, journal:

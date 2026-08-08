@@ -106,14 +106,33 @@ def test_readiness_live_view_scores_coverage_dupes_and_captions(client):
 
 
 def test_readiness_flags_near_duplicates(client):
-    """Two byte-identical refs cluster (dHash distance 0) and the ratio crosses the warn
-    line; the group names the ref ids so the author can cull one."""
-    asset = _curated_asset(client, kinds=[1, 1, 3])
+    """Two byte-identical refs IN THE SAME coverage cell cluster (dHash distance 0) and the
+    ratio crosses the warn line; the group names the ref ids so the author can cull one."""
+    same = _CELLS[0]
+    asset = _curated_asset(client, kinds=[1, 1, 3], cells=[same, same, _CELLS[2]])
     body = client.get(f"/assets/{asset['id']}/readiness").json()
     dup = body["dupes"]
     assert dup["status"] == "warn" and dup["extras"] == 1
     assert len(dup["duplicate_groups"]) == 1 and len(dup["duplicate_groups"][0]) == 2
+    assert dup["scope"] == "coverage_cell"
+    assert dup["cells_compared"] == 1 and dup["cells_total"] == 2
     assert any("near-duplicate" in s for s in body["advisory"]["reasons"])
+
+
+def test_readiness_dupes_compare_only_within_a_coverage_cell(client):
+    """Retuned 2026-08-08. Two refs in DIFFERENT cells are *supposed* to look different, so
+    they can never be duplicates of each other — even byte-identical ones. Comparing across
+    cells is what flagged 57 of char02's 79 refs (all distinct cells, 0 true duplicates):
+    8×8 dHash cannot see pose at 9×8 px, so a front and a profile full-body in the same
+    scene hash alike. The tier must stay silent here."""
+    asset = _curated_asset(client, kinds=[1, 1, 1],
+                           cells=[_CELLS[0], _CELLS[1], _CELLS[2]])
+    body = client.get(f"/assets/{asset['id']}/readiness").json()
+    dup = body["dupes"]
+    assert dup["duplicate_groups"] == [] and dup["extras"] == 0
+    assert dup["status"] == "ok"
+    assert dup["cells_compared"] == 0 and dup["cells_total"] == 3
+    assert not any("near-duplicate" in s for s in body["advisory"]["reasons"])
 
 
 def test_readiness_persist_writes_snapshot_and_version_status(client):
@@ -288,3 +307,143 @@ def test_score_worker_source_contract():
     assert "hf_hub_download" not in score_body       # no swapper fetch in score
     assert "centroid" in score_body                  # R120 fallback implemented
     assert 'output_path": ""' in score_body          # no images by design
+
+
+def _score_manifest(refs, scores, *, anchor=None, anchor_face=False):
+    """Craft the identity worker's product: a score-mode batch manifest (rows carry no
+    images, only meta). `scores` is one centroid_cos per ref; None = no face found."""
+    items = []
+    for i, (ref, cos) in enumerate(zip(refs, scores)):
+        meta = {"ref_id": ref["id"], "file": ref["file"],
+                "face": cos is not None, "det_score": 0.9}
+        if cos is not None:
+            meta["centroid_cos"] = cos
+        items.append({"index": i, "status": "ok", "seed": 0, "prompt": None,
+                      "output_path": "", "manifest_path": "", "meta": meta, "error": ""})
+    return {"kind": "jobs_batch", "pipeline": "identity", "mode": "score",
+            "status": "completed", "count": len(items), "ok": len(items),
+            "failed": 0, "skipped": 0, "anchor": anchor, "anchor_face": anchor_face,
+            "faces": sum(1 for it in items if it["meta"]["face"]),
+            "min_det_score": 0.5, "total_duration_s": 1.0,
+            "created_at": "2026-08-08T00:00:00+00:00", "items": items}
+
+
+def _harvest(client, asset, refs, scores, **kw):
+    """Queue the embed job, hand it the manifest the worker would have written, persist."""
+    from orchestrator.runner import RUNNER
+
+    jid = client.post(f"/assets/{asset['id']}/readiness/embed", json={}).json()["job_id"]
+    out_dir = RUNNER.workspace.out_dir / jid
+    out_dir.mkdir(parents=True, exist_ok=True)
+    mpath = out_dir / "identity_batch_20260808_000000.json"
+    mpath.write_text(json.dumps(_score_manifest(refs, scores, **kw)), encoding="utf-8")
+    job = RUNNER.jobs[jid]
+    job["status"] = "done"
+    job["result"] = {"ok": True, "manifest_path": str(mpath)}
+    r = client.post(f"/assets/{asset['id']}/readiness", json={"job_id": jid})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _refs_of(client, asset):
+    return client.get(f"/assets/{asset['id']}").json()["versions"][0]["ref_set"]
+
+
+_EXPRS = ("neutral", "smile", "serious", "sad", "surprised")
+
+
+def _portrait_cells():
+    return [{"shot_size": "portrait", "angle": "front", "expression": e, "background": ""}
+            for e in _EXPRS]
+
+
+def test_on_model_outliers_are_judged_against_the_refs_own_coverage_cell(client):
+    """Retuned 2026-08-08. All three FROZEN coverage axes move a face embedding on their
+    own — measured on char02 (global mean 0.772): shot_size portrait +0.027 → full_body
+    −0.097 · angle 3q-left +0.071 → front −0.063 · expression serious +0.033 → smile
+    −0.054. One global threshold therefore flags whichever band sits lowest, i.e. exactly
+    the diversity the coverage tier rewards (it flagged 4 `smile` refs of 6 outliers).
+
+    Here every `full_body` ref scores 0.62 and every `portrait` 0.82 — a clean shot_size
+    effect, not off-model refs. With the band offset NO ref is an outlier; against a global
+    mean the whole full_body band would have been flagged."""
+    cells = [{"shot_size": shot, "angle": "front", "expression": e, "background": ""}
+             for shot in ("portrait", "full_body") for e in _EXPRS]
+    asset = _curated_asset(client, kinds=list(range(1, 11)), cells=cells)
+    refs = _refs_of(client, asset)
+    scores = [0.82 if r["coverage_cell"]["shot_size"] == "portrait" else 0.62 for r in refs]
+
+    om = _harvest(client, asset, refs, scores)["on_model"]
+    assert om["scored"] == 10
+    assert om["bands"]["shot_size"]["portrait"]["reference"] == "band"
+    assert om["bands"]["shot_size"]["full_body"]["offset"] < -0.05      # the real effect
+    # a whole band sitting low is a property of the axis, not a set of bad refs
+    assert om["outliers"] == [] and om["status"] == "ok"
+    assert "shot_size" in om["outlier_scope"]
+
+
+def test_on_model_still_catches_a_ref_that_is_off_model_for_its_own_cell(client):
+    """The band offset must not blunt the tier: a ref far below its OWN band still flags,
+    and a big enough fraction of them still warns."""
+    asset = _curated_asset(client, kinds=[1, 2, 3, 4, 5], cells=_portrait_cells())
+    refs = _refs_of(client, asset)
+    om = _harvest(client, asset, refs, [0.85, 0.84, 0.83, 0.82, 0.10])["on_model"]
+    assert om["outliers"] == [refs[4]["id"]]
+    assert om["outlier_ratio"] == pytest.approx(0.2, abs=1e-3)
+    assert om["status"] == "warn"                      # 20 % > the 10 % warn ratio
+
+
+def test_a_few_odd_refs_in_a_large_set_do_not_warn(client):
+    """A handful of odd refs is normal in a big set — they are listed for review, but the
+    verdict only turns on a meaningful FRACTION (char02: 3 of 77 = 3.9 %, reads ok)."""
+    asset = _curated_asset(client, kinds=list(range(1, 21)), cells=_portrait_cells())
+    refs = _refs_of(client, asset)
+    scores = [0.80] * len(refs)
+    scores[0] = 0.10                                   # 1 of 20 = 5 %
+    om = _harvest(client, asset, refs, scores)["on_model"]
+    assert om["outliers"] == [refs[0]["id"]]           # still surfaced for review
+    assert om["outlier_ratio"] <= 0.1 and om["status"] == "ok"
+
+
+def test_a_set_anchor_with_no_detectable_face_is_reported_not_hidden(client):
+    """Rig 2026-08-08: char02 HAS an anchor and `embed_items` passed it correctly, but
+    insightface found no face in it (masked, cropped close-up), so R120's centroid fallback
+    engaged and every anchor_cos was null. The old tier reported a bare `mode: centroid` —
+    indistinguishable from having no anchor at all. The author's anchor is a
+    generation-support reference (flux2 ref image, inswapper deliberately off), so a
+    rejected one is INFORMATION: it must surface as a note and never as a warn reason."""
+    # ≥ MIN_REFS_INFO refs so the verdict can actually reach "recommended"
+    cells = _portrait_cells() + [{"shot_size": "waist_up", "angle": "back",
+                                  "expression": "neutral", "background": ""}]
+    asset = _curated_asset(client, kinds=[1, 2, 3, 4, 5, 6], cells=cells)
+    refs = _refs_of(client, asset)
+
+    body = _harvest(client, asset, refs, [0.80] * 6,
+                    anchor="C:/anchor.png", anchor_face=False)
+    om, adv = body["on_model"], body["advisory"]
+    assert om["mode"] == "centroid" and om["anchor_status"] == "no_face"
+    assert any("anchor" in n for n in adv["notes"])         # said out loud
+    assert not any("anchor" in r for r in adv["reasons"])   # but never a fault
+    assert om["status"] == "ok" and adv["recommended"] is True
+
+    # no anchor at all reads differently from a rejected one — same version, fresh scan
+    body2 = _harvest(client, asset, refs, [0.80] * 6)
+    assert body2["on_model"]["anchor_status"] == "absent"
+    assert body2["advisory"]["notes"] == []
+
+
+def test_readiness_never_blocks_staging_or_queueing(client):
+    """R14 / §7, and the author's explicit 2026-08-08 instruction — the meter recommends,
+    it never gates. A version reading `warn` + `recommended: false` must still stage AND
+    queue a training job, and the payload says so in `blocking`."""
+    asset = _curated_asset(client, kinds=[1, 2, 3, 4, 5], cells=_portrait_cells())
+    refs = _refs_of(client, asset)
+
+    body = _harvest(client, asset, refs, [0.85, 0.84, 0.83, 0.82, 0.10])
+    assert body["advisory"]["recommended"] is False and body["advisory"]["status"] == "warn"
+    assert body["advisory"]["blocking"] is False
+
+    r = client.post(f"/assets/{asset['id']}/lora/stage", json={"steps": 10})
+    assert r.status_code == 200, r.text
+    queued = client.post(f"/training/staged/{r.json()['id']}/queue")
+    assert queued.status_code == 200, queued.text    # a bad meter never stopped the train

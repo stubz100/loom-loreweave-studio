@@ -423,11 +423,15 @@ export default function TrainPanel({
                     {missing ? ` · missing ${missing}` : ""}</span>
                 </div>
                 <div className="ready-row"
-                     title={ready.dupes.duplicate_groups.length
+                     title={(ready.dupes.duplicate_groups.length
                        ? `duplicate groups: ${ready.dupes.duplicate_groups.map((g) => g.join(" ≈ ")).join(" | ")}`
-                       : "no near-duplicates (dHash)"}>
+                       : "no near-duplicates (dHash)")
+                       + "\n\nCompared only WITHIN a coverage cell — two refs asked for different poses are supposed to differ, so a duplicate only means something against a ref of the same pose."}>
                   {icon(ready.dupes.status)} duplicates
-                  <span className="muted"> · {ready.dupes.extras} extra(s) in {ready.dupes.duplicate_groups.length} group(s)</span>
+                  <span className="muted"> · {ready.dupes.extras} extra(s) in {ready.dupes.duplicate_groups.length} group(s)
+                    {ready.dupes.cells_compared !== undefined
+                      ? ` · ${ready.dupes.cells_compared}/${ready.dupes.cells_total} cell(s) had ≥2 refs to compare`
+                      : ""}</span>
                 </div>
                 <div className="ready-row">
                   {icon(ready.captions.status)} captions
@@ -436,14 +440,22 @@ export default function TrainPanel({
                     {ready.captions.missing_trigger.length
                       ? ` · ⚠ ${ready.captions.missing_trigger.length} missing trigger` : ""}</span>
                 </div>
-                <div className="ready-row">
+                <div className="ready-row"
+                     title={om.status === "not_run" ? undefined
+                       : `Outliers are judged against what a ref's OWN coverage cell should score (${om.outlier_scope ?? "cell offsets"}) — shot size, angle and expression each shift a face embedding on their own, and the set is required to vary all three.`}>
                   {om.status === "not_run" ? "ℹ️" : icon(om.status)} on-model
                   <span className="muted">
                     {om.status === "not_run"
                       ? " · not scanned"
                       : ` · ${om.mode} · mean cos ${om.mean_cos ?? "?"} · ${om.scored ?? 0} scored` +
-                        ((om.outliers?.length ?? 0) > 0 ? ` · ${om.outliers!.length} outlier(s)` : "")}
+                        ((om.outliers?.length ?? 0) > 0 ? ` · ${om.outliers!.length} outlier(s) to review` : "")}
                   </span>
+                  {om.anchor_status === "no_face" && (
+                    <span className="muted"
+                          title="The anchor image is set but insightface found no face in it, so refs were scored against the set centroid instead (R120). Harmless — the anchor's job is generation support, not scoring.">
+                      {" "}· ⓘ anchor unreadable → centroid
+                    </span>
+                  )}
                   <button className="ghost" onClick={() => void onScanOnModel()}
                           disabled={!!scanJob || versionLocked}
                           title="queue the face-embedding scan (CPU identity job; anchor-cosine when an anchor is set, else set-centroid — R120). Advisory only.">
@@ -454,8 +466,11 @@ export default function TrainPanel({
                 <div className="ready-row muted">
                   {ready.advisory.recommended
                     ? "✅ looks good to train (advisory — your call either way)"
-                    : `advisory: ${ready.advisory.reasons.join(" · ") || ready.advisory.status}`}
+                    : `advisory: ${ready.advisory.reasons.join(" · ") || ready.advisory.status} — advisory only, Train stays enabled`}
                 </div>
+                {(ready.advisory.notes ?? []).map((n) => (
+                  <div className="ready-row muted" key={n}>ⓘ {n}</div>
+                ))}
               </div>
             );
           })()}

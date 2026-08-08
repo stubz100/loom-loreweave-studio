@@ -2744,3 +2744,78 @@ recommendation** — the meter should earn its verdict, and 2 of 4 tiers current
 Either way the fix is documentation-or-heuristics, not the pipeline.
 
 **✅ PUSHED `e9115ce`.**
+
+## ⭐ M4 heuristics retuned — the meter now earns its verdict (author's go, 2026-08-08 11:05–11:40 CEDT)
+
+**Author's instruction:** tune the heuristics as recommended, **but never use the inspection
+as a blocker** — "at this moment in time I would not want any constraints on any creation in
+the app"; a **second development cycle** is planned for rigorous fine-tuning (code, inference
+settings, possibly the base models). Also clarified: **the face anchor is a generation-support
+reference for flux2 dev/JSON with the inswapper deliberately OFF** — identity scoring was never
+its job, so a rejected anchor is not a defect to nag about.
+
+### The fix in one line per tier
+
+**Dupes → compared only WITHIN a coverage cell.** Two refs asked for different poses are
+*supposed* to differ, so a duplicate only means something against a ref of the same pose.
+The tier now reports `scope`, `cells_compared`, `cells_total`.
+
+**On-model → each ref judged against what its OWN coverage cell should score.** Measuring the
+three frozen axes on char02 (global mean 0.772) showed **all three** shift the embedding, and
+`shot_size` hardest of all:
+
+| axis | high | low |
+| --- | --- | --- |
+| shot_size | portrait **+0.027** | **full_body −0.097** (a full-body face is small in frame) |
+| angle | 3q-left **+0.071** | front **−0.063** |
+| expression | serious **+0.033** | smile **−0.054** |
+
+Banding on the full cell is impossible (78 distinct cells over 79 refs ⇒ ~1 ref per band), so
+each axis contributes an **additive offset**: `expected = global mean + Δshot + Δangle + Δexpr`,
+and a value needs `ONMODEL_MIN_BAND` (5) members to earn its offset — below that it contributes
+0 and that ref is judged globally, so small sets behave exactly as before. Outliers are then
+`< max(FLOOR, expected − MARGIN)`.
+
+**Plus an outlier RATIO gate** (`ONMODEL_OUTLIER_WARN_RATIO` = 0.1): a handful of odd refs in a
+big set is normal. Below the ratio they are still **listed for review**, but they no longer
+flip the verdict — the tier stops treating "3 of 77" as a reason not to train.
+
+**Anchor rejection is now said out loud.** `anchor_status` ∈ `used | no_face | absent`
+distinguishes "anchor set but insightface found no face in it" from "no anchor at all", which
+the old bare `mode: centroid` could not. It surfaces as an advisory **note** and a `ⓘ anchor
+unreadable → centroid` chip — never a warn reason, because the anchor's job is generation.
+
+### char02, before → after (same scan job, re-harvested — no re-run)
+
+| | before | after |
+| --- | --- | --- |
+| dupes | **warn** — 57 extras in 15 groups | **ok** — **1** extra in 1 group (a true positive: the only cell holding 2 refs) |
+| on-model | **warn** — 6 outliers | **ok** — 3 outliers of 77 (ratio 0.039), all genuinely lowest-scoring |
+| advisory | **warn · `recommended: false`** | **ok · `recommended: true`** + 1 note |
+
+The 3 surviving outliers are `waist_up/back` (identity is unverifiable from behind), and two
+smiles at 0.501 / 0.457 — the lowest scores in the set. Exactly the refs worth an eyeball.
+`readiness.json` + `version.readiness_status` for char02 were **re-persisted from the existing
+`job_f8cf9b0c`**, so the author sees the tuned verdict without re-scanning.
+
+### Never a blocker — now asserted, not just intended
+
+Readiness was already advisory in fact (`canStage = !versionLocked && refCount > 0 && …`
+never consults it; `stage_zimage_lora` never reads it). Per the author's instruction that is
+now **locked by a test**: a version reading `warn` + `recommended: false` still stages AND
+queues a training job. The advisory payload also carries **`blocking: false`** explicitly, and
+the FE spells out "advisory only, Train stays enabled" on a non-recommended verdict.
+
+**Tests +6 → 418 green** (dupes within-cell both ways · band offsets absorb a whole low band
+while a ref below its OWN band still flags · the ratio gate · anchor `no_face` vs `absent`
+reported as a note never a reason · readiness never blocks stage/queue), `tsc` + `vite build`
+clean.
+
+### What this does NOT claim
+
+The tuning makes the meter's verdict *trustworthy on a well-formed set*; it does not make the
+proxies *good*. dHash still cannot see pose, ArcFace is still a photographic model reading
+stylised art, and the offsets are a first-order additive model fitted by eye to one character.
+**That is the author's planned second cycle**, and §7 already routes the real answer through
+the **P4 VLM** (richer on-model judgement + semantic coverage). These constants are documented
+where they are precisely so that pass can move them.

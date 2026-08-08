@@ -1434,6 +1434,21 @@ author's visual sign-off.
    (`anchor_face: false` — masked/cropped close-up) with nothing surfacing that rejection.
    Coverage 1.0 + captions clean + mean cos 0.772 = a good dataset reading `recommended:
    false`. Heuristic tuning is the author's call — journal "M4 EXERCISED on real data".)*
+   *(✅ **RETUNED 2026-08-08 on the author's go — the meter now earns its verdict.** Dupes
+   compare **only within a coverage cell** (57 → **1** on char02, a true positive); on-model
+   judges each ref against **what its own cell should score** — additive `shot_size + angle +
+   expression` offsets, since all three frozen axes shift the embedding (`full_body −0.097` is
+   the largest) — plus an **outlier-ratio gate** so a few odd refs in a big set are listed but
+   do not flip the verdict (char02: 6 → **3 of 77**). A **rejected anchor is now reported**
+   (`anchor_status: used|no_face|absent`) as an advisory NOTE, never a fault — the author's
+   anchor is a flux2 generation reference with the inswapper off, so identity scoring was never
+   its job. char02 now reads **ok · `recommended: true`**, so the §1 "good to train" clause is
+   MET. **Explicitly never a blocker** (author, 2026-08-08 — no constraints on creation for
+   now): `blocking: false` in the payload and a test asserting a `warn`/`recommended: false`
+   version still stages AND queues. ⚠ This buys a trustworthy verdict on a well-formed set,
+   NOT good proxies — dHash still cannot see pose and ArcFace is a photographic model reading
+   stylised art; the real answer is §7's **P4 VLM**, with a **second fine-tuning cycle** planned
+   by the author. Journal: "M4 heuristics retuned".)*
 6. **M5 — train options + sd35 + PEFT backend.** Expose train-from-base / seed-from-parent (R68) and
    the per-model preset + advanced knobs; add the **diffusers-PEFT** advanced backend; onboard the
    **sd35** trainer; record full training manifests. **⚠ M5 opens with an M1-style front-gate
@@ -1475,12 +1490,12 @@ author's visual sign-off.
    readiness scan~~ **✅ RUN 2026-08-08** (`job_f8cf9b0c`) + **one re-stage** (the promoted run's
    captions predate M3, so `origin` is null and the M3→M6 handshake isn't on disk) → preview →
    promote on that run. Journal: "Rig finding 5".)*
-   *(⚠ **The one done-line clause still literally unmet:** §1 wants the meter to say **"good to
-   train"**; it reports `recommended: false` — from two structural false-warning tiers, not from
-   any defect in the data (coverage 1.0, captions clean, and this exact set trained an adapter
-   that reproduces the character). §7 + R14 make the meter **advisory, never a hard lock**, so
-   nothing is blocked. Resolve by either **tuning the two heuristics** so the verdict is earned,
-   or **amending §1's wording** to "the readiness meter has been consulted". Author's call.)*
+   *(~~⚠ The one done-line clause still literally unmet: §1 wants the meter to say "good to
+   train"; it reports `recommended: false`.~~ **✅ RESOLVED 2026-08-08** by retuning the two
+   heuristics (the author's chosen route — see M4 above): char02 now reads **ok ·
+   `recommended: true`**, so **every §1 clause is satisfied on this character**. The meter is
+   also explicitly **non-blocking** (`blocking: false` + a test), per the author's "no
+   constraints on any creation in the app for now".)*
 
 ---
 

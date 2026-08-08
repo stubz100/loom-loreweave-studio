@@ -1246,10 +1246,17 @@ export default function App() {
     const unknown = batchIds.filter((id) => !jobs[id]);   // just-fired, not polled yet
     return [...unknown, ...known];
   })();
+  // Stage D is shared by three job kinds and only ONE of them makes an image: the M6 LoRA
+  // preview. The trainer run itself (`zimage_trainer`) is listed inside the Train panel and
+  // the M4 readiness scan (`identity`/`score`) produces no output at all — both would render
+  // as blank "—" tiles here, so the grid admits only image producers.
+  const makesAnImage = (j: Job) =>
+    j.pipeline !== "zimage_trainer" && j.mode !== "score";
   const gridIds = activeAsset
     ? Object.values(jobs)
         .filter((j) => j.requester_id === activeAsset.active_version
-                       && (j.stage ?? "A") === gridStage)
+                       && (j.stage ?? "A") === gridStage
+                       && (gridStage !== "D" || makesAnImage(j)))
         .sort((a, b) => a.created_at.localeCompare(b.created_at))
         .map((j) => j.id)
     : sandboxIds;

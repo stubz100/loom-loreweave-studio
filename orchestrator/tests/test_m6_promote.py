@@ -388,3 +388,40 @@ def test_stage_d_grid_shows_previews_instead_of_the_sandbox(client):
     assert 'stage === "D" ? "D"' in app_tsx
     # and stage D no longer short-circuits its grid to empty
     assert 'const stageCells = stage === "D" ? []' not in app_tsx
+
+
+def test_stage_d_grid_admits_only_image_producing_jobs(client):
+    """Stage D is shared by three job kinds and only the M6 preview makes an image. Now
+    that stage D HAS a grid, the other two must not surface as blank "—" tiles:
+
+    - the **readiness scan** (`identity`/`score`) is version-scoped like the preview, so
+      only its mode keeps it out — this is the one the filter actually earns its keep on;
+    - the **trainer run** is stage D but requests as the ASSET, so it never matched the
+      grid anyway (it is listed inside the Train panel, found via `profile_version_id`)."""
+    from orchestrator.runner import RUNNER
+
+    asset = _curated_asset(client)
+    jid, staged = _finished_trainer_job(client, asset)
+    version_id = staged["version_id"]
+
+    trainer = RUNNER.get(jid)
+    scan = RUNNER.get(client.post(f"/assets/{asset['id']}/readiness/embed",
+                                  json={"version_id": version_id}).json()["job_id"])
+    preview = RUNNER.get(client.post(f"/training/jobs/{jid}/preview",
+                                     json={}).json()["job_id"])
+
+    for j in (trainer, scan, preview):
+        assert j["stage"] == "D"
+    # scan + preview share the grid's version scope — only mode separates them
+    assert scan["requester_id"] == version_id and preview["requester_id"] == version_id
+    assert scan["mode"] == "score" and not scan["params"].get("prompt")
+    assert preview["pipeline"] == "zimage" and preview["mode"] == "t2i"
+    # the trainer is out on requester alone, and the panel finds it by version instead
+    assert trainer["pipeline"] == "zimage_trainer"
+    assert trainer["requester_id"] == asset["id"] != version_id
+    assert trainer["profile_version_id"] == version_id
+
+    app_tsx = (Path(__file__).resolve().parents[2]
+               / "app" / "src" / "App.tsx").read_text(encoding="utf-8")
+    assert 'j.pipeline !== "zimage_trainer" && j.mode !== "score"' in app_tsx
+    assert 'gridStage !== "D" || makesAnImage(j)' in app_tsx

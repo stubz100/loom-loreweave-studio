@@ -115,8 +115,10 @@ invoked); GPU batch smoke verified.
 > **⭐ 2026-08-08 (411 tests) — the adapter reproduces the character.** char02's promoted LoRA
 > renders on-model at the **trained resolution** (512²); the 2026-07-15 "wrong person" was a
 > **resolution mismatch, not undertraining** (same prompt/seed/adapter at 1024² = the bare base
-> prior), so the planned 1500–2500-step re-train is dropped and the hardware blocker leaves the
-> P2 critical path. Same session: a **LoRA-preview pose picker** (T-pose · full body · waist up ·
+> prior), so the planned 1500–2500-step re-train is dropped. **The hardware blocker is CLOSED
+> too** — raising CPU + GPU fan speeds carried a full 500-step run, so the remedy was cooling,
+> not the suggested power cap (scrubbed; ⚠ an ambient 42–43 °C heatwave still warrants watching
+> temps on long runs). Same session: a **LoRA-preview pose picker** (T-pose · full body · waist up ·
 > portrait · face close-up — the four coverage-cell poses prompt through the FROZEN caption
 > builder and reuse the L1 · Poses icons; T-pose is flagged out-of-vocabulary) and the
 > **Stage-D grid fix** (previews were stage `D` while the grid filter only accepted `A`/`B`, so

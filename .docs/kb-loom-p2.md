@@ -1457,8 +1457,12 @@ author's visual sign-off.
    the character at the TRAINED resolution (`job_9a2dad37`, 512²). The 2026-07-15 miss was a
    **resolution mismatch, not undertraining** — the same prompt/seed/adapter at 1024² returns
    the bare base prior — so finding 4 is closed and the 1500–2500-step re-train is dropped.
-   That also takes the hardware blocker OFF the P2 critical path (it stays open + undiagnosed,
-   but no P2 step now needs a >9 min sustained run). **Rig-owed to stamp M7 cleanly:** the 🔬
+   That also took the hardware blocker off the P2 critical path. **✅ The blocker is now CLOSED
+   outright (2026-08-08): the author raised CPU + GPU fan speeds and a full 500-step run
+   completed — the remedy was cooling, not throttling, so the −10…−15 % power cap is scrubbed
+   and the rig keeps full clocks. ⚠ Temporary caveat: an ambient heatwave (42–43 °C) means
+   temps still want watching on long runs; `save_every: 50` caps a thermal cut at ~1 min of
+   lost work. M5's sd35 spike no longer has a hardware excuse in front of it.** **Rig-owed to stamp M7 cleanly:** the 🔬
    readiness scan (M4 — never yet run on real data) + **one re-stage** (the promoted run's
    captions predate M3, so `origin` is null and the M3→M6 handshake isn't on disk) → preview →
    promote on that run. Journal: "Rig finding 5".)*

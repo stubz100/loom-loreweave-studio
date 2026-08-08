@@ -2354,8 +2354,13 @@ version-scoped) → R13 explicit cleanup (temp gone, promoted copy stays).
 
 **The P2 STAMP itself is the author's rig run** — blocked on the 2026-07-12 hardware
 shutdowns. **Procedure (author, when the rig is stable — mirrors the harness):**
-1. **Hardware first:** HWiNFO log (GPU hotspot/VRAM temp + 12 V rail) during a short
-   sustained load; cap the GPU power limit −10…−15 % in AMD software if thermal/transient.
+1. ~~**Hardware first:** HWiNFO log (GPU hotspot/VRAM temp + 12 V rail) during a short
+   sustained load; cap the GPU power limit −10…−15 % in AMD software if thermal/transient.~~
+   **✅ SUPERSEDED 2026-08-08 — RESOLVED by fan curves, no power cap needed.** The author
+   raised **CPU + GPU fan speeds** and a full 500-step run completed. The diagnosis was
+   right (thermal) but the remedy was cooling, not throttling — so the rig keeps its full
+   clocks. ⚠ Standing caveat: an ambient **heatwave (42–43 °C recorded)** is in play, so
+   watch temps on long runs; the author expects it to be temporary. See "Hardware resolved".
 2. **Finish M2.9b free:** launch → `job_62629914` recovers **queued+paused** → unpause →
    it resumes from its step-100 checkpoint → completes (exit 0, manifest `completed`) →
    record timings/hashes here → **M2.9b STAMPED**.
@@ -2569,3 +2574,101 @@ are M3-era, then preview → promote on that run. Still open and unchanged: the 
 spike** (🔴 gate, `LOOM_TRAINER_SD35_GO`), the **R68 seed check**, **M2.12** GraphRAG spike
 (non-gating), and the **hardware blocker** (now off the critical path, still undiagnosed).
 **✅ PUSHED `36039c7`.**
+
+## Hardware resolved (fan curves, not a power cap) + Stage-D blank-tile fix (2026-08-08 10:22–11:05 CEDT)
+
+### ⚠→✅ The hardware blocker is CLOSED — and the fix was cooling, not throttling
+
+**Author, this session:** raised the **fan speeds on both CPU and GPU**, and a full
+**500-step LoRA training run completed** on the rig. The 2026-07-12 diagnosis ("summer
+thermals or GPU power transients") was correct in kind, but the remedy was **more airflow,
+not less power** — so the suggested **−10…−15 % GPU power cap is SCRUBBED** and the rig
+keeps its full clocks. The M7 procedure's "Hardware first" step is struck through above.
+`HWiNFO` logging and the PSU-headroom check are likewise no longer prerequisites.
+
+⚠ **Standing caveat (temporary):** an ambient **heatwave — 42–43 °C recorded** — is in
+play. Sustained training is exactly the duty cycle that exposes it (~100 % for the whole
+run, unlike bursty inference), so **watch temps on long runs while the heat lasts**. The
+mitigation that already exists is unchanged and proven: `save_every: 50` (~67 s of work at
+1.34 s/it), so even a thermal cut costs about a minute and the job resumes from its last
+checkpoint on relaunch. The author expects the heatwave to pass.
+
+**Net effect on P2:** the blocker that shadowed the ledger since 2026-07-12 is off it in
+both directions now — the re-train that needed it is dropped (previous entry: the identity
+miss was resolution), *and* the rig can sustain a long run again if a future milestone wants
+one. **M5's sd35 spike no longer has a hardware excuse in front of it.**
+
+### Fixed: the Stage-D grid was about to show blank tiles (caught by the M4 walk-through)
+
+Working out the author's exact "how do I run M4 on real data?" steps surfaced a **regression
+in this session's own grid fix**: stage D is shared by **three** job kinds and only one makes
+an image.
+
+| stage-D job | pipeline / mode | requester | in the D grid? |
+| --- | --- | --- | --- |
+| M6 LoRA preview | `zimage` / `t2i` | **version** | ✅ yes — the one that makes an image |
+| M4 readiness scan | `identity` / `score` | **version** | ❌ produces NO output |
+| trainer run | `zimage_trainer` | **asset** | ❌ listed in the Train panel |
+
+`GridCell` renders a done job with no output as a bare **"—" placeholder tile**, so opening
+the D grid after a readiness scan would have shown a blank cell next to the preview. The
+readiness scan is the one that mattered: it is **version-scoped exactly like the preview**,
+so only its `mode` distinguishes it. (The trainer was never grid-eligible — it requests as
+the **asset**, a leftover of the same requester-id inconsistency finding 3 hit; harmless
+here because the Train panel finds it by `profile_version_id`, so it is left alone rather
+than churned.) **Fixed:** the D grid admits image producers only —
+`j.pipeline !== "zimage_trainer" && j.mode !== "score"`.
+
+**Tests +1 → 412 green** (all three stage-D kinds asserted at their real coordinates, incl.
+the trainer's asset-scoped requester, + the FE filter's source contract). The test caught
+the trainer-requester assumption wrong on first write — the assertion is now the truth on
+disk, not the guess.
+
+### M4 on real data — the answer to the author's question
+
+`char01` is **not** the candidate: it holds **2 casting candidates and 0 curated refs**
+(Stage A, nothing kept). **`char02` is the one to scan** — 79 curated refs, a face anchor,
+trigger `char02_lw`, version `ver_e14f82` unfinalized. The three inline tiers (coverage /
+dupes / captions) already compute on demand from disk; what has never run is the **on-model
+tier**, and `readiness.json` only lands when a scan is harvested — which is exactly why the
+file is absent. Steps recorded in the reply; no code needed, the surface has been built
+since M4.
+
+### ⚠ M4 finding on first contact with real data: the dupes tier is a FALSE-POSITIVE generator
+
+Running the inline tiers against char02 (`ast_596757` / `ver_e14f82`, 79 curated refs) before
+answering the author's question produced a verdict that is **wrong in a specific, fixable way**:
+
+| tier | result |
+| --- | --- |
+| coverage | ✅ **ok — score 1.0**, 79 refs, 78 distinct cells, no missing value on any axis |
+| captions | ✅ ok — 79, 0 edited, 0 missing trigger |
+| dupes | ⚠ **warn — 57 "extras" in 15 groups (72 % of the set)** |
+| on_model | not_run |
+| **advisory** | **warn — `recommended: false`**, solely because of the dupes tier |
+
+**Every one of the 57 flagged extras is a DISTINCT coverage cell — 0 true duplicates.** Group
+sizes 8/8/8/6/5/5/5/5/4/4/4/4/2/2/2; the largest is eight `full_body` refs spanning front,
+both three-quarters and both profiles, at two expressions. Spot-checked visually:
+`ref_6c8f0f` (front) vs `ref_551971` (right profile) are plainly different poses in the same
+street scene, and dHash calls them near-duplicates.
+
+**Root cause — the heuristic is mis-tuned for exactly this corpus.** `DHASH_SIZE = 8` reduces
+an image to 9×8 grayscale (64 gradient bits) and `DUPE_MAX_DISTANCE = 6` allows ~9 % of them
+to differ. A character-LoRA dataset is *by construction* the same character, same wardrobe,
+same palette, similar composition — so the low-frequency structure dHash measures is what
+**should** be constant across the set, while what actually varies (angle, expression, framing)
+is high-frequency detail dHash throws away. The tier is measuring sameness the dataset is
+supposed to have. It gets worse the *better* the style-consistency work is (M2.10 route 1).
+
+**Not fixed here — the author's call** (these are documented advisory constants, R14: the meter
+recommends, it never blocks, and it did not block the char02 training that already succeeded).
+Options, cheapest first: (1) raise `DHASH_SIZE` to 16 (256 bits) so pose survives the
+downsample; (2) drop `DUPE_MAX_DISTANCE` to ~2–3 of 64; (3) only compare refs **within the same
+coverage cell** — the structurally correct fix, since two refs in different cells are
+*intended* to differ and a duplicate only means anything inside a cell; (4) weight the tier out
+of the advisory rollup. (3) is the one that matches what the tier is actually for.
+
+**Interim reading for the author:** treat char02's dupes warning as noise. Coverage 1.0 with
+78 distinct cells over 79 refs is close to an ideal set, and the adapter trained from it
+reproduces the character — the advisory `recommended: false` is an artifact, not a verdict.

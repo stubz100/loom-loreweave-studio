@@ -3147,3 +3147,5 @@ answerable). `tsc` + `vite build` clean.
 **Next (author's pass 2):** the grouped/collapsible tree view — operation groups at top level
 (keyed on `batch_id`) with postproc derivations nested under their source, a toggle beside the
 existing flat grid, and group operations including group delete.
+
+**✅ PUSHED `7453195`.**

@@ -2821,3 +2821,76 @@ the **P4 VLM** (richer on-model judgement + semantic coverage). These constants 
 where they are precisely so that pass can move them.
 
 **✅ PUSHED `7ff587a`.**
+
+## 📋 P2 remaining-work ledger — audited at HEAD `84053aa` (2026-08-08 11:55 CEDT)
+
+Session close-out. Verified against the spec §12 list, the WBS table, the code and the live
+`stubz001` workspace — not from the journal's own claims. **Gates: 418 backend tests green ·
+`tsc` + `vite build` clean · worktree clean + synced.** Everything buildable without the rig
+is built; what remains is one short rig run, one open R&D gate, and a pile of author sign-offs.
+
+### A — Blocks the P2 stamp (one item, ~15 min of rig time)
+
+**M7 acceptance — a clean end-to-end run on char02.** Every other done-line clause is now
+satisfied: template captions ✅ · readiness `ok`/`recommended: true` ✅ (retuned today) ·
+stage → explicit queue ✅ · trained ✅ · promoted ✅ · **test-gen reproduces the character ✅**
+(512², 2026-08-08). The single gap is *provenance*, not capability: the promoted adapter's
+dataset was staged **2026-07-12 17:22**, an hour before M3 was built, so all 79 caption rows
+carry `origin: null` and the **M3→M6 handshake exists in `test_p2_acceptance.py` but never on
+disk**.
+
+**Path (all code exists; nothing to build):** `D · Train` → ⚙ Stage (captions now emit
+`origin: template|edited`) → ▶ Add to queue → train (**500 steps ≈ 11 min** at the measured
+1.34 s/it, and the rig now sustains it) → 🖼 preview at the trained resolution → ⬆ promote →
+**P2 ACCEPTED**. *Cheaper alternative if the author prefers: keep the current adapter and
+record the pre-M3 provenance as a known caveat — the character reproduces either way. The
+re-train is recommended because it is now only ~11 minutes and it makes the acceptance record
+literally true.*
+
+### B — Real work still open (does NOT block the stamp)
+
+**M5 — the sd35 spike (🔴 the last open R&D gate in P2).** Confirmed unrun:
+`LOOM_TRAINER_SD35_GO` is absent from `.env.local`, and `TRAINER_PRESETS["sd35"]` refuses at
+stage time until it is set. The no-GPU slice around it is done (presets, gate-as-code,
+generalized `/lora/stage`, R68 plumbing). **The unknown is the same class P2-0 was:** does
+ai-toolkit train an SD3.5 LoRA on RX 9070 XT / ROCm / 16 GB *at all*? Procedure: set the flag,
+stage a 60-step sd35-medium run, GO ⇒ keep the flag + validate the preset values; **NO-GO ⇒ the
+diffusers-PEFT backend becomes sd35's primary path and must then be BUILT** (today it is
+`DECLARED` only — `POST /lora/stage {"backend": "peft"}` returns 400/R115, per R115). *This is
+the one item that could still add real build effort to P2.* **⚠ Now unblocked** — the hardware
+blocker closed today (fan curves), so nothing stands in front of it but the author's go.
+
+**R68 seed-semantics check (small, rides along with M5).** `+ version` off the promoted v1 →
+stage with init `seed parent` @ 60 steps → the log's `[train-resume]` must report the step-0
+seed. Plumbing built, never exercised.
+
+**M2.12 — GraphRAG retrieval-index SPIKE.** Unbuilt (no module in `orchestrator/`).
+**Explicitly non-gating (R170)** — never blocks the done-line or training; P4 implements the
+real index alongside the embedding model. Sequencing is the author's call.
+
+### C — Author sign-offs (no code, author's word is the artifact)
+
+None of these gate anything; they are the ledger's honest remainder.
+
+| item | state |
+| --- | --- |
+| M0d / M0e / styles-Pass-2 / Train-panel / Stage-D **visual** sign-offs | surfaces in daily use since build — implicit, stamp is the author's |
+| M2.7 — pause→resume **keeps tiles** mid-sweep · **Cast streams** individual candidates | two deliberate checks, never run on purpose |
+| M2.11 — one **subset sweep** fired from the `▦ cells` CellPicker | icon generation stamped; the subset fire itself owed |
+| M2.5 — eyeball `comfy-q8` in a dev job manifest | one glance on the next dev run |
+| **P1 A–H formal rig acceptance** | carried from P1, tracked separately — not a P2 row |
+
+### The honest read
+
+**P2 is one ~15-minute rig session from its stamp**, and the only thing that could still
+enlarge it is an sd35 NO-GO forcing the PEFT backend build. The three findings that shadowed
+the ledger for the last month are all resolved: the identity miss was resolution (not
+undertraining), the hardware shutdowns were cooling (not power), and the readiness meter's
+false verdict was two mis-scoped heuristics (not a bad dataset). Nothing is currently blocked
+on anything but the author's time.
+
+**Not in P2 and deliberately so** (flagged here only so the ledger reads honestly): the
+readiness proxies remain *first-order* — dHash cannot see pose, ArcFace is a photographic model
+reading stylised art, and today's offsets are fitted to one character. §7 routes the real
+answer to the **P4 VLM**, and the author has a **second fine-tuning cycle** planned (code,
+inference settings, possibly base models). Neither is a P2 deliverable.

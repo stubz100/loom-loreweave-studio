@@ -2998,3 +2998,5 @@ natural home. Recorded so P4 inherits the finding rather than rediscovering it.
 against the frozen 120-cell matrix · query 1 names its blind spot both ways · the derivation
 walk unions both mechanisms and still fails to resolve style · the report states which queries
 work · the embedding-free source contract), `tsc` + `vite build` clean.
+
+**✅ PUSHED `c9ab8ae`.**

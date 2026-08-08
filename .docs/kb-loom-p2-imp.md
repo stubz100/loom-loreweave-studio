@@ -3170,3 +3170,5 @@ tick beside `+ add style`; the L2 bar's tick still overrides it per generation. 
 authored in exactly one place, which is what the author asked for.
 
 **430 tests green** (unchanged — this pass is FE-only), `tsc` + `vite build` clean.
+
+**✅ PUSHED `4a8031e`.**

@@ -70,3 +70,5 @@ audited single delete and reports skips). `tsc` + `vite build` clean.
 
 **Owed:** the author's visual sign-off on the tree — and it wants a real library to be judged on
 (char02's 661-job project is the honest test, not a fixture).
+
+**✅ PUSHED `dc6ce45`.**

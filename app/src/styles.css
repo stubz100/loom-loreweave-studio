@@ -258,6 +258,34 @@ body {
   max-width: 22ch; overflow: hidden; text-overflow: ellipsis;
 }
 .style-name:hover { text-decoration: underline; }
+
+/* --- Grouped image browser: operation groups with derivation nested inside --------- */
+.view-toggle { display: flex; gap: 4px; margin: 6px 0 2px; }
+.view-toggle .ghost.sel {
+  border-color: var(--amber); color: var(--text);
+  box-shadow: 0 0 0 1px var(--amber) inset;
+}
+.tree { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.tree-bar { display: flex; align-items: center; gap: 8px; }
+.tree-group { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.tree-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 8px; border-bottom: 1px solid var(--line);
+}
+.tree-toggle {
+  background: none; border: none; cursor: pointer; padding: 0;
+  color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+.tree-del { margin-left: auto; }
+.tree-body { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.tree-node { display: flex; flex-direction: column; gap: 4px; }
+.tree-branch { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.tree-elbow { color: var(--line); font-size: 13px; }
+.tree-pass { color: var(--text); }
+/* Tiles inside the tree reuse .cell, so they need the same track sizing as .grid */
+.tree-tiles {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px;
+}
 .style-frag {
   flex: 1; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
   border-radius: 4px; padding: 4px 6px; font-size: 12px;

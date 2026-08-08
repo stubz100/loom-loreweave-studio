@@ -107,6 +107,7 @@ import {
 import { log } from "./lib/log";
 import TrainPanel from "./TrainPanel";
 import RerunPanel from "./RerunPanel";
+import GroupedGrid, { TileRef } from "./GroupedGrid";
 import { CellPicker, PosesPanel } from "./PosePicker";
 
 // Coverage-cell vocabulary (frozen P1→P2 contract, coverage.py) — drives the Stage-C
@@ -156,6 +157,9 @@ export default function App() {
   const [styles, setStyles] = useState<StylesInfo | null>(null);   // L1 style collection
   const [genStyleId, setGenStyleId] = useState("");                // which style for this gen/edit
   const [stylePickOpen, setStylePickOpen] = useState(false);   // visual style picker popover
+  // Author 2026-08-08 obs. 2: the flat grid stays; this toggles the grouped
+  // operation/derivation tree over the SAME scope.
+  const [grouped, setGrouped] = useState(false);
   // M8 — L1 World view toggle (ASSETS bootstrap vs the WORLD authoring surface).
   const [view, setView] = useState<"assets" | "world">("assets");
   // M0b — L1 authoring sub-tab (rail nav for the World workspace): styles / world / spine.
@@ -335,6 +339,37 @@ export default function App() {
   // Delete a tile. A multi-output job (a multi-cast pool / Stage-B batch) deletes just THIS
   // image (the rest of the pool stays); a single-output tile deletes the whole generation
   // (user 2026-06-21: whole-job delete was nuking the whole batch — make it strictly individual).
+  // Group delete (author 2026-08-08 obs. 2). Loops the audited per-job DELETE rather than
+  // inventing bulk semantics: each call is atomic + orchestrator-owned (out dir, manifest,
+  // log, queue entry, lineage edge — R80), and a running/queued job 409s instead of half-
+  // deleting. The group already INCLUDES everything postprocessed from it (the tree collects
+  // descendants), so the confirm says so out loud and the tally reports what was skipped.
+  const onDeleteGroup = async (jobs: Job[], label: string) => {
+    const busy = jobs.filter((j) => j.status === "queued" || j.status === "running").length;
+    const msg = `Delete ${jobs.length} job(s) in ${label}, with all their images and files?`
+      + (busy ? `\n\n${busy} still running/queued — cancel those first; they will be skipped.` : "")
+      + "\n\nThis includes anything postprocessed from them. It cannot be undone.";
+    if (!window.confirm(msg)) return;
+    let ok = 0;
+    const failed: string[] = [];
+    for (const j of jobs) {
+      try {
+        await deleteJob(j.id);
+        ok += 1;
+        setBatchIds((prev) => prev.filter((b) => b !== j.id));
+      } catch {
+        failed.push(j.id.slice(0, 10));
+      }
+    }
+    log.info("group delete:", label, `${ok} deleted`, failed.length ? `${failed.length} skipped` : "");
+    if (failed.length) {
+      setError(`${ok} deleted · ${failed.length} could not be deleted (cancel running jobs first): `
+               + failed.slice(0, 6).join(", ") + (failed.length > 6 ? "…" : ""));
+    }
+    setSelected(null);
+    void refreshJobs();
+  };
+
   const onDeleteCell = async (job?: Job, output?: string, cellKey?: string) => {
     if (!job) return;
     const names = job.result?.output_names;
@@ -1241,6 +1276,44 @@ export default function App() {
         .sort((a, b) => a.created_at.localeCompare(b.created_at))
         .map((j) => j.id)
     : sandboxIds;
+  // ONE tile renderer, shared by the flat grid and the grouped tree (author 2026-08-08
+  // obs. 2) — a tile behaves identically in both views, so they can never drift.
+  const renderTile = (c: TileRef) => (
+          <GridCell
+            key={c.key}
+            refSrc={c.refItem && activeAsset
+              ? refUrl(activeAsset.id, c.refItem.file) : undefined}
+            locked={activeVersionLocked}
+            job={c.job}
+            output={c.output}
+            interim={c.interim ?? false}
+            selected={selected === c.key}
+            onClick={() => setSelected(c.key)}
+            onView={(src) => setViewer(src)}
+            onCancel={() => c.job && onCancel(c.job.id)}
+            onDelete={() => onDeleteCell(c.job, c.output, c.key)}
+            castable={!!activeAsset && stage === "A"}
+            isHero={!!c.output && starredOutputs.has(c.output)}
+            onStar={() => c.job && onStar(c.job.id, c.output)}
+            curating={stage === "C"}
+            isKept={c.refItem ? true : (!!c.output && keptByOutput.has(c.output))}
+            onKeep={() => c.job && onKeep(c.job.id, c.output)}
+            onCull={() => {
+              const rid = c.refItem?.id
+                ?? (c.output ? keptByOutput.get(c.output) : undefined);
+              if (rid) onCull(rid);
+            }}
+            isRejected={!!c.output && rejectedSet.has(c.output)}
+            onReject={(flag) => c.job && onReject(c.job.id, c.output, flag)}
+            bulkSelected={bulkSel.has(c.key)}
+            onToggleBulk={() => setBulkSel((s) => {
+              const n = new Set(s);
+              if (n.has(c.key)) n.delete(c.key); else n.add(c.key);
+              return n;
+            })}
+          />
+  );
+
   // Which saved candidate outputs are starred (the hero ★, persisted in version.json).
   const starredOutputs = new Set(casting.filter((c) => c.starred).map((c) => c.source_output));
   // Partial/stopped Stage-B datasets (review 2026-06-10): failed/skipped cells mean the
@@ -2238,6 +2311,28 @@ export default function App() {
             />
           )}
 
+          {/* Author 2026-08-08 obs. 2: the flat grid is still the easy way to browse every
+              individual image; the toggle swaps in the grouped operation/derivation tree over
+              the SAME scope. Hidden in Stage C, where curation is a flat triage pass. */}
+          {stage !== "C" && stageCells.length > 0 && (
+            <div className="view-toggle">
+              <button className={`ghost ${!grouped ? "sel" : ""}`} onClick={() => setGrouped(false)}
+                      title="every image individually (the classic grid)">▦ flat</button>
+              <button className={`ghost ${grouped ? "sel" : ""}`} onClick={() => setGrouped(true)}
+                      title="group by the operation that created them; postprocessed images nest under their source">
+                🌳 grouped
+              </button>
+            </div>
+          )}
+          {grouped && stage !== "C" ? (
+            <GroupedGrid
+              jobs={gridIds.map((id) => jobs[id]).filter(Boolean)}
+              tilesOf={(j) => cells.filter((c) => c.job?.id === j.id)}
+              renderTile={renderTile}
+              onDeleteGroup={(js, label) => void onDeleteGroup(js, label)}
+              emptyHint="Nothing here yet — fire a generation and its operation appears as a group."
+            />
+          ) : (
           <div className="grid" tabIndex={0} onKeyDown={onGridKey}>
             {stageCells.length === 0 && (
               <p className="muted center span">
@@ -2254,42 +2349,9 @@ export default function App() {
                   : "Stage-B candidates appear here to keep ✓ / cull ✕ into the curated ref set (Stage C)."}
               </p>
             )}
-            {stageCells.map((c) => (
-              <GridCell
-                key={c.key}
-                refSrc={c.refItem && activeAsset
-                  ? refUrl(activeAsset.id, c.refItem.file) : undefined}
-                locked={activeVersionLocked}
-                job={c.job}
-                output={c.output}
-                interim={c.interim ?? false}
-                selected={selected === c.key}
-                onClick={() => setSelected(c.key)}
-                onView={(src) => setViewer(src)}
-                onCancel={() => c.job && onCancel(c.job.id)}
-                onDelete={() => onDeleteCell(c.job, c.output, c.key)}
-                castable={!!activeAsset && stage === "A"}
-                isHero={!!c.output && starredOutputs.has(c.output)}
-                onStar={() => c.job && onStar(c.job.id, c.output)}
-                curating={stage === "C"}
-                isKept={c.refItem ? true : (!!c.output && keptByOutput.has(c.output))}
-                onKeep={() => c.job && onKeep(c.job.id, c.output)}
-                onCull={() => {
-                  const rid = c.refItem?.id
-                    ?? (c.output ? keptByOutput.get(c.output) : undefined);
-                  if (rid) onCull(rid);
-                }}
-                isRejected={!!c.output && rejectedSet.has(c.output)}
-                onReject={(flag) => c.job && onReject(c.job.id, c.output, flag)}
-                bulkSelected={bulkSel.has(c.key)}
-                onToggleBulk={() => setBulkSel((s) => {
-                  const n = new Set(s);
-                  if (n.has(c.key)) n.delete(c.key); else n.add(c.key);
-                  return n;
-                })}
-              />
-            ))}
+            {stageCells.map(renderTile)}
           </div>
+          )}
           </>
           )}
         </main>

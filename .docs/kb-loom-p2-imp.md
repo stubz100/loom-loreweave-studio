@@ -2456,3 +2456,115 @@ preview that reproduces the character (that IS the acceptance criterion), then �
 **Tests +1 → 408 green** (scoping = version id · trained-res default · full override set
 · with_lora=false strips lora_path+overlay at the same seed · ÷16 bound), `tsc` + `vite
 build` clean. **✅ PUSHED `424aeaa`.**
+
+## ⭐ Rig finding 5 — the adapter WORKS (resolution, not undertraining) + preview pose picker + the Stage-D grid (started 2026-08-08 09:40, finished 10:22 CEDT)
+
+**Session opened as a state audit** (author: "establish the current state from the docs and
+match it against the source"). Gates at HEAD `b5e6a3c`: **408 backend tests green**, `tsc` +
+`vite build` clean, worktree clean + synced with `origin/main`. Docs↔code agreement was
+high; the audit found three drifts, and the author's live rig run then settled the big one.
+
+### ⭐ The identity miss was RESOLUTION, not undertraining — finding 4 is CLOSED
+
+The author ran a preview off the promoted char02 adapter (`job_9a2dad37`, 219 s, 512²).
+Held against the 2026-07-15 run (`job_cf7c6038`, 987 s, 1024²) the pair is a controlled
+experiment — **same prompt, same seed 12345, same adapter, same weight 1.0; only the size
+differs**:
+
+| | 2026-07-15 · 1024² | 2026-08-08 · 512² (trained res) |
+| --- | --- | --- |
+| result | photoreal stranger, no char02 traits | **char02**: black/purple hair + pink highlights, magenta eyes, dark jacket w/ pink accents, cyberpunk palette |
+| reading | the bare Z-Image prior (the "asian guy") | the adapter carrying identity |
+
+**So finding 4's hypothesis (2) was the whole story, and (1) "undertrained" was wrong.**
+The 500-step / ~6-epoch run on 79 images is *sufficient*; a 512²-trained adapter simply had
+no purchase at 1024². The trained-res default shipped in `424aeaa` is what fixed it — the
+fix landed before the diagnosis it was built to run.
+
+**Consequences, both good:**
+- **The proposed 1500–2500-step re-train is not needed.** That matters more than it looks:
+  at the measured **1.34 s/it** (`job_62629914` log) it implied **33–56 min of continuous
+  100 % load**, against a rig whose longest surviving training segment is **~9 min** (the
+  400-step final segment) and which hard-shut-down repeatedly on 2026-07-12. The hardware
+  blocker and the "needs more steps" remedy were **one coupled problem**, never recorded as
+  such — and it has now dissolved rather than been solved. ⚠ The blocker itself is still
+  open and undiagnosed; it just no longer sits on the P2 critical path.
+- **New known limitation:** identity holds at the trained resolution and collapses at 2×.
+  For larger output, render at 512² and use the M0e postproc upscales (Lanczos `Resize ⤢`
+  or the sd35 Tile-CN `Upscale ✨`) rather than generating large directly. Training at a
+  higher resolution is the real fix, and it is a P5/P6 question, not a P2 one.
+
+### Drift 1 — the promote happened on 2026-07-15 and was never journalled
+
+`lora.manifest.json` is stamped **`promoted_at 2026-07-15T15:51:14Z`** with `version.lora`
+set and all four P2-13 hashes present and matching the staged record — i.e. **M6 promote ran
+for real**, 13 minutes before `424aeaa` was pushed (18:04 local) and *after* the preview that
+had just failed to reproduce the character. The journal entry from that same evening still
+described promote as future work gated on a passing preview, so the docs and the workspace
+disagreed for 24 days. Recorded here; the promoted artifact is the one the 512² preview has
+now vindicated, so the ordering was lucky rather than wrong. **Code note:** `promote` guards
+only that the trainer job carries a promotion target — there is no readiness/preview gate, by
+design (R118 keeps the author in charge), so nothing prevented the out-of-order call.
+
+### Drift 2 — M4 readiness has never run on real data · Drift 3 — the promoted run predates M3
+
+No `readiness.json` and no `version.readiness_status` on `ver_e14f82`: the 🔬 scan has only
+ever executed inside the no-GPU narrative. And the staged dataset was built **2026-07-12
+17:22**, an hour *before* M3 was built (18:22–18:37) — all 79 caption rows carry
+`origin: null` and `caption_overrides` is empty, so the promoted adapter's provenance chain
+was produced by pre-M3 code. The captioner is correct (it writes `origin: template|edited`
+today); the artifact is simply older than the feature. **A clean M7 record therefore still
+wants one re-stage** so the M3→M6 handshake is real on disk, plus the owed readiness scan.
+
+### ⭐ Built: LoRA-preview pose picker (author request, 5 framings)
+
+The preview's framing is now a **pick**, not a fixed portrait — the author asked for
+T-pose front · full body front neutral · waist up front neutral · portrait front neutral ·
+face close-up. Placement: the author suggested "L2 · World/Pose"; poses actually live in
+**L1 · Poses** (`l1Tab`), and the natural fit was better than a new store —
+`PREVIEW_POSES` (`training.py`) keys each pose to the **M2.11 `bible/poses/` icon key**, so
+the picker renders the icon set the L1 · Poses tab already generates (**4 of the 5 already
+had icons in `stubz001`**; `t_pose` shows a placeholder until one is generated).
+
+**The vocabulary decision (the load-bearing one):** four poses are real coverage cells, so
+their prompt is **`coverage.build_caption` verbatim** — byte-identical in shape to the
+captions the adapter trained on, which is exactly why they read strongest. **T-pose is NOT
+added to the frozen enums**: `SHOT_SIZES`/`ANGLES`/`EXPRESSIONS` are the P1→P2 contract
+(`CONTRACT_VERSION`), and adding to them would invalidate every existing caption + policy
+hash. It carries a hand-written prompt, is flagged `in_vocabulary: false` with a ⚠ in the UI,
+and is **out-of-distribution by construction — the training set contains zero T-pose images**
+(0/79), so the base model supplies the pose and the adapter only the identity. Expect it to
+read weakest; that is a property of the dataset, not a defect.
+
+**Default stays `portrait`** — `preview_pose_prompt("portrait", trigger)` reproduces the old
+hardcoded string byte-for-byte (asserted). The audit had proposed defaulting to T-pose; the
+0/79 finding reversed that, since an out-of-distribution default would be a poor identity
+check. Surfaces: `GET /training/preview-poses` (trigger-resolved prompts + `has_icon`),
+`pose` on `LoraPreviewRequest` (an explicit `prompt` still wins), and a thumbnail row in the
+TrainPanel preview options.
+
+### ⭐ Fixed: the Stage-D grid — finding 3 was only half a fix
+
+`job_9a2dad37` carried the **correct** `requester_id = ver_e14f82`, yet still landed in the
+Sandbox. The 2026-07-15 fix read the grid filter as "requester_id == the VERSION id", but it
+is a **conjunction**: `j.requester_id === activeAsset.active_version && (j.stage ?? "A") ===
+gridStage`, and `gridStage` was `stage === "A" ? "A" : "B"`. A preview is **stage D** → it
+matched neither branch and was excluded from the character grid regardless of requester.
+Worse, `stageCells` short-circuited to `[]` on stage D, so **the D tab had no grid at all** —
+`🖼 preview … → grid` was a promise nothing could keep. (It surfaced in the Sandbox only
+because `applyJobs` seeds `batchIds` from queued/running jobs when the grid is empty, which
+it was after a fresh project open.) **Fixed:** `gridStage` maps D → `"D"`, stage D renders
+its tiles below the Train panel with its own empty-state line, and the row note now reads
+"→ the grid below (<framing>)".
+
+**Tests +3 → 411 green** (pose menu is vocabulary-backed + icon-keyed, with the frozen
+contract asserted unchanged · `pose` picks the framing, explicit prompt wins, unknown pose =
+400, default byte-identical · the stage-D job carries BOTH filter halves + the App.tsx source
+contract for the grid mapping), `tsc` + `vite build` clean.
+
+**P2 ledger after this session:** the M7 acceptance criterion — *test-gen reproduces the
+character on-model* — **is now met at the trained resolution**. Rig-owed to stamp M7 cleanly:
+the **🔬 readiness scan** (M4, never run for real), **one re-stage** so captions/provenance
+are M3-era, then preview → promote on that run. Still open and unchanged: the **M5 sd35
+spike** (🔴 gate, `LOOM_TRAINER_SD35_GO`), the **R68 seed check**, **M2.12** GraphRAG spike
+(non-gating), and the **hardware blocker** (now off the critical path, still undiagnosed).

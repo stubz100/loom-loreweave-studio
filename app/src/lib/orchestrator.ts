@@ -1398,8 +1398,27 @@ export async function cleanupTrainingRun(jobId: string):
 
 /** P2-11: queue one sample gen with the fresh, un-promoted adapter from the run dir.
  * Size defaults to the TRAINED resolution; with_lora=false = same-seed A/B vs the base. */
+export type PreviewPose = {
+  id: string; label: string; pose_key: string;
+  in_vocabulary: boolean; default: boolean; prompt: string; has_icon: boolean;
+};
+
+/** The LoRA-preview framing menu (author request 2026-08-08) — each pose carries the exact
+ * prompt it will fire for this version's trigger, plus whether an L1 · Poses icon exists. */
+export async function getPreviewPoses(assetId?: string, versionId?: string): Promise<{
+  trigger_token: string; default: string; poses: PreviewPose[];
+}> {
+  const q = new URLSearchParams();
+  if (assetId) q.set("asset_id", assetId);
+  if (versionId) q.set("version_id", versionId);
+  const qs = q.toString();
+  const res = await fetch(`${orchestratorUrl()}/training/preview-poses${qs ? `?${qs}` : ""}`);
+  if (!res.ok) throw new Error(`preview poses ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
 export async function previewTrainedLora(jobId: string, body: {
-  prompt?: string; seed?: number; width?: number; height?: number;
+  pose?: string; prompt?: string; seed?: number; width?: number; height?: number;
   lora_weight?: number; num_steps?: number; with_lora?: boolean;
 } = {}): Promise<{ job_id: string; trainer_job_id: string; prompt: string }> {
   const res = await fetch(`${orchestratorUrl()}/training/jobs/${jobId}/preview`, {

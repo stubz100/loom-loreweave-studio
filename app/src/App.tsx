@@ -1218,8 +1218,13 @@ export default function App() {
   // When an asset is active, the grid is derived from its jobs (lineage requester =
   // active version); the sandbox tracks the last batch's ids.
   // The grid is stage-scoped: Stage A shows casting jobs (stage A); Stage B/C show the
-  // Stage-B dataset candidates (stage B). Legacy jobs with no stage read as A.
-  const gridStage = stage === "A" ? "A" : "B";
+  // Stage-B dataset candidates (stage B); Stage D shows its own artifacts — the M6 LoRA
+  // previews (stage D). Legacy jobs with no stage read as A.
+  // Rig finding 2026-08-08: the 2026-07-15 fix set the preview's requester_id to the
+  // version but left this filter's STAGE half untouched, so a stage-D preview matched
+  // neither "A" nor "B" and fell through to the Sandbox no matter what. Stage D had no
+  // grid at all, so "queued → grid" was a promise nothing could keep.
+  const gridStage = stage === "A" ? "A" : stage === "D" ? "D" : "B";
   // Sandbox grid: the last batch's jobs + any clean/polish pass jobs chained off them
   // (a pass follows its parent into the grid; chains can nest — polish after clean).
   const sandboxIds = (() => {
@@ -1298,8 +1303,9 @@ export default function App() {
     ? refSet.filter((r) => !r.source_output || !jobOutputs.has(r.source_output))
         .map((r) => ({ key: `ref:${r.id}`, refItem: r }))
     : [];
-  // Stage D shows the Train panel, not an image grid (trainer jobs render inside it).
-  const stageCells = stage === "D" ? [] : stage !== "C" ? cells
+  // Stage D renders the Train panel PLUS a grid of its stage-D tiles — the LoRA previews
+  // (the trainer jobs themselves render inside the panel, not as tiles).
+  const stageCells = stage !== "C" ? cells
     : [...durableRefCells, ...cells].filter((c) => {
         if (!showRejected && c.output && rejectedSet.has(c.output)) return false;
         const cov = covOf(c);
@@ -2211,7 +2217,7 @@ export default function App() {
           )}
 
           <div className="grid" tabIndex={0} onKeyDown={onGridKey}>
-            {stageCells.length === 0 && !(activeAsset && stage === "D") && (
+            {stageCells.length === 0 && (
               <p className="muted center span">
                 {!activeAsset
                   ? "Fire a batch — results stream in here (the casting-grid embryo)."
@@ -2219,6 +2225,8 @@ export default function App() {
                   ? `Cast ${activeAsset.name} — candidates stream into this grid (Stage A).`
                   : stage === "B"
                   ? "Pick a recipe + Generate Dataset — img2img variations stream in (Stage B)."
+                  : stage === "D"
+                  ? "🖼 preview a finished training run above — the sample lands here (Stage D)."
                   : cells.length > 0
                   ? "Nothing matches the curation filters — relax them (or untick a filter)."
                   : "Stage-B candidates appear here to keep ✓ / cull ✕ into the curated ref set (Stage C)."}

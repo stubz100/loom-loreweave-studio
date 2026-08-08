@@ -10,6 +10,7 @@ un-promoted adapter.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -291,3 +292,99 @@ def test_preview_scopes_to_the_version_grid_and_defaults_to_trained_res(client):
 
     assert client.post(f"/training/jobs/{jid}/preview",
                        json={"width": 700}).status_code == 422     # ÷16 bound holds
+
+
+def test_preview_pose_menu_is_vocabulary_backed_and_icon_keyed(client):
+    """Author request 2026-08-08: the preview framing is a PICK, not a fixed portrait.
+    Four of the five poses are real coverage cells, so their prompt must come from the
+    FROZEN caption builder verbatim — that keeps the preview prompt in the same shape the
+    adapter was trained on. `t_pose` is deliberately out-of-vocabulary (adding it to the
+    frozen enums would break CONTRACT_VERSION and every caption hash), so it is flagged
+    and carries a hand-written prompt. Icon keys match the M2.11 `bible/poses/` scheme."""
+    from orchestrator import coverage, training
+
+    asset = _curated_asset(client)
+    r = client.get("/training/preview-poses",
+                   params={"asset_id": asset["id"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    poses = {p["id"]: p for p in body["poses"]}
+
+    assert set(poses) == {"t_pose", "full_body", "waist_up", "portrait", "face_closeup"}
+    assert body["default"] == "portrait" and poses["portrait"]["default"] is True
+
+    # the four cell poses render through the frozen builder, byte-for-byte
+    trigger = body["trigger_token"]
+    for pid, shot in (("full_body", "full_body"), ("waist_up", "waist_up"),
+                      ("portrait", "portrait"), ("face_closeup", "face_closeup")):
+        cell = {"shot_size": shot, "angle": "front",
+                "expression": "neutral", "background": ""}
+        assert poses[pid]["in_vocabulary"] is True
+        assert poses[pid]["prompt"] == coverage.build_caption(cell, trigger)
+        assert poses[pid]["pose_key"] == f"{shot}__front__neutral"
+
+    # t_pose is the honest exception: flagged, hand-written, and NOT in the frozen vocab
+    assert poses["t_pose"]["in_vocabulary"] is False
+    assert "T-pose" in poses["t_pose"]["prompt"]
+    assert "t_pose" not in coverage.SHOT_SIZES          # the contract stays frozen
+    assert coverage.CONTRACT_VERSION == 1
+    # every key is a legal bible pose key, so the L1 · Poses icon machinery accepts it
+    for p in body["poses"]:
+        assert re.fullmatch(r"[a-z0-9_]+__[a-z0-9_]+__[a-z0-9_]+", p["pose_key"])
+        assert isinstance(p["has_icon"], bool)
+
+    # the default pose reproduces the OLD hardcoded prompt exactly — no silent change
+    assert training.preview_pose_prompt("portrait", "mara_lw") == \
+        "mara_lw, front view, portrait, neutral expression"
+
+
+def test_preview_pose_picks_the_framing_and_prompt_still_wins(client):
+    """`pose` selects the framing; an explicit `prompt` overrides it; an unknown pose is
+    a 400 rather than a silent fallback to the portrait."""
+    from orchestrator.runner import RUNNER
+
+    asset = _curated_asset(client)
+    jid, _staged = _finished_trainer_job(client, asset)
+
+    tpose = client.post(f"/training/jobs/{jid}/preview", json={"pose": "t_pose"}).json()
+    assert "T-pose" in RUNNER.get(tpose["job_id"])["params"]["prompt"]
+
+    full = client.post(f"/training/jobs/{jid}/preview", json={"pose": "full_body"}).json()
+    assert RUNNER.get(full["job_id"])["params"]["prompt"] == \
+        "mara_lw, front view, full body, neutral expression"
+
+    # default (no pose) is unchanged from the pre-2026-08-08 fixed prompt
+    plain = client.post(f"/training/jobs/{jid}/preview", json={}).json()
+    assert RUNNER.get(plain["job_id"])["params"]["prompt"] == \
+        "mara_lw, front view, portrait, neutral expression"
+
+    # an explicit prompt beats the pose
+    both = client.post(f"/training/jobs/{jid}/preview",
+                       json={"pose": "t_pose", "prompt": "mara_lw, sitting"}).json()
+    assert RUNNER.get(both["job_id"])["params"]["prompt"] == "mara_lw, sitting"
+
+    assert client.post(f"/training/jobs/{jid}/preview",
+                       json={"pose": "nope"}).status_code == 400
+
+
+def test_stage_d_grid_shows_previews_instead_of_the_sandbox(client):
+    """Rig 2026-08-08 (`job_9a2dad37`): the 2026-07-15 scoping fix corrected requester_id
+    but the grid filter is a CONJUNCTION — `requester_id === active_version && stage ===
+    gridStage` — and gridStage was only ever "A"|"B", so a stage-D preview matched nothing
+    and fell through to the Sandbox. Stage D also rendered no grid at all. The submitted
+    job must carry BOTH halves, and the FE must map stage D → its own grid."""
+    from orchestrator.runner import RUNNER
+
+    asset = _curated_asset(client)
+    jid, staged = _finished_trainer_job(client, asset)
+    prev = client.post(f"/training/jobs/{jid}/preview", json={}).json()
+    pjob = RUNNER.get(prev["job_id"])
+    assert pjob["requester_id"] == staged["version_id"]   # half 1 (fixed 2026-07-15)
+    assert pjob["stage"] == "D"                           # half 2 — the missed one
+
+    app_tsx = (Path(__file__).resolve().parents[2]
+               / "app" / "src" / "App.tsx").read_text(encoding="utf-8")
+    # gridStage maps D to "D" (not the "A"/"B" fallback that stranded the tile)
+    assert 'stage === "D" ? "D"' in app_tsx
+    # and stage D no longer short-circuits its grid to empty
+    assert 'const stageCells = stage === "D" ? []' not in app_tsx

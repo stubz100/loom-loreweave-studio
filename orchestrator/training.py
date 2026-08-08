@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from . import assets
+from . import bible
 from . import coverage
 from . import workspace as ws_mod
 from .config import CONFIG
@@ -859,10 +860,95 @@ def cleanup_run(ws: Workspace, job: dict) -> dict:
     return {"cleaned": existed, "run_dir": str(run_dir)}
 
 
+# --- LoRA-preview poses (author request 2026-08-08) ----------------------------------
+# The preview's framing is a PICK, not a fixed portrait. Four of the five poses are real
+# coverage cells, so their prompt is `coverage.build_caption` verbatim — byte-identical in
+# shape to the captions the adapter was trained on, which is what makes the identity read
+# strongest. `t_pose` is deliberately NOT a coverage cell: T-pose is absent from the frozen
+# P1→P2 vocabulary (adding it there would break CONTRACT_VERSION and every caption hash),
+# so it carries a hand-written prompt and is flagged out-of-distribution — the base model
+# supplies the pose, the adapter only the identity, so expect it to read weakest.
+# `pose_key` matches the M2.11 `bible/poses/` icon key, so the picker reuses the icons the
+# L1 · Poses tab already generates (the four cell poses usually have one already).
+
+PREVIEW_POSE_DEFAULT = "portrait"
+
+PREVIEW_POSES: list[dict[str, Any]] = [
+    {
+        "id": "t_pose",
+        "label": "T-pose front",
+        "pose_key": "t_pose__front__neutral",
+        "cell": None,
+        # Out-of-vocabulary: spelled out so the base model can place the limbs.
+        "prompt_template": ("{trigger}, front view, full body, T-pose, standing straight, "
+                            "arms outstretched horizontally to the sides, palms open, "
+                            "neutral expression"),
+        "in_vocabulary": False,
+    },
+    {
+        "id": "full_body",
+        "label": "Full body front neutral",
+        "cell": {"shot_size": "full_body", "angle": "front",
+                 "expression": "neutral", "background": ""},
+        "in_vocabulary": True,
+    },
+    {
+        "id": "waist_up",
+        "label": "Waist up front neutral",
+        "cell": {"shot_size": "waist_up", "angle": "front",
+                 "expression": "neutral", "background": ""},
+        "in_vocabulary": True,
+    },
+    {
+        "id": PREVIEW_POSE_DEFAULT,
+        "label": "Portrait front neutral",
+        "cell": {"shot_size": "portrait", "angle": "front",
+                 "expression": "neutral", "background": ""},
+        "in_vocabulary": True,
+    },
+    {
+        "id": "face_closeup",
+        "label": "Face close-up front neutral",
+        "cell": {"shot_size": "face_closeup", "angle": "front",
+                 "expression": "neutral", "background": ""},
+        "in_vocabulary": True,
+    },
+]
+
+_PREVIEW_POSES_BY_ID = {p["id"]: p for p in PREVIEW_POSES}
+
+
+def preview_pose_key(pose: dict) -> str:
+    """The `bible/poses/` icon key for a preview pose — the coverage cell's own key for the
+    in-vocabulary four, the pinned `pose_key` for `t_pose`."""
+    return pose.get("pose_key") or bible.pose_key(pose["cell"])
+
+
+def preview_pose_prompt(pose_id: str, trigger: str) -> str:
+    """Resolve a preview pose id → its prompt for `trigger`. In-vocabulary poses render
+    through the FROZEN caption builder so the preview prompt matches the training text."""
+    pose = _PREVIEW_POSES_BY_ID.get(pose_id)
+    if pose is None:
+        raise ws_mod.WorkspaceError(
+            f"unknown preview pose {pose_id!r}; one of {sorted(_PREVIEW_POSES_BY_ID)}")
+    if pose["cell"] is not None:
+        return coverage.build_caption(pose["cell"], trigger)
+    return pose["prompt_template"].format(trigger=trigger).strip(" ,")
+
+
+def list_preview_poses(trigger: str = "<trigger>") -> list[dict[str, Any]]:
+    """The picker's menu: id/label/icon-key/prompt for each pose, resolved for `trigger`."""
+    return [{"id": p["id"], "label": p["label"], "pose_key": preview_pose_key(p),
+             "in_vocabulary": p["in_vocabulary"], "default": p["id"] == PREVIEW_POSE_DEFAULT,
+             "prompt": preview_pose_prompt(p["id"], trigger)}
+            for p in PREVIEW_POSES]
+
+
 def preview_request(ws: Workspace, job: dict, *, prompt: str | None = None,
                     seed: int | None = None, width: int | None = None,
                     height: int | None = None, lora_weight: float | None = None,
-                    num_steps: int | None = None, with_lora: bool = True) -> dict:
+                    num_steps: int | None = None, with_lora: bool = True,
+                    pose: str | None = None) -> dict:
     """P2-11: the submit payload for a sample generation with the FRESH (un-promoted)
     adapter loaded straight from the run dir — the author eyeballs it before promote.
     zimage only for now (sd35 inference LoRA flags land with the M5 spike).
@@ -871,7 +957,11 @@ def preview_request(ws: Workspace, job: dict, *, prompt: str | None = None,
     preview silently ran 1024² against a 512²-trained adapter — base-prior dilution +
     4× the render time); `with_lora=False` = the same-seed A/B against the bare base
     (does the adapter carry signal at all?); prompt/weight/steps are the author's
-    diagnosis levers."""
+    diagnosis levers.
+
+    Author request 2026-08-08: `pose` picks the framing from PREVIEW_POSES (default
+    `portrait` — unchanged from the old fixed prompt). An explicit `prompt` still wins,
+    so the free-text lever is untouched."""
     params = _require_trainer_job(job)
     if params.get("base_family", "zimage") != "zimage":
         raise ws_mod.WorkspaceError(
@@ -886,7 +976,8 @@ def preview_request(ws: Workspace, job: dict, *, prompt: str | None = None,
     trigger = params.get("trigger_token") or version.get("trigger_token") or ""
     trained_res = int(settings.get("resolution") or DEFAULT_ZIMAGE_SETTINGS["resolution"])
     sub_params = {
-        "prompt": (prompt or f"{trigger}, front view, portrait, neutral expression").strip(),
+        "prompt": (prompt
+                   or preview_pose_prompt(pose or PREVIEW_POSE_DEFAULT, trigger)).strip(),
         "seed": 12345 if seed is None else int(seed),
         "model_name": settings.get("model_name") or "zimage-base",
         "width": int(width or trained_res),

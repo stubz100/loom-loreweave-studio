@@ -12,6 +12,7 @@ import {
   CaptionsResponse,
   Job,
   LoraInfo,
+  PreviewPose,
   Readiness,
   StagedTraining,
   cleanupTrainingRun,
@@ -20,9 +21,11 @@ import {
   deleteStagedTraining,
   getCaptions,
   getJob,
+  getPreviewPoses,
   getReadiness,
   getStagedTraining,
   persistReadiness,
+  poseIconUrl,
   previewTrainedLora,
   promoteTrainedLora,
   queueReadinessEmbed,
@@ -83,6 +86,11 @@ export default function TrainPanel({
   const [prevSeed, setPrevSeed] = useState("12345");
   const [prevSize, setPrevSize] = useState("");     // blank = the TRAINED resolution
   const [prevWeight, setPrevWeight] = useState(""); // blank = the run's default (1.0)
+  // Author request 2026-08-08: the framing is a PICK, not a fixed portrait. Icons come from
+  // the L1 · Poses set (M2.11) — four of the five are real coverage cells, so they usually
+  // already have one; `t_pose` is out-of-vocabulary and falls back to a text chip.
+  const [poses, setPoses] = useState<PreviewPose[]>([]);
+  const [prevPose, setPrevPose] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -92,6 +100,22 @@ export default function TrainPanel({
     }
   }, []);
   useEffect(() => { void refresh(); }, [refresh, assetId, versionId]);
+
+  // The pose menu is version-scoped (its prompts carry this version's trigger token).
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      try {
+        const r = await getPreviewPoses(assetId, versionId);
+        if (!live) return;
+        setPoses(r.poses);
+        setPrevPose((p) => p || r.default);
+      } catch {
+        /* the picker just stays empty — the prompt field still works */
+      }
+    })();
+    return () => { live = false; };
+  }, [assetId, versionId]);
 
   const loadCaptions = useCallback(async () => {
     try {
@@ -190,21 +214,25 @@ export default function TrainPanel({
   const previewBody = () => {
     const size = prevSize.trim() ? Math.round(Math.min(2048, Math.max(256, Number(prevSize))) / 16) * 16 : undefined;
     return {
+      // A typed prompt is the override; otherwise the picked pose supplies the framing.
+      pose: prevPrompt.trim() ? undefined : (prevPose || undefined),
       prompt: prevPrompt.trim() || undefined,
       seed: prevSeed.trim() ? Math.max(0, Number(prevSeed)) : undefined,
       width: size, height: size,
       lora_weight: prevWeight.trim() ? Math.min(4, Math.max(0, Number(prevWeight))) : undefined,
     };
   };
+  const poseOf = (id: string) => poses.find((p) => p.id === id);
   const onPreview = async (jobId: string, ab = false) => {
     setBusy(`m6:${jobId}`); onError(null);
     try {
-      // the sample streams into the version grid via App's normal poll
+      // the sample streams into the Stage-D grid below via App's normal poll
       const r = await previewTrainedLora(jobId, previewBody());
-      let note = `🖼 preview ${r.job_id} queued → grid`;
+      const framing = prevPrompt.trim() ? "custom prompt" : (poseOf(prevPose)?.label ?? prevPose);
+      let note = `🖼 preview ${r.job_id} queued → the grid below (${framing})`;
       if (ab) {
         const base = await previewTrainedLora(jobId, { ...previewBody(), with_lora: false });
-        note = `⚖ A/B queued → grid: ${r.job_id} (LoRA) vs ${base.job_id} (base, same seed)`;
+        note = `⚖ A/B queued → the grid below (${framing}): ${r.job_id} (LoRA) vs ${base.job_id} (base, same seed)`;
       }
       setRowNote((n) => ({ ...n, [jobId]: note }));
     } catch (e) { onError(String(e)); } finally { setBusy(null); }
@@ -583,11 +611,33 @@ export default function TrainPanel({
               )}
             </div>
             {prevOpen === j.id && j.status === "done" && (
+              <>
+              {poses.length > 0 && (
+                <div className="train-row prev-pose-row">
+                  <span className="sm muted">pose</span>
+                  {poses.map((p) => (
+                    <button key={p.id}
+                            className={`prev-pose ${prevPose === p.id && !prevPrompt.trim() ? "sel" : ""}`}
+                            onClick={() => setPrevPose(p.id)}
+                            disabled={!!prevPrompt.trim()}
+                            title={`${p.prompt}${p.in_vocabulary ? "" : "\n\n⚠ T-pose is NOT in the frozen coverage vocabulary, so the training set contains no T-pose images — the base model supplies the pose and the adapter only the identity. Expect this one to read weakest."}`}>
+                      {p.has_icon
+                        ? <img src={poseIconUrl(p.pose_key)} alt={p.label} />
+                        : <span className="prev-pose-ph">no icon</span>}
+                      <span className="prev-pose-label">
+                        {p.label}{p.in_vocabulary ? "" : " ⚠"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="train-row prev-opts">
                 <input className="prev-prompt" value={prevPrompt}
-                       placeholder="(default: <trigger>, front view, portrait, neutral expression — include the trigger token!)"
+                       placeholder={poseOf(prevPose)?.prompt
+                         ? `(pose: ${poseOf(prevPose)!.prompt} — type here to override)`
+                         : "(include the trigger token!)"}
                        onChange={(e) => setPrevPrompt(e.target.value)}
-                       title="the sample prompt — e.g. 'char02_lw, front view, full body, standing in a T-pose, neutral expression'. The character only appears when the TRIGGER TOKEN is in the prompt." />
+                       title="free-text override — wins over the pose picker above. The character only appears when the TRIGGER TOKEN is in the prompt." />
                 <label className="sm">seed
                   <input value={prevSeed} inputMode="numeric"
                          onChange={(e) => setPrevSeed(e.target.value.replace(/[^0-9]/g, ""))}
@@ -614,6 +664,7 @@ export default function TrainPanel({
                   ⚖ A/B
                 </button>
               </div>
+              </>
             )}
             </div>
           ))}

@@ -1452,8 +1452,16 @@ author's visual sign-off.
    manifest (§1), with `caption_policy_hash` + `context_digest` present.
    *(🟡 the no-GPU acceptance NARRATIVE is built + green 2026-07-13 — `test_p2_acceptance.py`
    walks the whole done-line through the real API in order, GPU step hand-finished. The
-   **P2 stamp itself = the author's rig run** (procedure: journal "M7"), blocked on the
-   sustained-load hardware shutdowns of 2026-07-12.)*
+   **P2 stamp itself = the author's rig run** (procedure: journal "M7").)*
+   *(⭐ **2026-08-08 — the on-model criterion is MET**: char02's promoted adapter reproduces
+   the character at the TRAINED resolution (`job_9a2dad37`, 512²). The 2026-07-15 miss was a
+   **resolution mismatch, not undertraining** — the same prompt/seed/adapter at 1024² returns
+   the bare base prior — so finding 4 is closed and the 1500–2500-step re-train is dropped.
+   That also takes the hardware blocker OFF the P2 critical path (it stays open + undiagnosed,
+   but no P2 step now needs a >9 min sustained run). **Rig-owed to stamp M7 cleanly:** the 🔬
+   readiness scan (M4 — never yet run on real data) + **one re-stage** (the promoted run's
+   captions predate M3, so `origin` is null and the M3→M6 handshake isn't on disk) → preview →
+   promote on that run. Journal: "Rig finding 5".)*
 
 ---
 

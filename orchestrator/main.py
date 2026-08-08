@@ -331,9 +331,11 @@ class LoraPreviewRequest(BaseModel):
     """P2/M6 (P2-11) — sample-gen with the freshly trained, un-promoted adapter.
 
     Size defaults to the TRAINED resolution (rig finding 2026-07-15); `with_lora=false`
-    queues the same-seed A/B against the bare base model."""
+    queues the same-seed A/B against the bare base model. `pose` picks the framing from
+    `GET /training/preview-poses` (author request 2026-08-08); an explicit `prompt` wins."""
 
     model_config = ConfigDict(extra="forbid")
+    pose: str | None = Field(default=None, max_length=64)
     prompt: str | None = Field(default=None, max_length=2000)
     seed: int | None = Field(default=None, ge=0)
     width: int | None = Field(default=None, ge=256, le=2048, multiple_of=16)
@@ -1725,6 +1727,27 @@ def create_app() -> FastAPI:
                  job_id, res["run_dir"], res["cleaned"])
         return res
 
+    @app.get("/training/preview-poses")
+    def get_preview_poses(asset_id: str | None = None,
+                          version_id: str | None = None) -> dict:
+        """P2/M6 — the LoRA-preview framing menu (author request 2026-08-08). Resolves the
+        version's trigger token so each pose shows the exact prompt it will fire, and
+        reports which poses already have an L1 · Poses icon (`bible/poses/`) to render as
+        a thumbnail. Read-only; `asset_id` omitted ⇒ a placeholder trigger."""
+        ws = _require_ws()
+        trigger = "<trigger>"
+        if asset_id:
+            try:
+                _vdir, version = assets.resolve_version_dir(ws, asset_id, version_id)
+                trigger = version.get("trigger_token") or trigger
+            except ws_mod.WorkspaceError as e:
+                raise HTTPException(404, str(e))
+        icons = bible.list_pose_icons(ws)
+        poses = [{**p, "has_icon": p["pose_key"] in icons}
+                 for p in training.list_preview_poses(trigger)]
+        return {"trigger_token": trigger, "default": training.PREVIEW_POSE_DEFAULT,
+                "poses": poses}
+
     @app.post("/training/jobs/{job_id}/preview")
     def preview_trained_lora(job_id: str, req: LoraPreviewRequest,
                              _auth: None = Depends(require_token)) -> dict:
@@ -1740,7 +1763,7 @@ def create_app() -> FastAPI:
             sub = training.preview_request(
                 _require_ws(), job, prompt=req.prompt, seed=req.seed,
                 width=req.width, height=req.height, lora_weight=req.lora_weight,
-                num_steps=req.num_steps, with_lora=req.with_lora)
+                num_steps=req.num_steps, with_lora=req.with_lora, pose=req.pose)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(400, str(e))
         preview_id = RUNNER.submit(

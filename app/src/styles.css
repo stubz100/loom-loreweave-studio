@@ -184,6 +184,23 @@ body {
   width: 64px; background: var(--panel-2); border: 1px solid var(--line);
   color: var(--text); border-radius: 4px; padding: 3px 6px; font-size: 12px;
 }
+/* LoRA-preview pose picker — thumbnails reuse the L1 · Poses icon set (M2.11) */
+.prev-pose-row { flex-wrap: wrap; align-items: flex-start; gap: 6px; }
+.prev-pose {
+  display: flex; flex-direction: column; align-items: center; gap: 2px; width: 74px;
+  padding: 3px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 4px; color: var(--muted); cursor: pointer;
+}
+.prev-pose img, .prev-pose .prev-pose-ph {
+  width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 3px; display: block;
+}
+.prev-pose .prev-pose-ph {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--panel); font-size: 9px; color: var(--muted);
+}
+.prev-pose-label { font-size: 9px; line-height: 1.15; text-align: center; }
+.prev-pose.sel { border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber) inset; color: var(--text); }
+.prev-pose:disabled { opacity: 0.4; cursor: not-allowed; }
 /* M4 readiness meter (advisory tiers) */
 .ready-tiers { display: flex; flex-direction: column; gap: 3px; font-size: 12px; padding: 2px 0 4px; }
 .ready-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

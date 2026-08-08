@@ -112,8 +112,17 @@ invoked); GPU batch smoke verified.
 > R68 seed-from-parent plumbing (spike + PEFT build = rig-owed); **M6** promote →
 > `lora.manifest.json` (P2-13 graph-ready facts) → `version.lora` + ✨ selector badge +
 > guarded cleanup (R13) + LoRA preview (P2-11); **M7** no-GPU acceptance narrative.
-> **The P2 stamp = the author's rig run** (journal "M7" procedure) once the sustained-load
-> hardware shutdowns are resolved.
+> **⭐ 2026-08-08 (411 tests) — the adapter reproduces the character.** char02's promoted LoRA
+> renders on-model at the **trained resolution** (512²); the 2026-07-15 "wrong person" was a
+> **resolution mismatch, not undertraining** (same prompt/seed/adapter at 1024² = the bare base
+> prior), so the planned 1500–2500-step re-train is dropped and the hardware blocker leaves the
+> P2 critical path. Same session: a **LoRA-preview pose picker** (T-pose · full body · waist up ·
+> portrait · face close-up — the four coverage-cell poses prompt through the FROZEN caption
+> builder and reuse the L1 · Poses icons; T-pose is flagged out-of-vocabulary) and the
+> **Stage-D grid fix** (previews were stage `D` while the grid filter only accepted `A`/`B`, so
+> they fell to the Sandbox; D now shows its own tiles).
+> **The P2 stamp = the author's rig run** (journal "M7" / "Rig finding 5"): the owed 🔬 readiness
+> scan + one re-stage (the promoted run's captions predate M3) → preview → promote.
 > Spec:
 > [`kb-loom-p1.md`](.docs/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](.docs/kb-storyboard01.md) §10.0, journal:

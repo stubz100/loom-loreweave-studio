@@ -2742,3 +2742,5 @@ centroid (plus surface a rejected anchor loudly); or **(b) amend §1's wording**
 readiness meter has been consulted" and let the tiers stay advisory noise. **(a) is the
 recommendation** — the meter should earn its verdict, and 2 of 4 tiers currently do not.
 Either way the fix is documentation-or-heuristics, not the pipeline.
+
+**✅ PUSHED `e9115ce`.**

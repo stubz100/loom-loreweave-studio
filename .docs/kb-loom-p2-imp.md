@@ -2894,3 +2894,5 @@ readiness proxies remain *first-order* — dHash cannot see pose, ArcFace is a p
 reading stylised art, and today's offsets are fitted to one character. §7 routes the real
 answer to the **P4 VLM**, and the author has a **second fine-tuning cycle** planned (code,
 inference settings, possibly base models). Neither is a P2 deliverable.
+
+**✅ PUSHED `25c69ce`.**

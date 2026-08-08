@@ -2674,3 +2674,71 @@ of the advisory rollup. (3) is the one that matches what the tier is actually fo
 reproduces the character — the advisory `recommended: false` is an artifact, not a verdict.
 
 **✅ PUSHED `eba0202`.**
+
+## ⭐ M4 EXERCISED on real data — the owed scan is discharged, and the meter disagrees with reality (2026-08-08 11:02)
+
+**The author ran the 🔬 scan on char02** (`job_f8cf9b0c`, 11.2 s, 79 items) and
+`readiness.json` + `version.readiness_status` landed at `2026-08-08T09:02:46Z`. **The M4
+item that had never touched real data since it was built on 2026-07-12 is now discharged** —
+this was the last un-exercised step of the §1 done-line narrative. What it produced,
+against what §7 says it should produce:
+
+| tier | §7 intent | actual on char02 | verdict |
+| --- | --- | --- | --- |
+| coverage | flag thin matrix cells | **1.0** · 79 refs · 78 distinct cells · no missing value on any axis | ✅ works as designed |
+| captions | present for every ref | 79 / 79, 0 edited, 0 missing trigger | ✅ works as designed |
+| dupes | perceptual-hash near-duplicates | **57 "extras" in 15 groups — all 57 distinct cells, 0 true dupes** | ❌ false positives (previous entry) |
+| on_model | **anchor-distance when an anchor exists**, else centroid (R120) | **fell back to `centroid` — `anchor_face: false`** | ⚠ silent anchor rejection |
+| **rollup** | **"good to train"** (§1 done-line wording) | **`recommended: false`** | ❌ disagrees with reality |
+
+### ⚠ New finding A — the face anchor is DEAD and nothing says so
+
+`version.anchor` is populated (`anchor.png`, set 2026-07-04) and `faces/anchor.png` exists,
+so `embed_items` passed `anchor_image` correctly — the job params prove it. But the batch
+manifest records **`anchor_face: false`**: insightface **detected no face in the anchor**, so
+R120's centroid fallback engaged and every `anchor_cos` is null.
+
+**R120 did its job perfectly** — the scan produced a usable result instead of failing, which
+is exactly the guarantee it was written for. **The gap is reporting:** the panel shows
+`mode: centroid`, which is indistinguishable from "this version has no anchor". The author
+set an anchor, believes they have the *firmer* reference §7 promises, and is silently getting
+the weaker one. **Nothing in the UI or the snapshot says "your anchor was rejected".**
+
+**Why it fails:** the anchor is an extreme close-up of the stylized character wearing a black
+mask over nose + mouth, partly cropped. Note the detector found faces in **77 of 79 refs**, so
+the anime styling alone is not fatal — the mask + crop is the likely killer. **Cheap fix
+available to the author:** re-anchor to any of those 77 face-detected refs (a front or
+three-quarter shot), then re-scan; the tier flips to anchor mode with no code change.
+
+### ⚠ New finding B — the outlier rule penalises the coverage matrix's own variation
+
+`mean_cos 0.772` over 77 scored refs is **healthy**, and 71 of 77 sit above the outlier line
+(`max(0.25, mean − 0.15)` = **0.622**). But the 6 flagged outliers are not quality problems:
+
+| driver | evidence |
+| --- | --- |
+| **expression** | **4 of 6 outliers are `smile`**. Mean cos by expression: serious **0.805** · neutral 0.780 · surprised 0.775 · sad 0.762 · **smile 0.718** |
+| **angle** | the other 2 are a `back` and a full-body `profile_right`. By angle: 3q-left 0.843 · profile-left 0.817 · 3q-right 0.801 · profile-right 0.713 · front 0.708 · back 0.707 |
+| **undetectable** | both no-face refs (`ref_039173`, `ref_b09d8e`) are `sad` **face_closeup**s |
+
+**Expression and angle are two of the four FROZEN coverage axes** — the dataset is *required*
+to vary them, and the coverage tier scores 1.0 precisely *because* it does. So **the on-model
+tier penalises exactly the diversity the coverage tier rewards**; the two pull against each
+other on a well-formed set. Same shape as the dupes finding: a heuristic measuring global
+similarity on a corpus engineered to be globally similar and locally varied.
+
+### Where this leaves the done-line
+
+**§1 requires the meter to say "good to train"; it says `recommended: false`.** Both warning
+tiers are structural artifacts, neither reflects a defect in the data, and the adapter trained
+from this exact set demonstrably reproduces the character. **§7 + R14 make the meter advisory
+and explicitly "never a hard lock", so nothing is blocked** — but the literal done-line clause
+is unmet, and it is the only one still outstanding.
+
+**Not fixed here — the author's call**, same standing as the dupes constants. Two coherent
+routes: **(a) tune the heuristics so the verdict is trustworthy** — per-coverage-cell dupe
+comparison, and score on-model *within* expression/angle bands rather than against one global
+centroid (plus surface a rejected anchor loudly); or **(b) amend §1's wording** to "the
+readiness meter has been consulted" and let the tiers stay advisory noise. **(a) is the
+recommendation** — the meter should earn its verdict, and 2 of 4 tiers currently do not.
+Either way the fix is documentation-or-heuristics, not the pipeline.

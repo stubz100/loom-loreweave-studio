@@ -1423,8 +1423,17 @@ author's visual sign-off.
    on-model → `readiness.json` → advisory readiness meter. **(No VLM.)** ***P2 done-line now
    reachable*** (M2 trainer + M3 captions + M4 readiness, R169).
    *(✅ built 2026-07-12 — journal "M4": inline coverage/dupes/captions tiers + the identity
-   worker's new no-swap `score` mode (R120 centroid fallback) harvested into readiness.json;
-   one on-rig 🔬 scan sanity check owed.)*
+   worker's new no-swap `score` mode (R120 centroid fallback) harvested into readiness.json.)*
+   *(✅ **SCAN RUN ON REAL DATA 2026-08-08** (`job_f8cf9b0c`, char02) — the owed sanity check is
+   discharged; `readiness.json` + `version.readiness_status` land correctly. **But the meter's
+   VERDICT is not yet trustworthy: 2 of 4 tiers produce structural false warnings on a
+   well-formed set** — (i) dupes flags 57 "extras" that are all distinct coverage cells (0 true
+   dupes); (ii) the on-model outlier rule flags the coverage matrix's own variation (4 of 6
+   outliers are `smile`; mean cos by expression 0.805 serious → 0.718 smile), and the run
+   **silently fell back to centroid** because insightface found no face in the anchor
+   (`anchor_face: false` — masked/cropped close-up) with nothing surfacing that rejection.
+   Coverage 1.0 + captions clean + mean cos 0.772 = a good dataset reading `recommended:
+   false`. Heuristic tuning is the author's call — journal "M4 EXERCISED on real data".)*
 6. **M5 — train options + sd35 + PEFT backend.** Expose train-from-base / seed-from-parent (R68) and
    the per-model preset + advanced knobs; add the **diffusers-PEFT** advanced backend; onboard the
    **sd35** trainer; record full training manifests. **⚠ M5 opens with an M1-style front-gate
@@ -1462,10 +1471,16 @@ author's visual sign-off.
    completed — the remedy was cooling, not throttling, so the −10…−15 % power cap is scrubbed
    and the rig keeps full clocks. ⚠ Temporary caveat: an ambient heatwave (42–43 °C) means
    temps still want watching on long runs; `save_every: 50` caps a thermal cut at ~1 min of
-   lost work. M5's sd35 spike no longer has a hardware excuse in front of it.** **Rig-owed to stamp M7 cleanly:** the 🔬
-   readiness scan (M4 — never yet run on real data) + **one re-stage** (the promoted run's
+   lost work. M5's sd35 spike no longer has a hardware excuse in front of it.** **Rig-owed to stamp M7 cleanly:** ~~the 🔬
+   readiness scan~~ **✅ RUN 2026-08-08** (`job_f8cf9b0c`) + **one re-stage** (the promoted run's
    captions predate M3, so `origin` is null and the M3→M6 handshake isn't on disk) → preview →
    promote on that run. Journal: "Rig finding 5".)*
+   *(⚠ **The one done-line clause still literally unmet:** §1 wants the meter to say **"good to
+   train"**; it reports `recommended: false` — from two structural false-warning tiers, not from
+   any defect in the data (coverage 1.0, captions clean, and this exact set trained an adapter
+   that reproduces the character). §7 + R14 make the meter **advisory, never a hard lock**, so
+   nothing is blocked. Resolve by either **tuning the two heuristics** so the verdict is earned,
+   or **amending §1's wording** to "the readiness meter has been consulted". Author's call.)*
 
 ---
 

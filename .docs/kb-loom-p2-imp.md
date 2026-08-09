@@ -309,3 +309,5 @@ the four already-adequate models untouched, caps a pathological strength, and pr
 default variant when the model is unset · the corrected `num_steps` reaches the job on both
 the flux2 single-run and the sd35 batch path · the readout exists and its floor matches the
 backend's). `tsc` + `vite build` clean.
+
+**✅ PUSHED `2a40d07`.**

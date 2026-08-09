@@ -20,6 +20,8 @@ uses the (gated) Mistral encoder.
 
 from __future__ import annotations
 
+import math
+
 try:
     from . import flux2_prompt
 except ImportError:  # pragma: no cover - direct-run convenience
@@ -590,6 +592,39 @@ def model_size_default(pipeline: str, model_name: str | None) -> tuple[int | Non
 
 def find_variant(pipeline: str, model_name: str) -> dict | None:
     return next((v for v in variants(pipeline) if v["id"] == model_name), None)
+
+
+# --- i2i step budget (rig finding 2026-08-09, `job_724798a6`) --------------------------
+# `num_steps` is the FULL schedule; an img2img run only walks the last `strength × num_steps`
+# of it. On a DISTILLED 4-step model that collapses to nothing: flux.2-klein at strength 0.6
+# denoised **2 timesteps — [0.6, 0.0]** — one hop straight to zero, so a "Clean" pass returned
+# the input with a faint wash (mean pixel delta 4.4/255) while reporting a clean exit.
+#
+# The fix is a FLOOR on the effective steps, not a blanket rescale. Rescaling everything to the
+# model's full budget would double sd3.5-medium (40 → 80 requested) to buy nothing — 20
+# effective steps was already ample. Only the degenerate cases move.
+MIN_EFFECTIVE_I2I_STEPS = 4
+MAX_I2I_STEPS = 60          # a very low strength must not explode into a 400-step run
+
+
+def i2i_step_budget(pipeline: str, model_name: str | None,
+                    strength: float | None) -> tuple[int | None, int]:
+    """`(num_steps_to_request, effective_steps)` for an img2img pass.
+
+    Returns `(None, effective)` when the model's own default already clears the floor — the
+    caller then sends no `num_steps` and the worker keeps its preset. Both the queue path and
+    the UI read this, so the number shown is the number that runs."""
+    v = find_variant(pipeline, model_name) if model_name else None
+    if v is None:
+        v = find_variant(pipeline, default_model(pipeline) or "")
+    base = ((v or {}).get("defaults") or {}).get("num_steps")
+    if not isinstance(base, int) or not base or not strength or strength <= 0:
+        return None, 0
+    effective = int(base * strength)
+    if effective >= MIN_EFFECTIVE_I2I_STEPS:
+        return None, effective
+    want = min(MAX_I2I_STEPS, math.ceil(MIN_EFFECTIVE_I2I_STEPS / strength))
+    return want, int(want * strength)
 
 
 def default_model(pipeline: str) -> str | None:

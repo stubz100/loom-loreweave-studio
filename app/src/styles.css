@@ -744,6 +744,10 @@ a.ghost { text-decoration: none; display: inline-block; }
    instead of squeezing five selects into illegible slivers */
 .pp-add-row select { flex: 1 1 118px; min-width: 108px; }
 .pp-add-row .apply-style { flex: 0 0 auto; white-space: nowrap; }
+/* "what this pass will ACTUALLY denoise" — amber when loom had to raise the request because
+   the model's own preset would have collapsed to a near-no-op (rig finding 2026-08-09) */
+.pp-steps { flex: 0 0 auto; white-space: nowrap; font-size: 10px; }
+.pp-steps.lifted { color: var(--amber); }
 .pp-add .prompt { width: 100%; }
 .pp-add .proj-btn { align-self: flex-start; }
 .pp-gate { margin-top: 6px; }

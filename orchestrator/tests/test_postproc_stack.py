@@ -519,3 +519,79 @@ def test_removing_a_step_that_others_branch_from_is_refused(client):
     # the leaf goes fine, and then the parent can too
     assert client.delete(f"/postproc/step/{child}").status_code == 200
     assert client.delete(f"/postproc/step/{first}").status_code == 200
+
+
+def test_i2i_step_budget_rescues_distilled_models_and_leaves_the_rest_alone(client):
+    """Rig finding 2026-08-09 (`job_724798a6`): a flux2 "Clean" at strength 0.6 came back
+    looking like its input. It had NOT failed — exit 0, manifest completed, 93 % of pixels
+    changed — but the denoise stage recorded `num_timesteps: 2, timesteps: [0.6, 0.0]`.
+
+    `num_steps` is the FULL schedule and an i2i run walks only the last `strength × num_steps`
+    of it, so a DISTILLED 4-step model collapses to 2 steps (or 1 for a Refine at 0.25) and
+    returns the source with a faint wash. The fix is a FLOOR on the EFFECTIVE steps, not a
+    blanket rescale: rescaling every model to its full budget would double sd3.5-medium
+    (40 → 80 requested) to buy nothing, since 20 effective steps was already ample."""
+    from orchestrator import model_catalog as mc
+
+    # the degenerate cases — a 4-step distilled model at any usable strength
+    for model in ("flux.2-klein-4b", "flux.2-klein-9b"):
+        req, eff = mc.i2i_step_budget("flux2", model, 0.6)
+        assert req == 7 and eff == 4          # was 2 effective
+        req, eff = mc.i2i_step_budget("flux2", model, 0.25)
+        assert req == 16 and eff == 4         # a Refine used to denoise ONE step
+    req, eff = mc.i2i_step_budget("sd35", "sd3.5-large-turbo", 0.5)
+    assert req == 8 and eff == 4              # the same trap on sd35's turbo variant
+
+    # models whose own preset already clears the floor are untouched — no request, no slowdown
+    for pl, model, st, want_eff in (("sd35", "sd3.5-medium", 0.5, 20),
+                                    ("zimage", "zimage-base", 0.5, 25),
+                                    ("zimage", "zimage-turbo", 0.5, 4),
+                                    ("flux2", "flux.2-dev", 0.5, 4)):
+        req, eff = mc.i2i_step_budget(pl, model, st)
+        assert req is None and eff == want_eff, (pl, model, req, eff)
+
+    # a very low strength must not explode into a 400-step run
+    req, _eff = mc.i2i_step_budget("flux2", "flux.2-klein-4b", 0.01)
+    assert req == mc.MAX_I2I_STEPS
+
+    # An UNSET model is the common case (the step just says "backend: flux2"), and the worker
+    # will then run the pipeline's own default variant — so the budget predicts from THAT
+    # rather than declining to answer. Same for a name the catalog doesn't know.
+    assert mc.i2i_step_budget("flux2", None, 0.5) == mc.i2i_step_budget(
+        "flux2", mc.default_model("flux2"), 0.5)
+    assert mc.i2i_step_budget("flux2", "nope", 0.5)[0] == 8
+
+    # …but with no strength there is nothing to reason about: no opinion, worker's default
+    assert mc.i2i_step_budget("flux2", "flux.2-klein-4b", None)[0] is None
+    assert mc.i2i_step_budget("flux2", "flux.2-klein-4b", 0)[0] is None
+
+
+def test_queued_i2i_step_carries_the_corrected_budget(client):
+    """The budget has to reach the JOB, on both i2i paths — flux2 is a single-run job, while
+    zimage/sd35 go through batch_items — or the correction is cosmetic."""
+    from orchestrator.runner import RUNNER
+
+    base = _base_image("job_bud/base.png")
+    # flux2: distilled 4-step → lifted
+    sid = _last_step_id(client.post("/postproc/step", json={
+        "base": base, "preset": "clean", "backend": "flux2",
+        "params": {"strength": 0.6}}), base)
+    job = RUNNER.get(_queue_id(client, sid, base))
+    assert job["params"]["num_steps"] == 7          # 0.6 x 7 = 4 real steps
+
+    # sd35 medium: 40-step preset already clears the floor → untouched
+    sid2 = _last_step_id(client.post("/postproc/step", json={
+        "base": base, "preset": "clean", "backend": "sd35", "source": base,
+        "params": {"strength": 0.6}}), base)
+    job2 = RUNNER.get(_queue_id(client, sid2, base))
+    assert "num_steps" not in job2["params"]
+
+
+def _queue_id(client, step_id, base):
+    r = client.post(f"/postproc/step/{step_id}/queue", json={})
+    assert r.status_code == 200, r.text
+    for stack in r.json()["stacks"]:
+        for st in stack["steps"]:
+            if st["id"] == step_id:
+                return st["job_id"]
+    raise AssertionError("step not found")

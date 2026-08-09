@@ -219,3 +219,27 @@ def test_control_rows_wrap_so_nothing_falls_off_the_inspector():
     # the two other rows carrying variable-length text (a style NAME, a lineage description)
     assert "flex-wrap: wrap" in row(".style-bar {")
     assert "flex-wrap: wrap" in row(".chain-card-head {")
+
+
+def test_effective_step_readout_is_surfaced_and_stays_in_lockstep():
+    """Fix #3 for the rig finding: the panel must SHOW what a pass will actually denoise, so a
+    degenerate strength/model pairing is visible before it is queued rather than after a
+    forensic dig through the manifest. The FE mirrors the backend arithmetic, so the floor
+    constant is asserted identical in both — a silent divergence would make the readout lie."""
+    import re
+
+    from orchestrator import model_catalog as mc
+
+    app = (APP / "App.tsx").read_text(encoding="utf-8")
+
+    # the readout exists, next to the strength field, and names the real number
+    assert "effective step" in app and "pp-steps" in app
+    assert "i2iBudget" in app
+
+    # the FE's floor is the backend's floor, literally
+    m = re.search(r"const MIN_EFFECTIVE_I2I_STEPS = (\d+);", app)
+    assert m, "the FE must name the floor explicitly so it can be checked against the backend"
+    assert int(m.group(1)) == mc.MIN_EFFECTIVE_I2I_STEPS
+
+    # and it flags the lifted case rather than silently reporting a number
+    assert "lifted" in app

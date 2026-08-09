@@ -248,3 +248,64 @@ collapsed card reuses `.tree-card`, and `tree-tiles` is asserted GONE from both 
 the stylesheet). `tsc` + `vite build` clean.
 
 **✅ PUSHED `db9fd6f`.**
+
+## ⭐ Rig finding — the i2i step budget: a "Clean" that did almost nothing (2026-08-09)
+
+**Author:** *"job_724798a6 is a flux clean job, but it is exactly the same as the input image.
+Did this job silently fail?"*
+
+**No — and that is the interesting part.** Exit 0, `manifest_status: completed`, all four
+stages completed, a real 930 KB output written, **93 % of pixels changed**. Nothing failed. It
+did exactly what it was told, and what it was told was almost nothing.
+
+**The denoise stage is the whole story:** `num_steps: 4`, **`num_timesteps: 2`**,
+**`timesteps: [0.6, 0.0]`**. Strength 0.6 WAS applied — denoising started at t=0.6 — but
+`num_steps` is the **FULL schedule** and an i2i run walks only the last `strength × num_steps`
+of it. `flux.2-klein-4b` defaults to **4 steps** (it is distilled for 4-step t2i), so
+0.6 × 4 = **2 timesteps**, and the schedule hops 0.6 → 0.0 in ONE move. Mean pixel delta
+4.4/255: the collar and cuffs got marginally crisper and nothing else moved. 38 s of load time
+to produce a wash.
+
+**Who else is affected** — the distilled/turbo variants, and Refine is worse than Clean:
+
+| model | preset steps | effective @0.5 | @0.25 |
+| --- | --- | --- | --- |
+| **flux.2-klein-4b / 9b** | 4 | **2** | **1** |
+| **sd3.5-large-turbo** | 4 | **2** | **1** |
+| zimage-turbo | 9 | 4 | 2 |
+| flux.2-dev | 8 | 4 | 2 |
+| sd3.5-medium | 40 | 20 | 10 |
+| zimage-base / klein-base | 50 | 25 | 12 |
+
+### Fix 1 — a FLOOR on effective steps, not a blanket rescale
+
+`model_catalog.i2i_step_budget()` returns `(num_steps_to_request, effective_steps)`. When the
+model's own preset already clears `MIN_EFFECTIVE_I2I_STEPS` (4) it returns `None` — send
+nothing, keep the worker's default. Only below the floor does it raise the request to
+`ceil(4 / strength)`, capped at `MAX_I2I_STEPS` (60) so a 0.05 strength cannot explode into a
+400-step run.
+
+⚠ **This deliberately differs from the "scale by 1/strength" I first proposed.** Rescaling
+*everything* to its full budget would take sd3.5-medium from 40 to **80** requested steps —
+doubling the cost to buy nothing, since 20 effective steps was already ample. The floor moves
+only the degenerate cases: klein 0.6 → request 7 (4 real), klein 0.25 → request 16 (4 real),
+sd35-large-turbo likewise; sd35-medium, zimage-base, zimage-turbo and dev are untouched.
+
+Wired into **both** i2i job builders — flux2 (single-run) and zimage/sd35 (batch_items) — at
+queue time, reading the step's stored params (the preset's strength is merged in at add time,
+so it is always present). An UNSET model resolves the pipeline's default variant, because that
+is what the worker will actually run.
+
+### Fix 2 — the panel says what will actually happen
+
+Beside the strength field: **"≈N effective steps"**, and **"(asking N)"** in amber when loom had
+to raise the request. Display == reality — the FE mirrors the same arithmetic, and a test
+asserts the two floor constants are literally equal, so the readout cannot quietly start lying.
+A degenerate strength/model pairing is now visible *before* queueing instead of after a
+forensic dig through the manifest.
+
+**Tests +3 → 442 green** (the budget rescues both distilled families at 0.6 and 0.25, leaves
+the four already-adequate models untouched, caps a pathological strength, and predicts from the
+default variant when the model is unset · the corrected `num_steps` reaches the job on both
+the flux2 single-run and the sd35 batch path · the readout exists and its floor matches the
+backend's). `tsc` + `vite build` clean.

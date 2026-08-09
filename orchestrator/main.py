@@ -3036,6 +3036,15 @@ def create_app() -> FastAPI:
                     item_prompt = f"{item_prompt}, {frag}"
         w, h = _image_dims(src_abs)   # source dims (restore + flux2 i2i preserve these)
         is_flux2 = backend == "flux2"
+        # Rig finding 2026-08-09 (`job_724798a6`): an i2i run only walks the last
+        # `strength × num_steps` of the schedule, so a DISTILLED 4-step model collapsed to 2
+        # timesteps ([0.6, 0.0]) and returned the input with a faint wash — a clean exit that
+        # did nothing. Raise the request only when the model's own default falls under the
+        # floor; models that already clear it keep their preset untouched.
+        i2i_steps = None
+        if mode == "img2img":
+            i2i_steps, _eff = model_catalog.i2i_step_budget(
+                backend, params_in.get("model_name"), params_in.get("strength"))
         if is_flux2:
             # M0d Part C — flux2 i2i is a SINGLE-run job (the worker's batch run_jobs does only
             # t2i/ref; img2img is its single-run run_img2img path). No batch_items: the adapter's
@@ -3044,6 +3053,8 @@ def create_app() -> FastAPI:
                                 "init_image": str(src_abs), "width": w, "height": h}
             if params_in.get("strength") is not None:
                 job_params["strength"] = params_in["strength"]
+            if i2i_steps:
+                job_params["num_steps"] = i2i_steps
             if params_in.get("model_name"):
                 job_params["model_name"] = params_in["model_name"]
         elif is_upscale:
@@ -3082,6 +3093,8 @@ def create_app() -> FastAPI:
                           "width": tw, "height": th}
             if params_in.get("strength") is not None:
                 job_params["strength"] = params_in["strength"]
+            if i2i_steps:
+                job_params["num_steps"] = i2i_steps
             if params_in.get("negative_prompt"):
                 job_params["negative_prompt"] = params_in["negative_prompt"]
             if params_in.get("model_name"):

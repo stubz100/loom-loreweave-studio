@@ -108,6 +108,11 @@ import { log } from "./lib/log";
 import TrainPanel from "./TrainPanel";
 import RerunPanel from "./RerunPanel";
 import GroupedGrid, { TileRef } from "./GroupedGrid";
+
+// Mirrors MIN_EFFECTIVE_I2I_STEPS in orchestrator/model_catalog.py (a test asserts they
+// match): the fewest denoise steps an img2img pass may actually walk before it stops being
+// a re-render at all. Rig finding 2026-08-09 — klein at strength 0.6 ran TWO.
+const MIN_EFFECTIVE_I2I_STEPS = 4;
 import { CellPicker, PosesPanel } from "./PosePicker";
 
 // Coverage-cell vocabulary (frozen P1→P2 contract, coverage.py) — drives the Stage-C
@@ -2408,6 +2413,19 @@ export default function App() {
               busy={busy}
               l1Styles={styles?.styles ?? []}
               modelsFor={(b) => (catalog?.[b]?.variants ?? []).map((v) => v.id)}
+              i2iBudget={(b, m, st) => {
+                // Mirrors orchestrator/model_catalog.i2i_step_budget — an i2i run walks only
+                // the last `strength × num_steps` of the schedule, so a distilled 4-step model
+                // collapses to ~nothing. Display == reality: this is the number that runs.
+                const vars = catalog?.[b]?.variants ?? [];
+                const v = vars.find((x) => x.id === m) ?? vars[0];
+                const base = v?.defaults?.num_steps;
+                if (!base || !st || st <= 0) return null;
+                const plain = Math.floor(base * st);
+                if (plain >= MIN_EFFECTIVE_I2I_STEPS) return { request: null, effective: plain };
+                const request = Math.min(60, Math.ceil(MIN_EFFECTIVE_I2I_STEPS / st));
+                return { request, effective: Math.floor(request * st) };
+              }}
               angleDirectives={catalog?.flux2?.angle_directives ?? {}}
               onAdd={(preset, backend, params, source) =>
                 void onAddPostprocStep(selBase, preset, backend, params, source)}
@@ -3215,12 +3233,15 @@ function StyleDetail({ st, busy, isActive, canDelete, sampleJob, onSave, onDelet
 // Clean/Refine/custom (i2i) + Restore (GFPGAN) steps; each is configured, then queued
 // independently, and records its source → output (the chain). Live status reads the job
 // (the persisted record lags one poll); the "add" gate opens once the tail step is done.
-function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives, onAdd, onQueue, onRemove, onView }: {
+function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, i2iBudget, angleDirectives, onAdd, onQueue, onRemove, onView }: {
   stack: PostprocStack | undefined;
   jobs: Record<string, Job>;
   busy: boolean;
   l1Styles: { id: string; name: string }[];   // StyleLock target pulldown (L1 styles)
   modelsFor: (backend: string) => string[];   // variant ids for an i2i backend (catalog)
+  /** What an i2i pass will ACTUALLY denoise at this strength — null when not applicable. */
+  i2iBudget: (backend: string, model: string, strength: number)
+    => { request: number | null; effective: number } | null;
   angleDirectives: Record<string, string>;    // M0d Part C — flux.2-dev JSON tree pose presets
   onAdd: (preset: PostprocStep["preset"], backend: string | undefined,
           params: Record<string, unknown>, source?: string) => void;
@@ -3459,6 +3480,22 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives
               <input className="prompt" type="number" step="0.05" min="0" max="1"
                      placeholder={`strength (default ${preset === "clean" ? "0.5" : "0.25"})`}
                      value={strength} onChange={(e) => setStrength(e.target.value)} />
+              {(() => {
+                const st = Number(strength) || (preset === "clean" ? 0.5
+                  : preset === "stylelock" ? 0.3 : 0.25);
+                const b = i2iBudget(backend, model, st);
+                if (!b) return null;
+                return (
+                  <span className={`pp-steps muted sm ${b.request ? "lifted" : ""}`}
+                        title={`num_steps is the FULL schedule — an i2i pass walks only strength × that. `
+                          + (b.request
+                            ? `This model's preset is too short at strength ${st} (it would denoise fewer than ${MIN_EFFECTIVE_I2I_STEPS} steps and barely change the image), so loom asks for ${b.request} to get ${b.effective} real ones.`
+                            : `${b.effective} of the model's preset steps actually run at strength ${st}.`)}>
+                    ≈{b.effective} effective step{b.effective === 1 ? "" : "s"}
+                    {b.request ? ` (asking ${b.request})` : ""}
+                  </span>
+                );
+              })()}
               {devJson ? (
                 <Flux2JsonTreeEditor value={jsonTree} onChange={setJsonTree}
                                      angleDirectives={angleDirectives} />

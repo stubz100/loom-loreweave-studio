@@ -178,3 +178,5 @@ job is refused · the FE confirm/refresh contract). One of them exposed a latent
 recording: `RUNNER` is a process-wide singleton, so a job left `running` by a test holds the
 concurrency slot and stalls every later module's queue — 38 unrelated failures from one line.
 Always hand the slot back in a `finally`.
+
+**PUSHED `0afdabe`.**

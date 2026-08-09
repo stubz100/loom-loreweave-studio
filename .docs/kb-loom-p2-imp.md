@@ -105,3 +105,5 @@ first, which is the right friction for a destructive bulk action).
 **Tests +1 → 433 green** — a layout contract pinning all three fixes: the card grid + the
 full-width open group, the cover resolver, and specifically the childless-root pooling that was
 the one-column bug. `tsc` + `vite build` clean.
+
+**✅ PUSHED `fcd1eb7`.**

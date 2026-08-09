@@ -246,3 +246,5 @@ back. The badge on a folded lineage reads `⑂N` (branch count) rather than the 
 **439 tests green** (contract extended: the body is the grid, an open lineage spans the row, the
 collapsed card reuses `.tree-card`, and `tree-tiles` is asserted GONE from both the module and
 the stylesheet). `tsc` + `vite build` clean.
+
+**✅ PUSHED `db9fd6f`.**

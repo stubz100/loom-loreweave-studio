@@ -187,3 +187,5 @@ count**, and a **thumbnail** — so a folded lineage is still identifiable at a 
 **Tests +1 → 438 green** (the widened gate + the old condition asserted GONE; per-lineage cards
 with a namespaced collapse key and a collapsed state that still describes itself). `tsc` +
 `vite build` clean.
+
+**✅ PUSHED `4f166f0`.**

@@ -164,3 +164,26 @@ Stage C included + orphan refs surfaced + both views on the same filtered cells 
 picker and restyle tick reachable in the panel). `tsc` + `vite build` clean.
 
 **✅ PUSHED `b2e0d27`.**
+
+### Pass 2 follow-up — the branch picker's gate, and per-lineage cards (author, same day)
+
+**1 — the branch picker was gated on a FINISHED step, which blocked its own use case.** It
+rendered only when `stack.steps.some(st => st.output)`, so with one pass still queued there was
+no picker at all — and *"test different strengths"* is precisely the case where you configure
+the second variant while the first is still running. Worse, that is the one moment the old
+backend refused outright ("queue and finish the previous step before adding another"), so the
+combination left the feature unreachable exactly when wanted. It now appears as soon as the
+stack has **any** step: `↳ continue the chain` · `⌂ branch from the base image` · `⑂ branch
+from #N <preset>`, with only *finished* outputs listed as branch points (an unfinished step is
+not an image yet — the backend enforces this, and the tooltip says why).
+
+**2 — each lineage is now its own collapsible card inside the group.** An open operation
+holding several postproc lines got long, and folding one away should not cost the whole
+operation. Every chain root renders as a nested card with its own toggle, keyed
+`${group}::${job}` so two groups can never collide. Collapsed, it still carries meaning: the
+lineage **shape** (`clean → resize`, or `clean +2 branches` once it fans out), the **pass
+count**, and a **thumbnail** — so a folded lineage is still identifiable at a glance.
+
+**Tests +1 → 438 green** (the widened gate + the old condition asserted GONE; per-lineage cards
+with a namespaced collapse key and a collapsed state that still describes itself). `tsc` +
+`vite build` clean.

@@ -3425,14 +3425,16 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives
             )}
             {/* Branch point (author 2026-08-08): a base image can carry SEVERAL first-level
                 passes — try two strengths, or a clean AND a restore — each stacking on its
-                own. Blank keeps the old "continue the chain" behaviour. */}
-            {(stack?.steps.some((st) => st.output) ?? false) && (
+                own. Shown as soon as the stack has ANY step, because the common case is
+                configuring the second variant while the first is still queued: "continue the
+                chain" would refuse there, while branching off the base is exactly right. */}
+            {(stack?.steps.length ?? 0) > 0 && (
               <select value={srcSel} onChange={(e) => setSrcSel(e.target.value)}
-                      title="which image this pass reads — branch a NEW line off the base or any finished step, instead of continuing the last one">
+                      title="which image this pass reads — branch a NEW line off the base (or any FINISHED step) instead of continuing the last one. Unfinished steps can't be branched from: a source has to be a real image.">
                 <option value="">↳ continue the chain</option>
-                <option value={stack!.base}>⌂ from the base image</option>
+                <option value={stack!.base}>⌂ branch from the base image</option>
                 {stack!.steps.filter((st) => st.output).map((st, i) => (
-                  <option key={st.id} value={st.output!}>⑂ from #{i + 1} {st.preset}</option>
+                  <option key={st.id} value={st.output!}>⑂ branch from #{i + 1} {st.preset}</option>
                 ))}
               </select>
             )}

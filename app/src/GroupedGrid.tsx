@@ -53,6 +53,24 @@ function groupLabel(batchId: string, jobs: Job[]): { label: string; sub: string 
   return { label: "▣ Batch", sub: `${pipe} · ${cells}` };
 }
 
+/** "clean → resize" for a straight line; "clean +2 more" once it fans out. */
+function describeChain(n: Node): string {
+  const name = (j: Job) => j.pass || j.mode || j.pipeline;
+  const parts: string[] = [name(n.job)];
+  let cur = n;
+  while (cur.children.length === 1) {
+    cur = cur.children[0];
+    parts.push(name(cur.job));
+  }
+  if (cur.children.length > 1) parts.push(`+${cur.children.length} branches`);
+  return parts.join(" → ");
+}
+
+/** Every job in a chain, so a collapsed lineage still says how much it hides. */
+function countChain(n: Node): number {
+  return 1 + n.children.reduce((t, c) => t + countChain(c), 0);
+}
+
 function when(iso?: string): string {
   if (!iso) return "";
   try {
@@ -286,7 +304,29 @@ export default function GroupedGrid({
                         {plain.flatMap((r) => r.tiles).map(renderTile)}
                       </div>
                     )}
-                    {chains.map((r) => renderChain(r))}
+                    {/* Each derivation chain is its OWN collapsible card inside the group
+                        (author 2026-08-08) — a base with several postproc lines can get long,
+                        and folding one away should not cost you the whole operation. */}
+                    {chains.map((r) => {
+                      const cid = `${g.id}::${r.job.id}`;
+                      const cshut = collapsed.has(cid);
+                      const cover = tileImageUrl(r.tiles[0] ?? { key: "" }) ?? null;
+                      return (
+                        <div key={r.job.id} className={`chain-card ${cshut ? "shut" : "open"}`}>
+                          <div className="chain-card-head">
+                            <button className="tree-toggle" onClick={() => toggle(cid)}
+                                    title={cshut ? "expand this lineage" : "collapse this lineage"}>
+                              {cshut ? "▸" : "▾"} 🧩 {describeChain(r)}
+                            </button>
+                            <span className="muted sm">{countChain(r)} pass(es)</span>
+                            {cshut && cover && (
+                              <img className="chain-card-thumb" src={cover} alt="" />
+                            )}
+                          </div>
+                          {!cshut && <div className="chain-card-body">{renderChain(r)}</div>}
+                        </div>
+                      );
+                    })}
                   </div>
                 </>
               )}

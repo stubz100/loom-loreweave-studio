@@ -165,3 +165,25 @@ def test_postproc_branch_and_restyle_are_reachable_from_the_ui():
     assert "source={srcSel}" in app or "srcSel || undefined" in app
     assert "const [restyle, setRestyle]" in app
     assert "params.apply_style = true;" in app
+
+    # The picker appears as soon as the stack has ANY step — not only a FINISHED one. The
+    # common case is configuring the second variant while the first is still queued, where
+    # "continue the chain" is refused by the backend but branching off the base is right.
+    assert "(stack?.steps.length ?? 0) > 0" in app
+    assert "stack?.steps.some((st) => st.output)" not in app
+
+
+def test_each_lineage_is_its_own_collapsible_card_inside_the_group():
+    """Author 2026-08-08: a base with several postproc lines makes an open group long, so each
+    derivation chain folds independently — collapsing one lineage must not cost you the whole
+    operation. A collapsed lineage still says what it is and how much it hides."""
+    tree = (APP / "GroupedGrid.tsx").read_text(encoding="utf-8")
+    css = (APP / "styles.css").read_text(encoding="utf-8")
+
+    assert "chain-card" in tree and ".chain-card {" in css
+    # its own collapse key, namespaced under the group so two groups can't collide
+    assert "const cid = `${g.id}::${r.job.id}`;" in tree
+    assert "collapsed.has(cid)" in tree
+    # collapsed state still carries meaning: the lineage shape, a count, and a thumbnail
+    assert "function describeChain" in tree and "function countChain" in tree
+    assert "chain-card-thumb" in tree

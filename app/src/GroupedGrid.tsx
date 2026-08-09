@@ -204,7 +204,11 @@ export default function GroupedGrid({
           <span className="muted sm"> · {n.job.pipeline}</span>
           {n.job.status !== "done" && <span className="muted sm"> · {n.job.status}</span>}
         </div>
-        <div className="chain-tiles">{n.tiles.map(renderTile)}</div>
+        {/* A tombstone kept its place in the chain but has no image left to draw. Showing
+            the gap explicitly beats either a broken tile or a silently missing link. */}
+        {n.job.deleted
+          ? <div className="chain-gone" title="this image was deleted; the step is kept so what was built from it stays attached">🗑 deleted</div>
+          : <div className="chain-tiles">{n.tiles.map(renderTile)}</div>}
       </div>
       {n.children.length > 0 && (
         <div className="chain-kids">

@@ -320,6 +320,10 @@ body {
 .chain-tiles {
   display: grid; grid-auto-flow: column; grid-auto-columns: 150px; gap: 6px;
 }
+.chain-gone {
+  display: flex; align-items: center; justify-content: center; width: 150px; height: 84px;
+  border: 1px dashed var(--line); border-radius: 4px; color: var(--muted); font-size: 11px;
+}
 .chain-kids { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .chain-kid { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
 .chain-arrow { color: var(--line); font-size: 15px; align-self: center; flex: 0 0 auto; }

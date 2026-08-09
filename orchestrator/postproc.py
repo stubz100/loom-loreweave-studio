@@ -206,6 +206,45 @@ def reconcile(ws: Workspace, resolve) -> list[dict]:
     state survives a reload; returns the stacks. Caller (main.py) owns the runner glue."""
     store = _load(ws)
     changed = False
+
+    # --- Prune what no longer exists (author 2026-08-09) -------------------------------
+    # Deleting an image never touched this store, and the loop below only ever revisited
+    # QUEUED/RUNNING steps — so a *done* step kept a job_id and an `output` pointing at
+    # files that were gone. The author's live project had 13 dangling bases, 18 dangling
+    # outputs and 19 dangling jobs across 26 stacks. Reconcile is read on every stacks
+    # fetch, so making it authoritative self-heals the store with no migration.
+    # The authoritative signal is the JOB, not the file: `resolve` already reports None for a
+    # job that was deleted or pruned, and keying on that avoids filesystem races (and is what
+    # actually happened — the image went when its job did).
+    def _alive(name: str | None) -> bool:
+        return bool(name) and (ws.out_dir / name).is_file()
+
+    for stack in list(store["stacks"]):
+        # A DONE step whose producing job is gone points at an image that went with it. Keep
+        # it only while something still branches from its output — then it is a tombstone
+        # holding the chain together; otherwise it is a dead record and goes.
+        sources = {s.get("source") for s in stack["steps"]}
+        kept = []
+        for st in stack["steps"]:
+            gone = bool(st.get("job_id")) and resolve(st["job_id"]) is None
+            if st.get("status") == "done" and gone:
+                if st.get("output") in sources:
+                    if not st.get("deleted"):
+                        st["deleted"] = True          # tombstone: keeps the chain linked
+                        changed = True
+                    kept.append(st)
+                else:
+                    changed = True                    # leaf with nothing behind it → drop
+                continue
+            kept.append(st)
+        if kept != stack["steps"]:
+            stack["steps"] = kept
+            changed = True
+        # A stack is over once nothing of it survives: no steps left, and no base image.
+        if not stack["steps"] and not _alive(stack["base"]):
+            store["stacks"].remove(stack)
+            changed = True
+
     for stack in store["stacks"]:
         for st in stack["steps"]:
             if st.get("status") not in ("queued", "running") or not st.get("job_id"):

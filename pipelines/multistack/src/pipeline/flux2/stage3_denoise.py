@@ -206,18 +206,23 @@ def run_img2img(
         # 4. Patch + ids.
         x, x_ids = batched_prc_img(x_init)
 
-        # 5. Build the full schedule, then take the tail starting at t=strength.
+        # 5. Build the schedule ACROSS [strength, 0] with `num_steps` intervals.
+        #
+        # This used to build the FULL 1.0→0.0 schedule and slice its tail below `strength`,
+        # which made `num_steps` almost inert at useful resolutions. `get_schedule` applies a
+        # resolution-dependent shift (`compute_empirical_mu`), and at 1024² (4096 tokens) that
+        # pushes nearly every timestep ABOVE 0.6 — so the tail held one interval whether you
+        # asked for 4 steps or 7, and a "Clean" pass returned its input with a faint wash
+        # (author, 2026-08-09: `job_724798a6`, `job_57634713`, `job_7efb40c7` — all
+        # `num_timesteps: 2`, `[strength, 0.0]`, regardless of the steps requested).
+        #
+        # Scaling the shifted schedule into the sub-range keeps the model's own step
+        # DISTRIBUTION (where it wants to spend denoising effort) while guaranteeing that
+        # `num_steps` means num_steps — at any strength, at any resolution.
         full_timesteps = get_schedule(num_steps, x.shape[1])
-        # The schedule descends from 1.0 to 0.0; find the first index where
-        # the timestep <= strength, and slice from one step earlier so the
-        # first interval starts at strength (we then overwrite the head).
-        start_idx = 0
-        for i, t in enumerate(full_timesteps):
-            if t <= strength:
-                start_idx = max(0, i - 1)
-                break
-        timesteps = [strength] + full_timesteps[start_idx + 1:]
-        # Floor to at least 2 entries (one denoise interval).
+        timesteps = [t * strength for t in full_timesteps]
+        # `get_schedule` ends at 0.0, so the scaled tail already lands on 0.0; the head is
+        # exactly `strength`, which is where the interpolation above put the latent.
         if len(timesteps) < 2:
             timesteps = [strength, 0.0]
 

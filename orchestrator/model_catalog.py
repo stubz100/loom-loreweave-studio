@@ -606,12 +606,21 @@ def find_variant(pipeline: str, model_name: str) -> dict | None:
 MIN_EFFECTIVE_I2I_STEPS = 4
 MAX_I2I_STEPS = 60          # a very low strength must not explode into a 400-step run
 
+# How a pipeline's i2i turns `num_steps` into actual denoise intervals:
+#   "fraction" — the diffusers convention (zimage/sd35): the full schedule is built and only
+#                its last `strength × num_steps` are walked, so steps must be over-requested.
+#   "exact"    — flux2 since 2026-08-09: its worker builds the schedule ACROSS [strength, 0]
+#                with `num_steps` intervals, so num_steps already IS the effective count.
+#                (Before that fix it sliced a resolution-shifted tail and `num_steps` barely
+#                mattered at all — over-requesting bought literally nothing.)
+_I2I_STEP_SEMANTICS = {"flux2": "exact"}
+
 
 def i2i_step_budget(pipeline: str, model_name: str | None,
                     strength: float | None) -> tuple[int | None, int]:
     """`(num_steps_to_request, effective_steps)` for an img2img pass.
 
-    Returns `(None, effective)` when the model's own default already clears the floor — the
+    Returns `(None, effective)` when the model's own default already denoises enough — the
     caller then sends no `num_steps` and the worker keeps its preset. Both the queue path and
     the UI read this, so the number shown is the number that runs."""
     v = find_variant(pipeline, model_name) if model_name else None
@@ -620,6 +629,11 @@ def i2i_step_budget(pipeline: str, model_name: str | None,
     base = ((v or {}).get("defaults") or {}).get("num_steps")
     if not isinstance(base, int) or not base or not strength or strength <= 0:
         return None, 0
+    if _I2I_STEP_SEMANTICS.get(pipeline) == "exact":
+        # num_steps == intervals; only a preset below the floor needs raising.
+        if base >= MIN_EFFECTIVE_I2I_STEPS:
+            return None, base
+        return MIN_EFFECTIVE_I2I_STEPS, MIN_EFFECTIVE_I2I_STEPS
     effective = int(base * strength)
     if effective >= MIN_EFFECTIVE_I2I_STEPS:
         return None, effective

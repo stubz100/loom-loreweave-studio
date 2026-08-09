@@ -103,6 +103,9 @@ export interface Job {
   post_passes?: Array<Record<string, unknown>>;
   chained_from?: string | null;
   pass?: string | null;
+  /** Tombstone (2026-08-09): artifacts deleted, record kept because something derives from
+   *  it — so the chain still resolves and its children stay attached. */
+  deleted?: boolean;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;

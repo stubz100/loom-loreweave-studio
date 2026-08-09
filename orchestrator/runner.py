@@ -660,21 +660,48 @@ class JobRunner:
         LOG.info("stop requested for batch %s (finishes current item, keeps completed)", job_id)
         return True
 
-    def delete(self, job_id: str) -> bool:
+    def has_descendants(self, job_id: str) -> bool:
+        """Whether any live job was derived from this one (`chained_from`) — a postproc pass,
+        a chained clean/polish, anything downstream. Author rule 2026-08-09: such a job may
+        not simply vanish, or its children are orphaned mid-chain."""
+        with self._lock:
+            return any(j.get("chained_from") == job_id for j in self.jobs.values())
+
+    def delete(self, job_id: str, *, tombstone: bool | None = None) -> bool:
         """Delete a **terminal** job and **all** its artifacts atomically: the queue
         entry, the per-job output dir (`out/<id>/` — PNG + sidecar manifest), the per-job
         log (`jobs/logs/<id>.log`), and the lineage edge. A safe replacement for hand-
         deleting files (which orphans the manifest/log/queue/lineage). Running/queued jobs
-        must be canceled first → returns False (409). Frees disk for the guard (§9)."""
+        must be canceled first → returns False (409). Frees disk for the guard (§9).
+
+        **Tombstones (author 2026-08-09).** Deleting an image that other images were built
+        FROM used to remove the record outright, stranding every descendant: the chain lost
+        its middle, so a postproc pass surfaced as an unparented top-level card. When
+        something still derives from this job the record is KEPT and flagged `deleted`
+        instead — artifacts and disk are freed exactly the same, but `chained_from` still
+        resolves, so the chain stays consistent and its children stay attached. A job with
+        no descendants is removed completely, as before. `tombstone` overrides the
+        automatic choice (the caller may know better; None = decide from descendants)."""
         with self._cv:
             job = self.jobs.get(job_id)
             if job is None or job["status"] not in ("done", "failed", "canceled"):
                 return False
             ws = self._ws
+            keep = (any(j.get("chained_from") == job_id for j in self.jobs.values())
+                    if tombstone is None else tombstone)
             # Drop the durable record FIRST (+persist) so a crash mid-delete leaves at
             # worst orphaned files (harmless, swept by disk usage) — never a queue/lineage
             # entry pointing at deleted files.
-            self.jobs.pop(job_id, None)
+            if keep:
+                # The record survives as a link in the chain; everything that POINTS AT
+                # artifacts is cleared so nothing tries to serve a file that is gone.
+                job["deleted"] = True
+                job["result"] = {**(job.get("result") or {}),
+                                 "outputs": [], "output_names": [], "output_meta": {},
+                                 "output_name": None}
+                job["partial_outputs"] = []
+            else:
+                self.jobs.pop(job_id, None)
             self._canceled.discard(job_id)
             self._persist_locked()
             self._clear_pause_if_empty_locked()   # deleting the last queued job too
@@ -688,7 +715,8 @@ class JobRunner:
                 lineage.remove_edge(ws, job_id)
             except Exception as e:  # noqa: BLE001 - lineage is rebuildable, never block delete
                 _warn(f"lineage edge cleanup failed for {job_id}: {e}")
-        LOG.info("deleted %s + all artifacts", job_id)
+        LOG.info("deleted %s + all artifacts%s", job_id,
+                 " (record kept — descendants depend on it)" if keep else "")
         return True
 
     def delete_output(self, job_id: str, output: str) -> str:

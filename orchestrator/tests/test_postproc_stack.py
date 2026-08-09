@@ -533,37 +533,43 @@ def test_i2i_step_budget_rescues_distilled_models_and_leaves_the_rest_alone(clie
     (40 → 80 requested) to buy nothing, since 20 effective steps was already ample."""
     from orchestrator import model_catalog as mc
 
-    # the degenerate cases — a 4-step distilled model at any usable strength
+    # flux2 since 2026-08-09: its worker builds the schedule ACROSS [strength, 0] with
+    # `num_steps` intervals, so num_steps IS the effective count — no over-request, at any
+    # strength. (Over-requesting was pointless anyway: the old tail-slice ignored it.)
     for model in ("flux.2-klein-4b", "flux.2-klein-9b"):
-        req, eff = mc.i2i_step_budget("flux2", model, 0.6)
-        assert req == 7 and eff == 4          # was 2 effective
-        req, eff = mc.i2i_step_budget("flux2", model, 0.25)
-        assert req == 16 and eff == 4         # a Refine used to denoise ONE step
+        for st in (0.6, 0.25):
+            req, eff = mc.i2i_step_budget("flux2", model, st)
+            assert req is None and eff == 4, (model, st, req, eff)
+
+    # zimage/sd35 keep the diffusers fraction convention, so a distilled preset still needs
+    # over-requesting there
     req, eff = mc.i2i_step_budget("sd35", "sd3.5-large-turbo", 0.5)
-    assert req == 8 and eff == 4              # the same trap on sd35's turbo variant
+    assert req == 8 and eff == 4
 
     # models whose own preset already clears the floor are untouched — no request, no slowdown
     for pl, model, st, want_eff in (("sd35", "sd3.5-medium", 0.5, 20),
                                     ("zimage", "zimage-base", 0.5, 25),
                                     ("zimage", "zimage-turbo", 0.5, 4),
-                                    ("flux2", "flux.2-dev", 0.5, 4)):
+                                    # flux2 is "exact": dev's 8-step preset IS 8 intervals
+                                    ("flux2", "flux.2-dev", 0.5, 8)):
         req, eff = mc.i2i_step_budget(pl, model, st)
         assert req is None and eff == want_eff, (pl, model, req, eff)
 
     # a very low strength must not explode into a 400-step run
-    req, _eff = mc.i2i_step_budget("flux2", "flux.2-klein-4b", 0.01)
-    assert req == mc.MAX_I2I_STEPS
 
     # An UNSET model is the common case (the step just says "backend: flux2"), and the worker
     # will then run the pipeline's own default variant — so the budget predicts from THAT
     # rather than declining to answer. Same for a name the catalog doesn't know.
     assert mc.i2i_step_budget("flux2", None, 0.5) == mc.i2i_step_budget(
         "flux2", mc.default_model("flux2"), 0.5)
-    assert mc.i2i_step_budget("flux2", "nope", 0.5)[0] == 8
+    assert mc.i2i_step_budget("flux2", "nope", 0.5)[0] is None
 
     # …but with no strength there is nothing to reason about: no opinion, worker's default
     assert mc.i2i_step_budget("flux2", "flux.2-klein-4b", None)[0] is None
     assert mc.i2i_step_budget("flux2", "flux.2-klein-4b", 0)[0] is None
+
+    # a very low strength on a FRACTION pipeline is what needs the cap
+    assert mc.i2i_step_budget("sd35", "sd3.5-large-turbo", 0.01)[0] == mc.MAX_I2I_STEPS
 
 
 def test_queued_i2i_step_carries_the_corrected_budget(client):
@@ -577,7 +583,7 @@ def test_queued_i2i_step_carries_the_corrected_budget(client):
         "base": base, "preset": "clean", "backend": "flux2",
         "params": {"strength": 0.6}}), base)
     job = RUNNER.get(_queue_id(client, sid, base))
-    assert job["params"]["num_steps"] == 7          # 0.6 x 7 = 4 real steps
+    assert "num_steps" not in job["params"]   # flux2: its 4-step preset IS 4 real intervals
 
     # sd35 medium: 40-step preset already clears the floor → untouched
     sid2 = _last_step_id(client.post("/postproc/step", json={
@@ -595,3 +601,80 @@ def _queue_id(client, step_id, base):
             if st["id"] == step_id:
                 return st["job_id"]
     raise AssertionError("step not found")
+
+
+def test_deleting_an_image_with_descendants_leaves_a_tombstone(client):
+    """Author rule 2026-08-09: *"only if this is the end of the chain, otherwise keep the job
+    manifest (but flagged deleted), if there are already new images generated on it, so the
+    chain becomes consistent."*
+
+    Deleting a job used to remove the record outright, stranding everything derived from it —
+    a postproc pass whose `chained_from` no longer resolved surfaced as an unparented
+    top-level card (the char01 anomaly). A job with descendants now keeps its record, flagged
+    `deleted`, with every artifact reference cleared; a LEAF is removed completely."""
+    from orchestrator.runner import RUNNER
+
+    base = _base_image("job_tomb/base.png")
+    parent = next(j for j in RUNNER.jobs.values()
+                  if (j.get("result") or {}).get("output_name") == base)
+    child = RUNNER.submit(pipeline="zimage", mode="img2img", params={"prompt": "x"},
+                          batch_id="", index=0, batch_size=1,
+                          chained_from=parent["id"], pass_name="clean")
+    RUNNER.jobs[child]["status"] = "done"
+    RUNNER.jobs[child]["result"] = {"ok": True, "output_name": "job_tomb/c.png",
+                                    "output_names": ["job_tomb/c.png"]}
+
+    assert RUNNER.has_descendants(parent["id"]) is True
+    assert RUNNER.delete(parent["id"]) is True
+
+    kept = RUNNER.get(parent["id"])
+    assert kept is not None, "a job with descendants must survive as a tombstone"
+    assert kept["deleted"] is True
+    # every artifact pointer is cleared — nothing may try to serve a file that is gone
+    res = kept["result"]
+    assert res["outputs"] == [] and res["output_names"] == [] and res["output_name"] is None
+    # …and the chain still resolves, which is the entire point
+    assert RUNNER.get(child)["chained_from"] == parent["id"]
+
+    # the LEAF, by contrast, goes completely
+    assert RUNNER.has_descendants(child) is False
+    assert RUNNER.delete(child) is True
+    assert RUNNER.get(child) is None
+
+
+def test_reconcile_prunes_stack_records_whose_job_is_gone(client):
+    """The other half of the author's point 1: deleting an image never touched
+    `postproc_stacks.json`, and reconcile only ever revisited QUEUED/RUNNING steps — so a
+    *done* step kept a job_id and an output pointing at files that no longer existed (their
+    live project: 13 dangling bases, 18 dangling outputs, 19 dangling jobs over 26 stacks).
+    Reconcile runs on every stacks read, so making it authoritative self-heals the store."""
+    from orchestrator import postproc
+    from orchestrator.runner import RUNNER
+
+    ws = RUNNER.workspace
+    base = _base_image("job_rec/base.png")
+    sid = _last_step_id(client.post("/postproc/step",
+                                    json={"base": base, "preset": "clean"}), base)
+    jid = _queue_id(client, sid, base)
+    _complete(jid, "job_rec/out1.png")
+    assert any(s["base"] == base for s in _stacks(client))
+
+    # the job disappears (deleted / pruned) — nothing branches from its output
+    RUNNER.jobs.pop(jid, None)
+    stacks = _stacks(client)                      # a read is enough to heal it
+    stack = next((s for s in stacks if s["base"] == base), None)
+    assert stack is not None and stack["steps"] == [], "the dead step should be pruned"
+
+    # …but a step something BRANCHES from becomes a tombstone instead, keeping the chain
+    base2 = _base_image("job_rec2/base.png")
+    a = _last_step_id(client.post("/postproc/step",
+                                  json={"base": base2, "preset": "clean"}), base2)
+    ja = _queue_id(client, a, base2)
+    _complete(ja, "job_rec2/a.png")
+    _last_step_id(client.post("/postproc/step", json={
+        "base": base2, "preset": "restore", "source": "job_rec2/a.png"}), base2)
+    RUNNER.jobs.pop(ja, None)
+    stack2 = next(s for s in _stacks(client) if s["base"] == base2)
+    first = next(s for s in stack2["steps"] if s["id"] == a)
+    assert first.get("deleted") is True, "a branched-from step is kept as a tombstone"
+    assert len(stack2["steps"]) == 2

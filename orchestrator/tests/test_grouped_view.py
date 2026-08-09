@@ -184,9 +184,17 @@ def test_each_lineage_is_its_own_collapsible_card_inside_the_group():
     # its own collapse key, namespaced under the group so two groups can't collide
     assert "const cid = `${g.id}::${r.job.id}`;" in tree
     assert "collapsed.has(cid)" in tree
-    # collapsed state still carries meaning: the lineage shape, a count, and a thumbnail
+    # collapsed state still carries meaning: the lineage shape and a pass count
     assert "function describeChain" in tree and "function countChain" in tree
-    assert "chain-card-thumb" in tree
+
+    # A collapsed lineage is a TILE among the images, not a bar (author 2026-08-08) — it
+    # reuses the very same .tree-card shape a collapsed GROUP uses, one level deeper, and
+    # opening it spans the row exactly like opening a group. So the group BODY is itself the
+    # tile grid; a nested grid there would squeeze back to one column (the bug fixed above).
+    assert ".tree-body {" in css and "repeat(auto-fill, minmax(150px, 1fr))" in css
+    assert ".chain-card.open { grid-column: 1 / -1; }" in css
+    assert 'className="tree-card" onClick={() => toggle(cid)}' in tree
+    assert "tree-tiles" not in tree and "tree-tiles" not in css   # dead once the body IS the grid
 
 
 def test_control_rows_wrap_so_nothing_falls_off_the_inspector():

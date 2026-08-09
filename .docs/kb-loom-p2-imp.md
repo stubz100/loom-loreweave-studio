@@ -218,3 +218,31 @@ the select floor, so the next control added to that row cannot silently reintrod
 `tsc` + `vite build` clean.
 
 **✅ PUSHED `7725ac6`.**
+
+### Pass 2 follow-up — a folded lineage is a TILE, not a bar (author, same day)
+
+*"when we collapse a sub-card, can it not take a shape of a bar, rather the same image tile size
+as the rest of the images inside the card — the mechanics should work the same way as with the
+main card collapse"*.
+
+Right, and it makes the whole view consistent: **one visual language for "a collection folded
+away", applied at both levels.** A collapsed lineage now renders with the **same `.tree-card`
+shape a collapsed GROUP uses** — cover image, name, facts underneath — sitting in the grid as
+one more tile beside the group's plain images. Expanding it takes `grid-column: 1 / -1` and
+spans the row, exactly like opening a group card one level up. The old bar (a 34 px thumbnail
+shoved to the right) is gone.
+
+The structural change that makes it work: **`.tree-body` IS the tile grid now**, holding the
+plain tiles and the lineage cards as siblings. Previously it was a flex column wrapping a
+separate `.tree-tiles` grid, which is why a folded lineage could only ever be a full-width row.
+
+⚠ That reshuffle re-armed the **one-column bug** in a second place: the orphan (Stage-C curated
+refs) group still nested a `.tree-tiles` grid *inside* the now-grid body, which would have
+squeezed it into a single column — the exact failure fixed one level up an hour earlier. Caught
+and flattened; `.tree-tiles` is now unreferenced and its rule deleted, so the shape cannot come
+back. The badge on a folded lineage reads `⑂N` (branch count) rather than the group card's
+`×N`, so the two levels stay distinguishable at a glance.
+
+**439 tests green** (contract extended: the body is the grid, an open lineage spans the row, the
+collapsed card reuses `.tree-card`, and `tree-tiles` is asserted GONE from both the module and
+the stylesheet). `tsc` + `vite build` clean.

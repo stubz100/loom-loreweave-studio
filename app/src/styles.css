@@ -303,7 +303,13 @@ body {
   color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap;
 }
 .tree-del { margin-left: auto; }
-.tree-body { padding: 8px; display: flex; flex-direction: column; gap: 10px; }
+/* The group body is itself a TILE GRID: plain images and folded lineages share it, so a
+   collapsed lineage reads as one more tile rather than a bar (author 2026-08-08). An OPEN
+   lineage spans every column — the same mechanic as opening a group card one level up. */
+.tree-body {
+  padding: 8px; display: grid; gap: 6px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); align-items: start;
+}
 .tree-pass { color: var(--text); }
 /* A derivation chain reads LEFT→RIGHT (author 2026-08-08 #2a — stacking it vertically wasted
    the width). Only a real FAN-OUT (several passes off one source, which branching stacks now
@@ -319,23 +325,20 @@ body {
 .chain-arrow { color: var(--line); font-size: 15px; align-self: center; flex: 0 0 auto; }
 /* the chain scrolls sideways rather than squeezing tiles or wrapping mid-descent */
 .chain-card-body { overflow-x: auto; padding-bottom: 2px; }
-/* Each lineage is its own collapsible card INSIDE the group card (author 2026-08-08) */
+/* Each lineage is its own collapsible card INSIDE the group card (author 2026-08-08).
+   Collapsed it is a grid TILE (reusing the .tree-card shape, one visual language for "a
+   folded collection"); open it spans the row like an opened group. */
 .chain-card { border: 1px solid var(--line); border-radius: 5px; background: var(--panel-2); }
+.chain-card.open { grid-column: 1 / -1; }
 .chain-card-head {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 7px;
-  min-height: 26px;
+  min-height: 26px; border-bottom: 1px solid var(--line);
 }
-.chain-card-head .tree-toggle { min-width: 0; overflow-wrap: anywhere; text-align: left; }
-.chain-card.open .chain-card-head { border-bottom: 1px solid var(--line); }
-.chain-card-head .tree-toggle { font-size: 12px; font-weight: 500; }
-.chain-card-thumb {
-  margin-left: auto; width: 34px; height: 34px; object-fit: cover; border-radius: 3px;
+.chain-card-head .tree-toggle {
+  min-width: 0; overflow-wrap: anywhere; text-align: left;
+  font-size: 12px; font-weight: 500;
 }
 .chain-card-body { padding: 7px; }
-/* Tiles inside an open group reuse .cell, so they take the same track sizing as .grid */
-.tree-tiles {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px;
-}
 .style-frag {
   flex: 1; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
   border-radius: 4px; padding: 4px 6px; font-size: 12px;

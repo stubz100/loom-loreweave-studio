@@ -165,21 +165,23 @@ export default function GroupedGrid({
     return <p className="muted center span">{emptyHint}</p>;
   }
 
+  /** The first image anywhere under a node — the cover for a folded lineage. */
+  const coverOfNode = (n: Node): string | null => {
+    for (const t of n.tiles) {
+      const u = tileImageUrl(t);
+      if (u) return u;
+    }
+    for (const c of n.children) {
+      const u = coverOfNode(c);
+      if (u) return u;
+    }
+    return null;
+  };
+
   /** A group's cover: the first tile that actually has an image. */
   const coverOf = (g: Group): string | null => {
-    const walk = (n: Node): string | null => {
-      for (const t of n.tiles) {
-        const u = tileImageUrl(t);
-        if (u) return u;
-      }
-      for (const c of n.children) {
-        const u = walk(c);
-        if (u) return u;
-      }
-      return null;
-    };
     for (const r of g.roots) {
-      const u = walk(r);
+      const u = coverOfNode(r);
       if (u) return u;
     }
     return null;
@@ -254,7 +256,7 @@ export default function GroupedGrid({
                     <span className="muted sm">{meta}</span>
                   </div>
                   <div className="tree-body">
-                    <div className="tree-tiles">{orphanTiles.map(renderTile)}</div>
+                    {orphanTiles.map(renderTile)}
                   </div>
                 </>
               )}
@@ -297,33 +299,47 @@ export default function GroupedGrid({
                       🗑 group
                     </button>
                   </div>
+                  {/* ONE grid holds the group's plain tiles AND its lineages, so a collapsed
+                      lineage sits among the images as another TILE (author 2026-08-08) —
+                      exactly the mechanic the group cards use one level up. Expanding it
+                      spans the full row, same as opening a group card. */}
                   <div className="tree-body">
-                    {/* every childless root in ONE grid, so it fills the width */}
-                    {plain.length > 0 && (
-                      <div className="tree-tiles">
-                        {plain.flatMap((r) => r.tiles).map(renderTile)}
-                      </div>
-                    )}
-                    {/* Each derivation chain is its OWN collapsible card inside the group
-                        (author 2026-08-08) — a base with several postproc lines can get long,
-                        and folding one away should not cost you the whole operation. */}
+                    {plain.flatMap((r) => r.tiles).map(renderTile)}
                     {chains.map((r) => {
                       const cid = `${g.id}::${r.job.id}`;
                       const cshut = collapsed.has(cid);
-                      const cover = tileImageUrl(r.tiles[0] ?? { key: "" }) ?? null;
+                      const cover = coverOfNode(r);
+                      const passes = countChain(r);
+                      const cmeta = `${passes} pass${passes === 1 ? "" : "es"}`;
                       return (
                         <div key={r.job.id} className={`chain-card ${cshut ? "shut" : "open"}`}>
-                          <div className="chain-card-head">
-                            <button className="tree-toggle" onClick={() => toggle(cid)}
-                                    title={cshut ? "expand this lineage" : "collapse this lineage"}>
-                              {cshut ? "▸" : "▾"} 🧩 {describeChain(r)}
+                          {cshut ? (
+                            // same card shape as a collapsed GROUP — one visual language for
+                            // "a collection folded away", just one level deeper
+                            <button className="tree-card" onClick={() => toggle(cid)}
+                                    title={`expand this lineage — ${describeChain(r)} · ${cmeta}`}>
+                              <span className="tree-card-img">
+                                {cover ? <img src={cover} alt={describeChain(r)} />
+                                       : <span className="tree-card-ph">no image</span>}
+                                <span className="tree-card-count">⑂{passes}</span>
+                              </span>
+                              <span className="tree-card-foot">
+                                <span className="tree-card-name">🧩 {describeChain(r)}</span>
+                                <span className="muted sm">{cmeta}</span>
+                              </span>
                             </button>
-                            <span className="muted sm">{countChain(r)} pass(es)</span>
-                            {cshut && cover && (
-                              <img className="chain-card-thumb" src={cover} alt="" />
-                            )}
-                          </div>
-                          {!cshut && <div className="chain-card-body">{renderChain(r)}</div>}
+                          ) : (
+                            <>
+                              <div className="chain-card-head">
+                                <button className="tree-toggle" onClick={() => toggle(cid)}
+                                        title="collapse this lineage">
+                                  ▾ 🧩 {describeChain(r)}
+                                </button>
+                                <span className="muted sm">{cmeta}</span>
+                              </div>
+                              <div className="chain-card-body">{renderChain(r)}</div>
+                            </>
+                          )}
                         </div>
                       );
                     })}

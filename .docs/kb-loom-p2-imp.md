@@ -1,3 +1,3490 @@
+# Loreweave Studio — P2 implementation journal (`kb-loom-p2-imp`)
+
+started: 2026-06-14 21:33:40
+finished:
+
+Running log of what was **actually built** for Phase 2 (**LoRA training** — Stages D & E: make a P1
+character reproducible by training a LoRA from its curated, captioned ref set), milestone by
+milestone. Brief points + any parameters/settings worth remembering later.
+Spec: [`kb-loom-p2.md`](kb-loom-p2.md); decisions: [`kb-storyboard01.md`](kb-storyboard01.md) §10.0
+(R6/R13/R21/R58/R68/R96/R98/R114/R115–R118/R122/R147/R159/R169/R170);
+predecessor spine: [`kb-loom-p1.md`](kb-loom-p1.md) / [`kb-loom-p1-imp.md`](kb-loom-p1-imp.md)
+(P1 functionally complete & closed 2026-06-14, HEAD `44cd411`).
+
+Convention: each milestone records **start + finish** timestamps (get the real clock, don't guess);
+⚙ marks a setting/param later code depends on; ⚠ marks a known gap / deferred item.
+**Push at milestone close** (carried from P0/P1): every milestone/acceptance close ends with a
+commit+push of the loom repo, recorded here with its hash. **R162 vendoring** still holds — any new
+pipeline/trainer worker code lands in the monorepo `src/pipeline/` (or the trainer's equivalent)
+**first**, then is copied byte-identically into `loom/loom-loreweave-studio/pipelines/…` (MD5
+drift-guard).
+
+P2 build order (spec §12 — **walking skeleton first**):
+
+**Phase A — Training skeleton (prove a LoRA can be made + used on this rig):**
+- **M1 — training spike (no UI).** Includes **P2-0**, the make-or-break front-gate: prove
+  **ai-toolkit even trains on RX 9070 XT / ROCm** (hard go/no-go — if no-go the whole training
+  approach changes). Then vendor ai-toolkit, train ONE `zimage` LoRA from a fixed P1 `ref_set`,
+  load it at inference, confirm it reproduces the character. Find the per-model default preset here.
+- **M2 — trainer skeleton as a (staged) queued job.** Wrap the trainer in the P0 job-queue +
+  manifest envelope with **staged-job** semantics (R118: auto-generate the spec, do NOT auto-queue;
+  separate `jobs/staged.json`; explicit "Add to queue"). [Train LoRA] from the Asset Studio → temp
+  run → promote → verify. Also **P2-10** (resume-from-checkpoint, R88/R159 — first `resumable=true`
+  job), **P2-12** (training-time ETA). *Skeleton only — NOT the done-line (R169).*
+
+**Phase B — Thicken (all VLM-free):**
+- **M3 — template captioning.** `captions.jsonl` deterministically from the frozen P1 coverage-cell
+  metadata + trigger token; `caption_policy.json`; review/edit UI. (No VLM.)
+- **M4 — proxy readiness meter.** Coverage (from metadata) + perceptual-hash dupes + face-embedding
+  on-model (anchor distance, or no-anchor centroid fallback R120) → `readiness.json` → advisory
+  meter. (No VLM.) ***P2 done-line reachable here*** (M2 trainer + M3 captions + M4 readiness).
+- **M5 — train options + `sd35` + PEFT backend.** train-from-base / seed-from-parent (R68);
+  per-model presets + advanced knobs; **diffusers-PEFT** advanced backend; onboard the **sd35**
+  trainer; full training manifests. Also **P2-9** (VRAM-fit presets per base).
+- **M6 — promote + manual cleanup + LoRA management.** Promote into the version; one-click temp
+  cleanup (R13); version selector shows LoRA presence; **P2-11** (LoRA preview before promote);
+  **P2-13** (graph-ready facts: `training_context.json` + `caption_policy_hash` + `context_digest`
+  in the manifest). (No style-LoRA path — declared only, R122; built in P5 with multi-LoRA stacking.)
+
+**Done-line:**
+- **M7 — acceptance.** A P1 character → template-captioned → readiness ✓ → **staged → added to
+  queue → trained → promoted → test-gen reproduces it on-model**, all recorded in the training
+  manifest (§1), with `caption_policy_hash` + `context_digest` present.
+
+⚠ **Phase risk (spec §11):** P2 is the **first phase that builds genuinely new capability** (a
+trainer), not a wrapper around an existing inference CLI. **P2-0/P2-1 are the whole phase's
+make-or-break** — does ai-toolkit train on ROCm at all? Everything after the gate + spike is
+conventional. Resist pulling the **VLM** (→ P4, R116) or **GraphRAG** (→ post-v1, R170) into P2.
+
+---
+
+*(P2 kicked off 2026-06-14; the phase-boundary docs commit — P1 journal closed, this journal opened,
+README status updated — pushed `ff29c0c`. **M0 (UI reset) added by the author 2026-06-18 and built
+first**, before the trainer gate; see below.)*
+
+---
+
+## M0 — shell/workspace UI + postprocess workflow reset (spec §12 M0; WBS P2-M0a/b/c/d)
+
+started: 2026-06-18
+finished: 2026-06-18 18:35 for a+b+c (✅ built — visual sign-off owed); **M0d ✅ COMPLETE 2026-06-20:
+Parts A (structured prompting) + B (sampling presets) + C-t2i (dev JSON tree) + C-i2i (flux2-img2img
+on the M0c postproc step) all built same day** (see "### M0d" below). Visual sign-off owed.
+
+**Author (2026-06-18):** before trainer work, a **UI/workflow reset** over the P0/P1 MVP so later
+P2/P3 controls inhabit a better surface (spec §12 M0 — a product-shape correction, not a trainer
+feature). Three WPs: **M0a** shell + workspace-nav reset · **M0b** L1 tabbed authoring · **M0c** L2
+postprocess stack. Built WP-by-WP (build → push) so each is reviewable. ⭐ Two layout forks decided
+by the author up front: **File menu = in-app `File ▾` dropdown** (not a native OS menubar — stays in
+React, matches the existing picker); **workspace tabs = left-rail tabs evolved** (not a top strip).
+
+### M0a — shell + workspace navigation reset — finished 2026-06-18 17:28
+
+**Frontend-only (App.tsx + styles.css).** Done:
+- **File menu (in-app `File ▾`):** the titlebar's inline `+ New` / `Open ▾` / `Close` strip collapses
+  into one **`File ▾`** dropdown — `New project…`, `Open folder…`, `Close project` (when open), a
+  separator, then a **RECENT** list (reuses the existing `.picker-row` open/forget rows). The top bar
+  now carries only the current project name + the orchestrator status dot. Reuses the existing
+  handlers (`onNewProject`/`onBrowseProject`/`openByPath`/`onForgetProject`/`onCloseProject`) and the
+  `showPicker`/`onTogglePicker` list-load; each action closes the menu. New CSS `.filemenu*`; dead
+  `.picker-wrap`/`.picker`/`.picker-browse` rules removed (row sub-classes still used by RECENT).
+- **Workspace-scoped rail:** the `L2·Assets` / `L1·World` tabs stay at the top of the left rail, but
+  the panel below now **swaps per workspace** — L2 shows the ASSETS library (`+ Character` / `⤒
+  Import` / Sandbox + characters), L1 shows a `WORLD` rail. The always-visible ASSETS strip no longer
+  bleeds into the L1 workspace (the "cramped shared controls" the spec calls out). The L1 sub-tabs
+  (Visual Styles / World / Story Spine) land in **M0b**; for now L1's rail is a minimal header.
+- **Asset panel +20% wider:** `.panes` rail column `200px → 240px`.
+
+`tsc` + `vite build` clean. No backend touched (244 tests stand). ⚠ Visual sign-off owed (user, on
+the running app). **✅ PUSHED `379652f`.** ⏭ Next: **M0b** L1 sub-tabs + readable multi-line editors.
+
+### M0b — L1 tabbed authoring + readable editors — finished 2026-06-18 17:38
+
+**Frontend-only (App.tsx + styles.css).** The L1 World workspace was one long cramped scroll of
+three sections with two-line inputs. Now:
+- **L1 sub-tabs in the rail:** the M0a-stubbed `WORLD` rail gains **🎨 Visual styles · 🌍 World ·
+  🧬 Story spine** nav buttons (reuse `.asset-row`). New App state `l1Tab` is passed to
+  `WorldWorkspace` as `tab`; the workspace renders **only the selected section** (the in-pane "L1
+  WORLD —…" header is gone — the rail is the nav now). The component stays mounted across sub-tab
+  switches, so unsaved drafts (world/premise/style edits) persist when flipping tabs.
+- **Readable multi-line editors** (spec: "not two-line inputs"): World prose `rows 6→18`, premise
+  `rows 3→8` (+ a field label); StyleRow fragment `rows 2→4`, global-negative `rows 1→3`. The
+  **Story-spine character** went from an inline single-line row to a **card** (`.spine-row` →
+  bordered card; name + save/stub/re-sync/✕ on a `.spine-row-head` row; the snippet is now a
+  multi-line `.spine-snippet` textarea). The "+ character" add form stacks name + a snippet textarea
+  + button.
+
+`tsc` + `vite build` clean. No backend touched (244 tests stand). ⚠ Visual sign-off owed (user).
+**✅ PUSHED `3801cae`.**
+
+**M0b refinements (user, 2026-06-18):** (a) on Visual Styles the **"+ add style" form moved to the
+top** of the section (create-then-it-appends-below reads better); style **fragment `4→8 rows`**,
+**global negative `3→2 rows`** (`d30de5e`). (b) spaced the add-style form off the list with a divider
+(`028b82a`). (c) the L1 `.world` block had only 2px horizontal padding so content butted the
+scrollbar → **right padding 16px** (clears the scrollbar; max-width keeps it off the inspector)
+(`3fe640b`). All frontend-only, build clean.
+
+### M0c — L2 postprocess stack (decoupled from generation) — finished 2026-06-18 18:35
+
+⭐ Two author forks up front: **persist a stack record** (durable/replayable, not derive-from-jobs)
++ **inline panel on the selected image** (not a dedicated stage). Today postprocessing was coupled
+to a generation run (clean/polish/restore as drawer toggles → chained jobs). M0c **decouples** it:
+postprocess any existing image via a persisted, independently-queued stack. The clean/polish/restore
+**workers are unchanged** — M0c is the reorganization the spec frames ("only the UI/data shape +
+source/output lineage").
+
+**Data model (`version.schema.json`):** new optional `postproc_stacks[]` per version — each
+`{base, steps[]}`; a step = `{id pps_…, preset, backend, mode, params, mask, requires_mask,
+source, output, job_id, status, added_at}`. A stack is a **linear chain**: a step's `source` is the
+previous step's `output` (or the base); steps append/remove at the tail. `mask` + `requires_mask`
+are the **mask-ready contract** (stored + carried; no mask-consuming worker in M0).
+
+**Backend (`assets.py` + `main.py`):** `assets.add_postproc_step` (configured, source = prior
+output or base; refuses to stack before the tail has an output), `remove_postproc_step` (tail only),
+`mark_postproc_step_queued`, `record_postproc_result` (observer side, by job_id), `resolve_postproc_step`.
+Endpoints: **`POST /assets/{id}/postproc/step`** (configure — presets clean/refine/custom = img2img
+strength presets backend zimage|sd35, restore = GFPGAN; param whitelist + model/backend validation,
+422), **`POST …/step/{step_id}/queue`** (fire ONE batch job over the source image — img2img or the
+restore io-worker; weight pre-flight 412 + VRAM 422; `dry_run` previews; mirrors `_submit_chained`'s
+job shape; reads the source's true dims via PIL so aspect/tiles are right), **`DELETE …/step/{step_id}`**.
+All finalized→409 (R60). ⚙ The single runner **completion observer** now fans out (`_on_job_complete`
+→ anchor verification **+** `record_postproc_output`) so a finished step records its produced output
+durably (matched by job_id) — a no-op for non-postproc jobs.
+
+**Frontend (`orchestrator.ts` + `App.tsx` + css):** `PostprocStep`/`PostprocStack` types +
+`postproc_stacks?` on `ProfileVersion`; `addPostprocStep`/`queuePostprocStep`/`removePostprocStep`.
+A new **`PostprocPanel`** in the Inspector shows when a done (non-video) image is selected on an
+unlocked asset version: lists the stack's steps with **live status** (reads the linked job so it
+updates on the existing poll), a per-step **▶ queue** (configured) + tail **✕ remove**, and an **add
+form** (preset select + optional strength) gated until the tail step is done. A small reconciliation
+effect re-fetches the version when a queued step's job finishes (lands the persisted output + re-opens
+the add gate; self-terminating).
+
+**Tests:** `test_postproc_stack.py` (**+8**): add persists configured w/ base source; can't stack
+before the tail has output; param/backend/model validation (422); queue dry-run → img2img job over
+the source + real queue → queued+job_id + completion-observer records output + chains the next step's
+source; restore → io job (input/blend); remove tail only; mask stored; finalized → 409. **252 backend
+tests** (244→+8), green. `tsc` + `vite build` clean. **No `src/pipeline/` touched → no re-vendor.**
+⚠ Visual sign-off owed (user, on the running app). **✅ PUSHED `94174f4`.**
+
+**M0c refinements (user, 2026-06-18, `3c329e8`):** PostprocPanel renders **below the image** (after
+the Inspector preview, was above); each step lists **all set attributes** (backend, strength/blend,
+model, prompt, negative — not just strength) and the add-form exposes backend + strength + prompt +
+negative (i2i) / blend (restore); **dropped the `custom` preset** (a bare i2i step, redundant once
+Clean/Refine expose their attributes) from the UI + backend preset map + request Literal. **#3 RESOLVED — re-scoped postproc to PROJECT-level (`ce8d61d`):** "available on every image
+regardless of origin." Traced: NOT flux2-specific (no pipeline gate; `output_name` set for flux2 like
+any pipeline) — the panel was hidden only in the **unscoped Sandbox** (no character → nowhere to
+persist the version-scoped stack). **User chose project-level** (origin-agnostic). Moved the store
+from the character version → **`<project>/postproc_stacks.json`** keyed by base image (new
+`orchestrator/postproc.py` + `postproc_store.schema.json`); endpoints are now project-scoped
+(`GET /postproc/stacks`, `POST /postproc/step`, `…/step/{id}/queue`, `DELETE …/step/{id}` — no asset
+id). The queue job **inherits its source's producing-job requester/version** so the output lands in
+the SAME grid as the source (character or Sandbox); the completion observer records by job_id only.
+Removed the version-scoped postproc (assets.py fns + `version.schema` field) — ⚠ consequence: stacks
+**no longer travel with a character** (not in profile export, not frozen by finalize); postproc is a
+project-wide image scratchpad (keep an output into a character via Stage-C curation). Frontend loads
+project-level stacks (`getPostprocStacks`), the panel shows for any done non-video image with a
+project open (no asset needed), and a done step gets a 🔍 to view its result in the lightbox (so
+Sandbox results are visible even though they don't auto-land in the batch grid). Tests rewritten for
+project scope (+ a no-asset case); **252 backend tests**; build clean. No `src/pipeline/` touched.
+
+**M0c refinement (user, `f3d6ca4`):** the add-form now also exposes a **model-variant picker**
+(not just the backend) — a dropdown of the chosen i2i backend's catalog variants (default = the
+backend's preset model); switching backend resets it. Backend already accepted + validated
+`model_name`; this just surfaces it. Frontend-only, build clean.
+
+**M0c refinement (user, `f9466f4`):** queuing a step now shows a **queued tile** in the grid the
+author is looking at (it streams queued→running→done like a generation). The grid is
+requester/stage-scoped (character) or batch-id-driven (Sandbox), so a postproc job often didn't
+surface. The queue endpoint gained optional `requester_id` + `stage`; the UI passes the active
+character's version + current bootstrap stage (tile lands in that grid), and for the Sandbox tracks
+the returned job id in `batchIds`. Backend still falls back to the source's producing job, else the
+project. +1 test, 253 backend tests, build clean.
+
+**M0c bugfix (user "postproc clean using sd35 fails", `55b414a`):** a Clean/Refine step submitted
+an **empty per-item prompt**, but the batch worker rejects an empty-prompt item (sd35 `run_jobs`
+`return 2` → the whole job fails, no output). The chained polish succeeded only because it inherits
+the parent's prompt. Fix (orchestrator-side, worker unchanged → no re-vendor): a clean/refine step
+now **re-diffuses with the SOURCE image's own prompt** when the author types none — from the source's
+producing job, or (chained step) the previous step's per-output meta prompt; if none is inheritable
+and none typed → **422** with a clear "type a prompt" message rather than a doomed job. +2 tests
+(inherit; orphan needs/accepts explicit prompt); **255 backend tests**.
+
+**M0c bugfix (user "step stuck after cancel/delete from the queue", `eabdf01`):** the completion
+observer fires for **SUCCESSFUL jobs only** (`job_snapshot = … if rec.ok else None`), so a step whose
+job was canceled/failed/deleted stayed stuck `queued` — the stack card couldn't add/remove (on delete
+the live job is gone, so the UI fell back to the stale persisted status). Fix: **`GET /postproc/stacks`
+now reconciles** each queued/running step against the live job table (`postproc.reconcile` + a runner
+resolver in main.py): job terminal → that status (done also records output); **job gone → canceled**;
+corrections persisted (+`canceled` in the store-schema enum). The **queue endpoint blocks re-queue
+only if the linked job is genuinely still active** (live queued/running), not on a stale persisted
+`queued` — so a dead step re-fires. Frontend: the reconcile effect fires on any terminal/vanished job;
+`liveStatus` treats a vanished job as canceled; a dead tail shows **↻ re-queue + ✕ remove** so the
+stack is never stuck. +2 tests; **257 backend tests**; build clean.
+
+**✅ M0a+b+c COMPLETE.** (M0d added after — below.) ⏭ After M0d: **M1** training spike — the
+**P2-0 ROCm go/no-go front-gate** (does ai-toolkit train on RX 9070 XT / ROCm at all?).
+
+### M0d — flux.2 advanced prompting + sampling presets + dev JSON tree (spec §12 "M0d"; WBS P2-M0d)
+
+started: 2026-06-20 15:28
+
+Author request (2026-06-20): flux2 `ref`-mode Stage-B holds identity but **follows pose loosely**
+(e.g. "three-quarter left" → body one way, head the other). Design (spec §12 "M0d solution design",
+committed `5089850`/`1e89375`) has three additive levers: **A** structured/labeled prompting with
+explicit angle→camera/pose directives (the pose fix); **B** configurable guidance/steps fronted by a
+Sampling preset pull-down; **C** a `flux.2-dev`-gated structured-JSON prompt tree for t2i/i2i. Built
+part-by-part (build → push). **No `src/pipeline/` worker code changes → no re-vendor** (the catalog
+already exposes the flux2 variants + `guidance`/`num_steps`; the worker already honours distilled-vs-
+base sampling — M0d is orchestrator + frontend surface only).
+
+**Part B — Sampling preset pull-down (finished 2026-06-20 15:28).** ⚙ Backend: `FLUX2_SAMPLING_PRESETS`
+in `model_catalog.py` (4 rows — **Fast** klein-4b 4/1.0 ★default, **Balanced** klein-base-4b 24/4.0
+⭐recommended = the one-click pose fix, **Quality** klein-base-9b 40/4.5, **Dev/JSON** flux.2-dev
+50/4.5 at original M0d time; M2.5 supersedes dev to quantized-safe 8/4.0) attached to
+`CATALOG["flux2"]["sampling_presets"]` so `GET /models` serves it; `flux2_sampling_presets()`
+helper. Each preset's `model_name` is a real variant (asserted). Frontend: `Flux2SamplingPreset` type +
+`sampling_presets?` on `PipelineModels`; a reusable **`Flux2SamplingSelect`** dropdown on the **Stage-B
+bar** (flux2 family) and the **t2i cast bar** (castPipeline=flux2). Picking a preset sets the model +
+merges `num_steps`+`guidance` into the params drawer (Stage-B: `stageBModel`+`advParamsB`; cast:
+`advParamsA.model_name`+steps+guidance, both top-level/channel-routed as before). **Custom** = the
+hand-set fields; hand-editing model/steps/guidance (or reset / pipeline change) falls the label back to
+Custom. **Distilled guard:** a ⚠ hint shows when guidance > ~1.5 on a step-distilled variant (CFG inert
+there). Note: `guidance`/`num_steps` already rendered as individual fields in the flux2 ⚙ params drawer
+(catalog params) — Part B adds the one-click combos + the guard on top. **Tests:** `test_model_catalog.py`
++1 (`test_flux2_sampling_presets_reference_real_variants` — real variants, exactly one default,
+recommended is non-distilled, served on the entry). **259 backend tests** (257→+2 incl. earlier), green;
+`tsc --noEmit` clean. **✅ PUSHED `d327719`.**
+
+**Part A — structured (directive-led) prompting (finished 2026-06-20 16:57).** The pose fix.
+New **`orchestrator/flux2_prompt.py`**: an `ANGLE_DIRECTIVES` table mapping each frozen coverage
+angle → an explicit camera+pose directive that names **head AND body** (e.g. `three_quarter_left`
+→ "body and head both turned three-quarters toward the viewer's left (¾ left view)", replacing the
+loose "three-quarter left view" the reference overrode), plus `SHOT_DIRECTIVES` for framing.
+`build_cell_prompt(cell, clause, style)` assembles `<pose directive>, <framing>, <expression>[, <bg>
+background], <clause>, <style>` — same slot order as the flat builder (pose leads → dominates the
+loosely-adhering model; identity rides the reference + clause; style trails), positive-only (FLUX.2
+takes no negatives). **Coverage vocab stays frozen** — the module only reads + rephrases it (a test
+asserts the directive tables cover `coverage.ANGLES`/`SHOT_SIZES` exactly). `recipe.build_recipe`
+gained `advanced_prompt=False`: when on, cells use `flux2_prompt.build_cell_prompt` instead of the
+flat phrase (everything else — matrix, cells, seeds — identical); returns the flag. `main.py` Stage-B:
+`StageBRequest.advanced_prompt` (extra="forbid" model), passed as `advanced_prompt and is_flux2`
+(**gated to flux2** so zimage/sd35 keep flat phrasing), echoed in the dry-run payload. Frontend: an
+**"advanced prompting" checkbox** on the Stage-B bar's flux2 branch (`advancedPromptB` → `advanced_prompt`
+in `buildStageBBody`, flux2-only); the existing dry-run **Preview** shows the resolved directive
+prompt (first_cell). **Tests:** `test_flux2_prompt.py` (**+9** — directive coverage, head+body pin,
+fallbacks, prompt order, bg inclusion, vocab validation, recipe on/off determinism). **268 backend
+tests**, green; `tsc` clean. No `src/pipeline/` → no re-vendor. **✅ PUSHED `d88eb01`.**
+
+**Part C — `flux.2-dev` structured-JSON prompt tree, t2i (finished 2026-06-20 17:06).** When
+**flux.2-dev** is the selected cast model, a **🌲 JSON prompt** tree authors the FLUX.2 schema
+directly. ⚙ Backend: `model_catalog` now serves `CATALOG["flux2"]["angle_directives"]` (= Part A's
+`flux2_prompt.ANGLE_DIRECTIVES`, single source so the tree's pose presets don't drift; +1 test).
+Frontend lib (`orchestrator.ts`): `Flux2PromptTree`/`Subject`/`Camera` types + `emptyFlux2PromptTree`,
+`serializeFlux2PromptTree` (drops every empty field/array → compact JSON string, "" when nothing
+authored), `parseFlux2PromptTree` (lenient, throws on invalid JSON), `angle_directives?` on
+`PipelineModels`. App.tsx: a **`Flux2JsonTreeEditor`** (scene · subjects[] add/remove · camera
+{angle + a pose-preset dropdown reusing Part A directives, lens, dof} · lighting · style · mood ·
+color_palette[] add/remove · **view/apply raw JSON** with an invalid-JSON flag, never silently sent).
+Gated render: a **🌲 JSON prompt** toggle + panel show **only when `castPipeline==="flux2"` and
+`advParamsA.model_name==="flux.2-dev"`** (`castDevSelected`); klein/base never see it. `buildGenerateReq`:
+a non-empty tree serializes to the `prompt` (empty ⇒ the plain text prompt; the "enter a prompt"
+guard relaxes when the tree is filled). Flows through the existing flux2 t2i path + the dry-run
+Preview — **no adapter/contract change** (JSON rides the prompt string). **Tests:** +1 catalog
+(directives served == flux2_prompt, frozen-vocab coverage). **269 backend tests**, green; `tsc` +
+`vite build` clean. No `src/pipeline/` → no re-vendor. **✅ PUSHED `3aac9ac`.**
+
+**Part C — i2i via flux2-img2img on the M0c postprocess step (finished 2026-06-20 17:22).**
+*(author chose "build flux2-img2img now" over deferring.)* flux2 now joins zimage/sd35 as an **i2i
+backend** on the M0c postprocess stack, so a `flux.2-dev` step edits/re-poses an existing image with
+the **same JSON tree**. Key finding: the flux2 worker's **batch** `run_jobs` does t2i/ref only —
+img2img is its **single-run** `run_img2img` path — so a flux2 i2i step is a **single-run job (no
+`batch_items`)**, **no `src/pipeline/` change → no re-vendor**. Adapter: `WIRED_MODES` += `img2img`,
+`WIRED_PARAMS` += `init_image`/`strength` (capabilities now advertises `[ref, t2i, img2img]`). Backend
+(`main.py`): `add_postproc_step` accepts `backend="flux2"` for the i2i presets (clean/refine); the
+queue endpoint branches on `backend=="flux2"` to build a single-run `{prompt, init_image, strength,
+width, height, model_name}` job (mode img2img) instead of a batch item — the existing prompt-resolution
+(typed > source-prompt) means the dev JSON string rides `prompt` verbatim; weight pre-flight + VRAM
+(`estimate_vram("flux2")`=13 GB) + the completion observer (records the runner's out/-relative output)
+all work generically. Frontend: PostprocPanel add-form gains a **flux2 ✨** i2i backend; when
+`model==="flux.2-dev"` it renders the **`Flux2JsonTreeEditor`** in place of the plain prompt (serialized
+JSON → the step's `prompt`), hides the negative field (flux2 takes none), and hints to pick dev on
+klein/base; `angle_directives` passed through. **Tests:** `test_postproc_stack.py` (**+2** — flux2 i2i
+is single-run with init_image + the JSON prompt + refine strength; unknown i2i backend 422 / flux2
+accepted); updated 2 flux2-adapter caps tests for the new mode. **271 backend tests**, green; `tsc` +
+`vite build` clean. **✅ PUSHED `16874e4`. M0d COMPLETE (A + B + C-t2i + C-i2i).**
+
+**M0d commit trail:** Part B `d327719` · Part A `d88eb01` · Part C-t2i `3aac9ac` · Part C-i2i
+`16874e4`. ⚠ Visual sign-off owed on the running app (all four levers — sampling pull-down,
+advanced-prompting toggle, dev t2i JSON tree, dev i2i JSON tree on the postproc step).
+
+**M0d fix — dev false-warning + JSON in Stage-B expansion (2026-06-20 17:45, user-found).** Two
+bugs when selecting flux2-identity Stage-B with the **Dev / JSON** sampling preset: (1) the
+distilled-guidance ⚠ guard fired on **flux.2-dev** (wrong — dev IS guidance-distilled, but its
+guidance default 4.0 is a *real adjustable knob*; only the **klein** variants pin it, worker
+`fixed_params={guidance,num_steps}`). The guard keyed on the catalog `distilled` flag (True for dev
+AND klein). Fix: added an accurate **`guidance_fixed`** flag per flux2 variant (True only for
+klein-4b/9b/9b-kv; False for -base + dev), served on the catalog; the FE guard now keys on it
+(`flux2GuidanceFixed`, was `flux2IsDistilled`) → no false warn on dev/base. (2) **JSON prompting
+didn't reach Stage-B** (Part C's tree was t2i/i2i only) — the author expected "Dev / JSON" to JSON-
+prompt expansion. Fix: `flux2_prompt.build_cell_prompt(as_json=True)` + `build_cell_json` emit each
+cell's directive set as a compact JSON object (subject/pose/shot/expression/background/style, empty
+dropped, non-ASCII kept); `recipe.build_recipe(json_prompt=…)` threads it; the Stage-B endpoint sets
+`json_prompt = advanced_prompt and is_flux2 and eff_model=="flux.2-dev"` (eff model = params-channel
+override > top-level, matching the existing precedence) and echoes it in the dry-run. FE: picking the
+**Dev / JSON** Stage-B preset now auto-ticks **advanced prompting** (so dev actually emits JSON in one
+pick) + a "→ structured JSON (dev)" hint. klein/base keep the labeled directive string. **+5 tests**
+(flux2_prompt JSON ×3, catalog guidance_fixed, endpoint dev-JSON dry-run); **276 backend**, green;
+`tsc` + `vite build` clean. No `src/pipeline/` → no re-vendor. **✅ PUSHED `2f2d07f`.**
+
+**M0d fix — JSON-tree "apply JSON" wiped the form (2026-06-20 18:08, user-found, FE-only).** The
+raw-JSON textarea buffer was **snapshotted once on open** (`openRaw`) and never re-synced, so after
+opening raw the textarea went stale vs later form edits; "apply JSON" then parsed the stale snapshot
+— e.g. set camera → open raw (buffer `{"camera":…}`) → fill scene/subjects → apply → everything but
+camera wiped. Fix: a `useEffect` keeps the textarea synced to the **live** `serializeFlux2PromptTree`
+while the panel is open (deps `[json, rawOpen]`), so apply round-trips the current form; typing/
+pasting doesn't change `json`, so a manual/pasted edit survives until applied (external-JSON import
+still works). Removed `openRaw`; the toggle just flips `rawOpen`. Also fixed the header layout
+(subtitle under the title, `d6e5b07`). `tsc` + `vite build` clean. **✅ PUSHED `cb17833`.**
+
+**M0d fix — flux.2-dev crashed loading the Mistral processor (2026-06-20 18:24, user-found, worker
+lib).** First real dev run died: `HFValidationError: Repo id must be 'namespace/repo_name':
+'model/unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit'`. Root cause in the **vendored
+BFL flux2 lib** (`flux2/src/flux2/text_encoder.py` `Mistral3SmallEmbedder.__init__`): the upstream
+`model_spec_processor` default is a BFL-infra **local path** `"model/unsloth/…"` whose stray
+`model/` prefix is an invalid HF repo id (3 segments). The dev MODEL loads from
+`mistralai/Mistral-Small-3.2-24B-Instruct-2506`, but its **processor** must come from the **unsloth
+bnb-4bit** repo — that repo ships the HF-transformers `processor_config.json`/`tokenizer.json`, while
+the official mistralai repo has only `tekken.json` (no `AutoProcessor`). Fix: strip the `model/`
+prefix → `unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit` (both repos already cached in
+`F:\HF_HOME`). **loom patch to a vendored third-party lib** — applied to BOTH the monorepo source
+`flux2/src/flux2/text_encoder.py` and the vendored `loom/.../pipelines/multistack/flux2/src/flux2/`
+(byte-identical, md5 `fdc29d8…`), commented as a deviation so a future re-vendor won't silently
+revert it. Verified offline: `validate_repo_id` passes + `AutoProcessor.from_pretrained` loads from
+cache (PixtralProcessor) + yes/no token encode works. 276 backend tests green. **✅ PUSHED `2188f7a`.**
+
+### M0e — flux.2 low-res-first + creative upscale (spec §12 "M0e"; WBS P2-M0e)
+
+started: 2026-06-21 07:43
+finished: 2026-06-21 08:15 (Parts A + B + C all built same day; 284 backend tests; visual sign-off owed)
+
+Author request (2026-06-21) — the **final course-correction before the M1 trainer gate**. `flux.2-dev`
+(the gated Mistral-VLM variant) runs **far faster at low resolution** on the 16 GB ROCm rig (512² ≈ 1 k
+image tokens vs ~4 k at 1360×768 — `kb-flux2.md` "denoising stall analysis"), so the efficient workflow
+is **author small with dev, then i2i-upscale**. Design (spec §12 "M0e solution design", committed with
+this entry) has three **additive** parts — **no new worker capability**, catalog + orchestrator +
+frontend only, reusing the M0c postprocess-stack contract:
+- **a** — default `flux.2-dev` image size to **512²** (per-variant catalog default + model-aware
+  `/generate` resolution + model-aware drawer placeholder; display==reality, M0c discipline).
+- **b** — an **output size** (scale-factor quick pick **and** explicit W×H override) on the M0c i2i
+  postproc steps so a `Clean`/`Refine` over **zimage/sd35** re-diffuses larger = i2i creative upscale
+  (not flux2 — flux2 i2i re-poses at source dims).
+- **c** — a dedicated **`Upscale ✨`** preset = single-run `sd35` **cn-inpaint + SD3.5 Tile ControlNet**
+  (`InstantX/SD3-Controlnet-Tile`, already registered in the worker) at the target size + tile-CN
+  weight gate/fetch. Postproc-only (not on `/generate`).
+
+Built part-by-part (build → push) like M0d. **No `src/pipeline/` worker code changes expected → no
+re-vendor** (the sd35 worker already registers the tile CN + supports cn-inpaint; the flux2/zimage
+workers already honour width/height — M0e is orchestrator + frontend surface).
+
+**Part A — `flux.2-dev` defaults to 512² (finished 2026-06-21 07:57).** ⚙ Backend: the `flux.2-dev`
+catalog variant's `defaults` now carries `width:512, height:512` (model_catalog.py); a new
+`model_size_default(pipeline, model_name) -> (w|None, h|None)` reads the per-variant override (else
+(None,None) → caller falls back to `param_default`). The `/generate` single-pipeline unset-size block
+(the M6-review "display==reality" fix) now resolves the **effective model** first (`base.get("model_name")`
+— params-channel override > top-level > default, matching the weight pre-flight's precedence) and uses
+its `model_size_default` before the pipeline default, so an unset dev cast emits `--width 512 --height
+512`; non-dev flux2 keeps 1360×768; explicit dims (top-level or params) still win. Frontend: `ModelVariant.defaults`
+typed (`orchestrator.ts`); `ParamControls`/`renderParamControl` gained a `sizeDefaults` prop that overrides
+**only the width/height placeholder** (values untouched); App computes it via `modelSizeDefaults(pipeline,
+modelId)` from the catalog variant `defaults` and passes it to both the cast (A) and Stage-B drawers, so
+selecting flux.2-dev shows a 512 placeholder (never a 1360 that lies about what renders). **Tests:**
+`test_model_catalog.py` +1 (`model_size_default` dev=512²/others None + served on the variant);
+`test_multi_params.py` +1 (`test_flux2_dev_unset_size_defaults_to_512` — dry-run argv 512² on dev top-level
++ params-channel; non-dev 1360×768; explicit dims win). **278 backend tests** (276→+2), green; `tsc
+--noEmit` clean. No `src/pipeline/` → no re-vendor.
+
+**Part B — output size on the M0c i2i postproc steps (finished 2026-06-21 08:04).** The i2i upscale.
+⚙ Backend (`main.py`): two module helpers — `_round16(x)` (snap to /16, clamp [256,2048]) and
+`_postproc_target_dims(src_dims, params_in)` (explicit `width`+`height` win → else a `scale` factor
+over the source → else source dims unchanged). `add_postproc_step` now adds `width`/`height`/`scale` to
+the **i2i allowed set for zimage/sd35 only** (flux2 i2i re-poses at source dims — excluded); a new
+`_validate_postproc_size` enforces width/height = /16 ints in [256,2048] set as a pair, scale a number
+in [1.0,4.0] (422 otherwise). The queue endpoint's img2img branch (refactored to `if is_flux2 / elif
+is_io / else`) computes the batch job's width/height via `_postproc_target_dims` instead of the hard
+`_image_dims` source dims; restore (io) + flux2 i2i keep source dims. diffusers resizes the init image
+to the requested H×W → init=source + larger target IS the upscale (no worker change). Frontend
+(`App.tsx`/`styles.css`): the `PostprocPanel` add-form gained a `.pp-size` row (scale select ×1.5/×2/×4
++ explicit out-W/out-H inputs, mutually exclusive) shown when `sizeable = isI2i && !isFlux2`; `submit`
+sends `width`+`height` (both typed) else `scale`; the step-attrs line shows `×N` / `W×H`. **Tests:**
+`test_postproc_stack.py` (**+2** — scale ×2 → 2048², explicit W×H wins, no-override = source dims;
+validation 422s for not-÷16 / unpaired / out-of-range scale / below-min, and flux2 rejecting size).
+**280 backend tests** (278→+2), green; `tsc --noEmit` clean. No `src/pipeline/` → no re-vendor.
+- **Refinement (2026-06-21, user-found, ✅ PUSHED `4705a90`):** the scale select offered only ENLARGE
+  (×1.5/×2/×4); added **reduce** presets ×0.5 / ×0.75 (dropdown now ×0.5 · ×0.75 · size: source ·
+  ×1.5 · ×2 · ×4). `_validate_postproc_size` floor `1.0 → 0.25` (reductions pass; `_round16` still
+  clamps to 256); `_postproc_target_dims` already handled `<1.0`. +1 reduce test + a below-floor 422.
+
+**Part C — dedicated `Upscale ✨` preset (SD3.5 Tile ControlNet) (finished 2026-06-21 08:15).** The
+structure-preserving high-ratio upscale the i2i resize can't match. ⭐ Key finding: the sd35 worker
+**already registers** the tile CN (`stage1_load_pipeline._CN_REPOS["tile"]="InstantX/SD3-Controlnet-Tile"`)
+and supports `cn-inpaint`, and its batch `run_jobs` is t2i/img2img/inpaint **only** ("CN modes … stay
+single-run") — so this is a **single-run** sd35 job exactly like M0c's flux2-dev i2i, **no
+`src/pipeline/` worker change → no re-vendor**. ⚙ **Adapter** (`sd35.py`): `WIRED_PARAMS` += `controlnet`/
+`control_image`/`cn_scale` (single-run `build_argv` already routes through `emit_argv`, which gates them
+to `modes=["cn-inpaint"]`); `cn-inpaint` **kept OUT of `WIRED_MODES`** (postproc-only — it's reachable
+solely via the queue endpoint, which never consults `WIRED_MODES`, so `/generate` still can't request a
+mode that needs a per-item control image). **Backend** (`main.py`): new `_PP_PRESETS["upscale"]`
+(`backend:sd35`, `mode:cn-inpaint`, `params:{controlnet:"tile", cn_scale:"0.6", scale:2}`);
+`AddPostprocStepRequest.preset` Literal += `upscale`; `add_postproc_step` handles `is_upscale`
+(sd35-fixed backend; allowed `{prompt,model_name,cn_scale,width,height,scale}`; a **medium-only guard** —
+the InstantX tile CN is SD3-medium, so a non-`sd3.5-medium` model 422s); the queue endpoint gained an
+`is_upscale` branch building a single-run `{prompt, control_image=source, controlnet:"tile", cn_scale,
+width/height}` job at the Part B target dims (no `init_image` — the tile CN is the conditioner; diffusers
+resizes it to the target H×W = the upscale), with the prompt resolved like clean/refine (typed > source
+prompt) and a **tile-CN weight 412 pre-flight** (`postproc_weights_status("sd35_tile_cn")`, separate from
+the sd3.5-medium base check) offering `POST /components/fetch?postproc=sd35_tile_cn`. **models.json**:
+new `postproc.sd35_tile_cn` weight entry (`InstantX/SD3-Controlnet-Tile`, probe `config.json`, snapshot
+fetch — a CN repo has no `model_index.json`, so the generic postproc gate/fetch handles it). **Schema**:
+`postproc_store` preset enum += `upscale`. **Frontend** (`App.tsx`/`orchestrator.ts`): `PostprocStep.preset`
+type += `upscale`; the PostprocPanel add-form gained an **`Upscale ✨ (tile)`** option — no backend picker
+(sd35-fixed), a `cn_scale` field + optional prompt + the shared (factored) `sizeRow` (scale + explicit
+W×H, default ×2). **Tests:** `test_postproc_stack.py` (**+3** — single-run cn-inpaint with tile control
+image at ×2 / inherited prompt / cn_scale; sd35-fixed + medium-only + explicit-size override; tile-CN
+412 pre-flight via monkeypatch); `test_sd35_adapter.py` (**+1** — cn-inpaint argv emits
+`--controlnet/--control-image/--cn-scale`, no `--init-image`, WIRED_PARAMS advertises the CN params).
+**284 backend tests** (280→+4), green; `tsc --noEmit` + `vite build` clean. **No `src/pipeline/` worker
+code touched → no re-vendor.**
+
+**✅ M0e COMPLETE (Parts A + B + C). PUSHED `1ce1540`** (single commit — A+B+C + spec/journal + tests).
+**Tile-CN weight verified present on the rig (2026-06-21):** the author fetched
+`InstantX/SD3-Controlnet-Tile` into `F:\HF_HOME\hub` (snapshot `48005f2…`, blobs ~1.19 GB incl. the real
+`diffusion_pytorch_model.safetensors`); `components.postproc_weights_status("sd35_tile_cn")` → `True` and
+the paired `sd3.5-medium` base `image_model_present` → `True`, so the `Upscale ✨` 412 pre-flight passes.
+⚠ Visual sign-off still owed on the running app (the dev 512² default in the cast drawer; the i2i
+output-size row on Clean/Refine; the `Upscale ✨` tile-CN preset). ⚠ Rig run owed to confirm a real
+flux.2-dev 512² → tile-CN upscale loop end-to-end on ROCm. ⏭ Next: **M1** training spike — the **P2-0
+ROCm go/no-go front-gate** (does ai-toolkit train on RX 9070 XT / ROCm at all?).
+
+---
+
+## Pre-M1 codebase + plan review — 2026-06-21 10:49
+
+**Scope:** reread the application description/roadmap, P0/P1/P2 specs and journals, and the P3–P6
+forward dependencies; mapped the current code with the fresh local Graphify graph; then inspected the
+workspace/record, queue/recovery, adapter, lineage, component/weight, postprocess, Tauri, and React
+surfaces against the P2 contract. The working tree started clean at `ec2519c`, tracking
+`origin/main`; `core.hooksPath=.githooks` and the pre-push Graphify refresh are installed.
+
+**Verdict: ✅ ON PLAN for P2/M1.** No architectural deviation or missing P0/P1 contract requires a
+redesign before training. The intended next milestone is **P2/M1** (the request's `P1/M1` is treated
+as a phase-number typo): P1 is functionally closed, M0a–M0e are landed, and both the P2 spec and this
+journal name the ai-toolkit ROCm gate/spike as next. The current spine is the planned one: files are
+the source of truth; orchestrator-owned atomic writes + JSON schemas; one durable workspace-bound GPU
+queue; normalized subprocess adapters; per-output lineage/provenance; Saved-unfinalized profile
+versions carrying self-contained curated refs + frozen coverage cells.
+
+**Evidence:**
+- backend: **284/284 tests passed** via `Invoke-RtkPytest.ps1` / RTK;
+- frontend: `tsc && vite build` clean (33 modules, production bundle emitted);
+- desktop shell: `cargo check --locked` clean;
+- Graphify: current code-only graph = **2,216 nodes / 3,780 edges**, benchmarked at **14.6×** less
+  context per representative query; exact-source checks matched its ownership/call-flow hints;
+- hardware baseline: shared venv reports **torch 2.9.1+rocm7.2.1**, HIP **7.2.53211**, one
+  **AMD Radeon RX 9070 XT**.
+
+**Findings / guardrails before and during P2:**
+1. **M1 remains a genuine red front-gate, not a paper exercise.** Current upstream ai-toolkit
+   (`ostris/ai-toolkit` commit `548a286`, MIT) now explicitly supports `Tongyi-MAI/Z-Image`, but its
+   official installation requirement still says **NVIDIA GPU** and documents CUDA wheels only. It
+   has no claimed Windows-ROCm path. The shared ROCm venv also lacks ai-toolkit's key training deps
+   (`optimum-quanto`, `peft`, `lycoris-lora`, `torchao`, `bitsandbytes`), while the upstream full
+   requirements resolver would try to install ordinary Windows **torch 2.12.1/CUDA-oriented**
+   packages and replace several versions used by working inference. **Guardrail:** test from the
+   pinned shallow research clone with an isolated dependency overlay first; do not mutate the known-
+   good shared ROCm stack or vendor 42 MB of trainer code until the can-run gate is green.
+2. **`resumable=true` is only a recovery marker today.** The queue correctly changes an interrupted
+   resumable job back to queued, but it has no checkpoint discovery/`--resume` handoff yet. This is
+   **not a deviation**: P2-10 explicitly belongs to M2. M2 must add a trainer-specific submission
+   shape (rather than merely flipping the boolean), checkpoint cadence, latest-valid-checkpoint
+   discovery, and a restart test.
+3. **Training-context provenance has one early watch item.** Curated refs durably retain coverage,
+   source job/output, pipeline, method, and seed, but not the selected L1 `style_id`; deleting the
+   source queue job can therefore erase the exact style selection needed by P2-13's
+   `training_context.json`. Preserve the resolved style id/snapshot at curation time before M3/M6
+   writes graph-ready training facts. This is a small additive schema/provenance correction, not a
+   blocker for the M1 fixed-dataset spike.
+4. **Complexity pressure, not a contract failure:** `App.tsx` is 3,378 lines and `main.py` is 2,439.
+   M1 is no-UI and should not refactor them. Starting with M2, put training records/services/endpoints
+   and Train-panel UI in dedicated modules/components instead of adding another feature family to
+   either monolith.
+5. **Owed rig/visual checks remain explicit and non-blocking:** formal P1 A–H rig acceptance plus
+   M0d/M0e visual/upscale checks are still open. This matches the recorded author decision to move
+   into P2 in parallel; it is not hidden acceptance debt. Run them before a later milestone depends
+   on their visual quality, not as a prerequisite for the trainer can-run probe.
+
+**Review close:** proceed with **P2-0 first** (minimum ai-toolkit import/model-load/backward/optimizer
+probe on ROCm), and only on GO continue P2-1 (fixed P1 ref set → short Z-Image LoRA → inference
+load/reproduction). If any ROCm-only patch is required, keep it minimal, comment it as a pinned
+upstream deviation, and record it before vendoring.
+
+---
+
+## M1 — ai-toolkit ROCm gate + fixed-dataset training spike (P2-0/P2-1)
+
+started: 2026-06-21 10:50
+finished: 2026-06-21 22:45
+
+### P2-0 — ROCm can-run gate (2026-06-21 11:05–12:08; **✅ GO**)
+
+**Pinned input/runtime:** `ostris/ai-toolkit` commit
+`548a286992261fbef40c380e82495d21fd3bca86` (2026-06-19, MIT), exercised from an ignored clone +
+isolated dependency overlay. The known-good shared runtime remained unchanged:
+`torch 2.9.1+rocm7.2.1`, HIP 7.2, RX 9070 XT, cached `Tongyi-MAI/Z-Image` weights.
+
+**Probe fixture:** one real P1 `stubz001/char01/v1_base` curated ref, deterministic `char01_lw`
+caption, rank/alpha 4/4, one step, batch 1, 256 bucket, bf16, gradient checkpointing, qfloat8 Quanto,
+low-VRAM, plain AdamW, sampling disabled. It loaded + quantized Z-Image, attached **240 LoRA
+modules**, cached the ref, completed forward/backward/optimizer (`loss=.4859` on the clean rerun),
+saved a loadable-shape **21.3 MB / 480-tensor** adapter, cleaned up, and exited **0 in 37 s**.
+SHA-256: `3C8446F94DC6AC0769227E6CAD3DE71DE53285FF612A7C78DB10DEDA407299C9`.
+
+**Minimal Windows-ROCm compatibility patch (now vendor-recorded):** NumPy 1.26.4 beside upstream
+SciPy 1.12; TorchAO optional (qfloat8 remains optimum-quanto); bitsandbytes absent + AdamW; pinned
+Diffusers FSDP imports optional for single-GPU; `AI_TOOLKIT_MINIMAL_ZIMAGE=1` registers only
+`sd_trainer` + `ZImageModel`; missing `torch.distributed.is_initialized` cleanup predicate supplied.
+These are eager-import/cleanup seams, not changes to the training algorithm. **Gate verdict: GO.**
+
+### P2-1 — fixed 17-ref training + inference bridge (2026-06-21 12:10–22:45; **✅ GO**)
+
+**Full fixed-set training passed.** Copied all **17** finalized P1 refs + deterministic captions to
+the ignored fixture; trained Z-Image at 512 px, rank/alpha 16/16, 100 steps, batch 1, bf16,
+gradient-checkpointed qfloat8/Quanto, low-VRAM, plain AdamW 1e-4, no sampling. The real run exited 0
+after **1,600.7 s (~26.7 min)** and produced an **85,094,880-byte** adapter (plus the step-50
+checkpoint), SHA-256
+`BD29BCD70C389E3CA110B0F28D02E12C5982D39F1CC4A2EA9C4D888D49B96E91`. This was a valid can-run
+artifact but its fixed-seed inference did **not** reproduce the subject (younger/different face;
+ArcFace centroid similarity `-0.067`, base control `-0.016`). **100 steps is not the default.**
+
+**Preset-finding continuation (same run, real resume):** raised only the total-step target; ai-toolkit
+twice discovered the latest final adapter, read step metadata (**100→300→500**), restored
+`optimizer.pt`, kept the exact dataset/network/LR, and exited 0. Aggregate training time was
+**8,097.5 s (~135.0 min)**. The accepted final is **500 steps**, 85,094,896 bytes, SHA-256
+`B84DA64D6E642D18F62950BB522405AC560B101ADA6B4C2A89E46A3CAEB1EA1C`. This also validates the
+upstream checkpoint/optimizer mechanism M2 will wrap (but does not replace M2's queued resume tests).
+
+**Vendored after the GO (R162):** the proven source snapshot landed first at
+`src/trainer/ai-toolkit/`, then byte-identically at app `trainers/ai-toolkit/` (**0 drift across 381
+non-cache/non-weight files**). `LOOM_VENDOR.md` pins upstream/license, every compatibility seam,
+dependency-overlay constraints and artifact evidence; the exercised 500-step preset
+shape is `config/loom_zimage_rocm.example.yaml`. Trainer outputs/state/weights stay ignored, and
+`trainers/` is excluded from the Loom Graphify graph so third-party internals do not swamp the
+application architecture.
+
+**Inference bridge wired monorepo-first + byte-identical:** Z-Image now accepts
+`--lora-path/--lora-name/--lora-weight` in single and batch modes. Full-file paths are normalized to
+Diffusers directory + `weight_name`, adapters are explicitly named/scaled, missing files fail before
+the base model loads, and the resolved path/name/weight + SHA-256 are written into stage provenance.
+Catalog/adapter capability + argv wiring added. Drift guard: stage1 MD5
+`C1E8A3CE273B131D404930BAE38A0BF0`; runner MD5 `F8D20C7FC287BD8863E5FB5B073B5F48`
+across monorepo + both app copies. Verification: Python compile clean; focused LoRA/catalog/adapter
+contracts **32 passed**; milestone-close full backend **294 passed**.
+
+**Real inference + reproduction acceptance:** the first exact-worker load exposed one integration
+dependency honestly: the shared inference venv lacks PEFT (`ValueError: PEFT backend is required`).
+Per the environment guardrail, it was **not mutated**; the already-isolated overlay (`peft==0.18.1`
+and pinned Diffusers) loaded the adapter successfully. M2 must make that overlay a declared runtime
+dependency before exposing queued LoRA jobs.
+
+The accepted worker run used Z-Image Base, 512², 30 steps, guidance 4, seed `424242`, LoRA weight
+**1.0**, and only the deterministic caption `char01_lw, front view, full body, neutral expression`—
+no explicit age/hair/costume/background/style hints. It exited 0 in **134.49 s**; its manifest records
+the adapter name/weight/path + exact SHA. The output (338,392-byte PNG, SHA-256
+`6BA1CC4D6A9017C6956AE14391F1529BED7DC73D14AE535F53CA0FF22F242E92`) visibly reproduces the older
+silver-haired subject, olive trench coat, stern expression, fluorescent room, and vintage treatment.
+
+**Identity honesty:** InsightFace detected 16/17 refs; their own mean pairwise similarity is `0.537`
+(p10 `0.405`). The final test rises materially over the base control (`centroid -0.016 → 0.263`,
+best-ref `0.044 → 0.300`) but remains below the curated set's cross-view band. Verdict: the LoRA
+reproduces the **whole character concept** and retires the M1 training risk, but it is not a face-lock
+replacement; Loom's existing identity pass remains appropriate where exact facial identity matters.
+
+**✅ M1 COMPLETE.** P2-0 ROCm training GO + P2-1 adapter load/reproduction GO. Default Z-Image
+spike preset frozen at **500 steps / rank-alpha 16/16 / 512 px / bf16 / qfloat8 Quanto / AdamW
+1e-4 / LoRA weight 1.0**. **✅ PUSHED `3a391d8`**; pre-push Graphify re-extracted 110/110 code
+files and correctly reported no application-graph delta (`trainers/` is intentionally excluded).
+⏭ Next: **M2 — staged queued trainer skeleton**, beginning with the isolated PEFT/runtime contract.
+
+---
+
+## M2 — staged queued Z-Image trainer skeleton (2026-06-25)
+
+**Status: backend contract slice complete.** This pass moves P2 past the M1 spike into the durable
+trainer path without spending GPU automatically:
+
+- Added a distinct queue pipeline, **`zimage_trainer`**, rather than pretending trainer work is
+  normal `zimage` inference. The runner now accepts `resumable=True` per submit; ordinary generation
+  remains non-resumable by default. The trainer VRAM estimate is registered separately.
+- Added **`jobs/staged.json`** via `orchestrator/training.py`. Staging a run writes a durable staged
+  record but does **not** write `queue.json`; the explicit `/training/staged/{id}/queue` transition is
+  the first moment the GPU queue can see the job.
+- Added deterministic P2 records during staging:
+  - `captions.jsonl` from the frozen P1 coverage-cell template (`coverage.build_caption`);
+  - `caption_policy.json` with template id/source fields/trigger rule;
+  - `training_context.json` with graph-ready asset/version/ref facts and context digest;
+  - temp dataset copy + `.txt` captions + `dataset_manifest.json`;
+  - generated ai-toolkit `train.yaml` using the M1 accepted default preset shape
+    (**500 steps / rank-alpha 16/16 / 512 px / bf16 / qfloat8 / AdamW 1e-4 / low_vram**).
+- Added the **isolated runtime contract** to staged params: `runtime_overlay`, `requires_peft`,
+  `do_not_mutate_shared_inference_venv`, and `AI_TOOLKIT_MINIMAL_ZIMAGE=1`. The wrapper honors an
+  overlay through `PYTHONPATH`; it does not install or mutate the shared inference environment.
+- Added `trainers/loom_zimage_lora.py`, a thin ai-toolkit wrapper that writes a trainer manifest and
+  performs **real checkpoint/artifact discovery** before launch (`optimizer.pt`, sqlite, existing
+  `.safetensors`, latest artifact hash). This makes queue recovery auditable instead of relying only
+  on the queue's `resumable=true` marker.
+- Added API endpoints:
+  - `GET /training/staged`
+  - `POST /assets/{asset_id}/lora/zimage/stage`
+  - `POST /training/staged/{staged_id}/queue`
+  - `DELETE /training/staged/{staged_id}`
+- Added no-GPU regression coverage in `orchestrator/tests/test_p2_training.py`: stage writes captions
+  + context + staged record, staged→queued creates a resumable `zimage_trainer` job, adapter manifest
+  parsing works, and wrapper resume discovery records real files.
+
+**Verification:** Python compile clean for the new/changed orchestrator + trainer files. Focused
+pytest for `test_p2_training.py`: **4 passed**. RTK full orchestrator suite: **299 passed**.
+
+**Push note:** the worktree was cleaned back to the P2 trainer files before push, so the M2 commit is
+scoped to staged trainer records, the `zimage_trainer` queue adapter, the ai-toolkit wrapper, tests,
+and this journal update.
+
+⏭ Next: promote-on-success + `lora.manifest.json` writeback and the Train panel UI, then a real queued
+short-run resume smoke once the isolated PEFT overlay path is declared on the target machine.
+
+---
+
+## M2.5 — quantized `flux.2-dev` swap + gated-repo elimination (spec §12 "M2.5"; WBS P2-2.5)
+
+**Status (2026-06-26 09:51): backend implementation COMPLETE — no-GPU close criteria met; on-rig dev
+smoke + FE advanced-foldout owed (visual sign-off, M0e pattern).** Author added M2.5 as an interim
+runtime/model-fit migration: the full BFL `flux.2-dev` stack never fit the 16 GB ROCm rig, so route
+the logical `flux.2-dev` id to the Comfy-Org quantized split files proven in the old-project spike
+`src/pipeline/flux2_q8`. Reviewed the spec against the live code + spike; resolved three scope
+questions and a dependency-elimination opportunity with the author, then built it.
+
+**Decisions (now written into [`kb-loom-p2.md`](kb-loom-p2.md) §12 "M2.5 solution design"):**
+
+- **Scope = single-run dev only.** Quantized dev serves **t2i** (JSON authoring) + **i2i** (M0c/M0d
+  postproc, M0e upscale). The **batch `ref` Stage-B sweep stays Klein-only** — loom's
+  `pipeline.flux2.run_pipeline.run_jobs` (which calls full-weight `flux2.util.load_flow_model`) is
+  **not** rerouted; the spike has no batch loop. Klein remains the §11/R147 identity-preserving
+  workhorse. ⚠ Guard so dev can't be silently submitted to a coverage sweep (would hit the OOM path).
+- **Integration = fold, not port.** Branch on `model_name == "flux.2-dev"` inside the **existing**
+  vendored `run_pipeline.run()` (+ `stage1_load_models` dev branch), reusing the spike's `scaled_fp8`
+  loaders and the existing `stage2/3/4`. Keeps one CLI/adapter contract; ⚙ loom's `--cpu-offload` is
+  opt-in (default off) — keep it, don't adopt the spike's `--no-cpu-offload` default-on. Dev-only
+  knobs `--text-encoder` (`fp8` default / `bf16`) + `--fp8-matmul` (`auto`/`native`/`dequant`), gated
+  to dev.
+- **Acceptance bar.** Closes on wiring + dry-run argv + no-GPU tests green; the real **on-rig dev
+  smoke is owed** (visual sign-off, M0e pattern) — full dev never ran here, so there's no baseline.
+
+**Gated-repo elimination (author confirmed — cut the large repos entirely).** Cache audit
+(`F:\HF_HOME`, 2026-06-26):
+
+- The quantized dev path reads only **~17 MB** from the **166 GB** `black-forest-labs/FLUX.2-dev`
+  repo: `text_encoder/config.json` (4 KB) + `tokenizer/` (~17 MB) — used by the spike's
+  `load_comfy_mistral_text_encoder` (`AutoConfig`/`AutoProcessor.from_pretrained(subfolder=…)`). The
+  168 GB of safetensors are unused. → **Vendor** the config+tokenizer into the pipeline tree
+  (suggested `pipelines/multistack/flux2/assets/mistral_te/`), load via local path.
+- The **90 GB** `mistralai/Mistral-Small-3.2-24B` repo is referenced **nowhere** by the quantized
+  path (weights come from Comfy's `mistral_3_small_flux2_fp8`) → free to drop.
+- Klein's only remaining BFL file is the VAE (`ae.safetensors`, 321 MB) → **re-point to Comfy's
+  identical `flux2-vae.safetensors`** (weight-source change only; Klein runtime/Stage-B unchanged).
+- ⚙ Needed Comfy footprint ≈ **51 GB**, public/ungated: `flux2_dev_fp8mixed.safetensors` (34 GB,
+  transformer) + `mistral_3_small_flux2_fp8.safetensors` (17 GB, TE) + `flux2-vae.safetensors`
+  (321 MB). Skip the fp4 TE (NVFP4 — research), the bf16 TE (34 GB, only for a quality-compare), and
+  the Turbo LoRAs. ⇒ after M2.5 **neither gated repo is referenced by any runtime path / `models.json`
+  entry** (incl. the `flux2-dev-ae` `multi_presets` rows → Comfy VAE).
+
+**VAE value spot-check (✅ PASS — done 2026-06-26 09:14, gates the Klein re-point).** Compared the two
+321 MB files tensor-by-tensor with the spike's `map_comfy_vae_key` remap applied (numpy+safetensors,
+no torch; script in session scratchpad):
+
+- Remap is a clean **251 → 251 bijection** (0 missing, 0 shape mismatch, 0 dtype mismatch, 0 uncovered
+  BFL keys). The Diffusers→BFL key renames + the q/k/v/proj **2D→4D `maybe_unsqueeze`** all resolve.
+- **250/251 tensors bit-identical.** The sole difference is `bn.num_batches_tracked` (BFL=`400000`,
+  Comfy=`0`) — a BatchNorm *training* counter never read at inference. The operative BN stats
+  `bn.running_mean` / `bn.running_var` are **exact-equal**, as is every conv/attention weight. ⇒
+  decode output is identical; Klein VAE re-point is safe.
+
+⚠ **R162 vendoring (build constraint for the fold):** the quantized loader code must land in the
+monorepo `src/pipeline/` first, then be copied byte-identically into
+`loom/loom-loreweave-studio/pipelines/multistack/src/pipeline/flux2/` (MD5 drift-guard). The spike
+already lives at `src/pipeline/flux2_q8`; the fold consolidates its `scaled_fp8` + dev loader branch
+into `pipeline.flux2` on both sides.
+
+**Implementation (built 2026-06-26 09:14–09:51, monorepo-first then synced to loom; 319 orchestrator
+tests green incl. 12 new).**
+
+- **Vendored Mistral config+tokenizer** → `src/pipeline/flux2/assets/mistral_te/` (`text_encoder/
+  config.json` + `tokenizer/*`, ~17 MB + `PROVENANCE.md`). Verified `AutoConfig`→`Mistral3Config`,
+  `AutoProcessor`→`PixtralProcessor`, and `apply_chat_template` all load from the **local path** (no
+  BFL repo). ⚙ transformers 5.4.0.
+- **Folded the quantized dev loader** into `pipeline.flux2` (NOT a separate module): new
+  `scaled_fp8.py` (ported from the spike; `config_repo`/`processor_repo` default to the vendored
+  dir), a `model_name=="flux.2-dev"` branch in `stage1_load_models.run()` (`_load_dev_quantized` +
+  `ComfyMistralEmbedder`, reusing the existing `stage2/3/4`), and `run_pipeline.run()` threading
+  `fp8_matmul`/`text_encoder_variant`/`dtype`/`local_files_only` (+ `--text-encoder`/`--fp8-matmul`
+  CLI, dev-only). ⚙ Kept loom's opt-in `--cpu-offload` (NOT the spike's default-on). The batch
+  `run_jobs` is **guarded to refuse `flux.2-dev`** (single-run only; never reaches the full-weight
+  `load_flow_model`).
+- **Manifest** gained a `quantized` dict (`backend_variant:"comfy-q8"`, hf_repo, transformer/TE/VAE
+  files, te variant, fp8_matmul, dtype, cpu_offload); `{}` for Klein. Set in `run_pipeline` from the
+  stage-1 result.
+- **Catalog + adapter:** dev variant `repo_id`/`ae_repo_id`→`Comfy-Org/flux2-dev`, `gated:False`,
+  `text_encoder` de-mistral'd; two dev-only advanced params (`text_encoder` fp8/bf16, `fp8_matmul`)
+  with a `models:["flux.2-dev"]` gate; the M0e **512² default preserved**. `emit_argv` now honors a
+  param `models` gate so Klein never emits the dev knobs even with a stale params dict. Adapter
+  `WIRED_PARAMS` advertises them.
+- **Dropped BOTH gated repos.** Klein's VAE re-points to the public Comfy `flux2-vae.safetensors`:
+  `flux2.util.load_ae` now detects the Comfy/Diffusers layout and remaps onto the BFL AutoEncoder
+  (`map_comfy_vae_key`, canonical copy in `flux2.util`; `scaled_fp8` keeps a copy, equivalence
+  asserted in tests). FLUX2_MODEL_INFO klein/dev `ae_repo_id`/`filename_ae`→Comfy; `load_flow_model`
+  + `load_text_encoder` **guard `flux.2-dev`** (raise → the quantized path). `models.json`
+  `flux2-dev-ae` rows → Comfy VAE (id kept, `gated:false`). After M2.5 **no active data structure
+  (models.json / catalog / FLUX2_MODEL_INFO) references `black-forest-labs/FLUX.2-dev` or
+  `mistralai/Mistral-Small`** (only doc/comment strings + dead BFL-lib `text_encoder.py` default
+  remain; no download path reaches them).
+- **VAE re-point validated no-GPU:** the real Comfy VAE remaps key-for-key onto the BFL AutoEncoder
+  (251/251) and `load_state_dict(strict=True)` succeeds — the durable test
+  `test_comfy_vae_remaps_onto_bfl_autoencoder_strict` (skips if the file isn't cached). Value
+  equivalence was the one-time spot-check above.
+- **Tests:** `orchestrator/tests/test_flux2_dev_quantized.py` (12) — dev argv/size, structured
+  elimination invariant (models.json + catalog + FLUX2_MODEL_INFO), dev loader guards, manifest
+  field, batch-guard, key-map equivalence, Comfy-VAE strict-load. Full suite **319 passed**. Dev
+  single-run `build_argv` emits `… --model-name flux.2-dev --text-encoder fp8 --fp8-matmul auto
+  --cpu-offload`.
+
+⚙ Disk win realised: dev's runtime download drops from ~150 GB gated dev weights + 90 GB Mistral to
+~51 GB public Comfy split files (fp8 transformer 34 + fp8 TE 17 + VAE 0.3); Klein keeps its klein
+flow/Qwen3 repos + the 321 MB Comfy VAE.
+
+**Fix (2026-06-26, user-reported false-negative gate).** The standalone `/generate` + img2img-cast +
+postproc weight pre-flights probe presence via `components.image_model_present(repo_id)` =
+`model_index.json` — which Klein/sd35/zimage/ltxv repos HAVE but the Comfy split-files repo does NOT,
+so a fully-cached dev run was wrongly 412'd ("flux2 model 'flux.2-dev' not in cache"). Added
+`components.variant_weights_present(variant)`: a variant may declare `probe_files`, then ALL must be
+cached; else falls back to `model_index.json`. The dev catalog variant now carries `probe_files`
+(the 3 `split_files/…` paths); the 5 gate call sites (`main.py` 777/947/1673/1892/2284) use the new
+helper. Klein/sd35/zimage/ltxv unchanged (no `probe_files` → same model_index.json probe). +3 tests
+(15 M2.5 / 322 suite green). These are loom-orchestrator files (not vendored) → no R162 sync.
+⚠ Targeted fetch of the 3 dev split files on a fresh rig (vs a whole-repo snapshot that would also
+pull the 34 GB bf16 TE / fp4 / Turbo LoRAs) is still owed.
+
+**Follow-up (2026-06-26, user-requested): FE dev-knob exposure + defaults audit.**
+- **FE dev knobs.** `ParamControls` filtered out `advanced` params and ignored the new `models`
+  gate, so `text_encoder`/`fp8_matmul` never rendered. Added a `models?: string[]` field to the
+  `ParamSpec` TS type and a **model-scoped advanced foldout**: a `<details class="p-advanced">`
+  rendering advanced params whose `modes` AND `models` match the current `model_name`. So dev shows
+  an "advanced (2)" foldout (text_encoder fp8/bf16, fp8_matmul auto/native/dequant); Klein shows
+  nothing. Full path verified: FE params channel → `validate_params` (accepts the knobs, rejects bad
+  enums) → `emit_argv` (model-gated) → worker. `tsc` + `vite build` clean.
+- **Defaults audit.** Size is correct in code — the dev variant `defaults` carry **512²** and an
+  unset cast resolves to 512² (`model_size_default`); the **768 the user saw is the drawer
+  *placeholder*** leaking the flux2 pipeline height default, shown only when the FE can't resolve the
+  model override (a stale/un-refreshed `/models`). Guidance was inconsistent (variant 4.0 vs preset
+  4.5) — now both **4.0** (author set the variant + preset to **8 steps / 4.0** for fast 512² dev
+  drafts). ⚠ dev is NOT step-distilled — 8 steps without the Comfy Flux2-Turbo LoRA (not wired) will
+  be under-denoised; the spike used 50. Left as the author's deliberate choice.
+
+**Batch dev in expansion (2026-06-26, scope amended — author's real driver).** The original M2.5
+call ("batch ref stays Klein-only") is **reversed**: dev's advanced structured-JSON prompting is
+wanted in the **expansion/curation screen** (the Stage-B coverage sweep), so `run_jobs` now routes
+`flux.2-dev` to the quantized loaders.
+- `run_pipeline.run_jobs`: removed the dev refusal; branched **Phase 1** (encode-all) to the Comfy
+  Mistral TE (`ComfyMistralEmbedder`) and **Phase 2** to the fp8 transformer + Comfy VAE
+  (`scaled_fp8.*`), Klein path unchanged. The existing encode-all → free-TE → load-flow structure is
+  exactly dev's memory profile (17 GB TE and 34 GB transformer never co-reside), and the slow load is
+  paid ONCE per sweep. Batch summary carries `backend_variant:"comfy-q8"`.
+- Adapter `_SHARED_KEYS` += `text_encoder`/`fp8_matmul` so a dev sweep applies the knobs once for the
+  whole batch.
+- **The Stage-B endpoint + FE were already dev-aware** (built in M0d/M0e): per-cell JSON prompts for
+  dev (`json_prompt = advanced_prompt and eff_model=="flux.2-dev"`), `model_size_default`→512²,
+  the `variant_weights_present` gate, and the "Dev / JSON" sampling preset that selects dev +
+  enables advanced prompting. My generic `ParamControls` foldout already surfaces the dev knobs on
+  the Stage-B params bar. So only the worker guard + `_SHARED_KEYS` were missing.
+- Tests: `test_batch_run_jobs_routes_dev_to_quantized` (intercepts the first quantized call →
+  proves dev is routed there, not refused, and the summary records `comfy-q8`) +
+  `test_batch_shared_block_carries_dev_knobs`. Full suite **325 passed**.
+- ⚠ Speed: dev is guidance- but NOT step-distilled — a sweep at the author's 8-step default will
+  under-denoise without the Comfy **Flux2-Turbo LoRA** (not wired; LoRA-on-scaled-FP8 is the next
+  pass). Run dev sweeps at ~50 steps until the Turbo LoRA lands. On-rig sweep sign-off owed.
+
+**Fix (2026-06-26, first on-rig sweep — VAE dtype).** First real dev sweep failed at
+`encode_image_refs`: `RuntimeError: Input type (float) and bias type (c10::BFloat16) should be the
+same`. Cause: the dev path loaded the **VAE in bf16** (mirroring the spike, which only ever ran t2i =
+decode-only). Klein's `load_ae` loads the same Comfy VAE in **float32** (the file's weights are F32,
+preserved by `assign=True`), and the ref/i2i path feeds the VAE a **float32** image — so a bf16 VAE
+mismatches on `conv_in`. Decode tolerated bf16 only because `AutoEncoder.inv_normalize` (float32 `bn`
+buffers) promotes the bf16 latent to float32 anyway. **Fix:** load the dev VAE in **float32** (Klein
+parity) in both dev loaders (`stage1._load_dev_quantized` + `run_jobs` Phase 2); transformer + TE stay
+bf16/fp8. Regression test `test_dev_loaders_use_float32_vae_bf16_transformer` (mocks the three Comfy
+loaders, asserts vae=float32 / tr=te=bf16). Suite **326**. ⚠ The spike `src/pipeline/flux2_q8` has
+the same bf16-VAE bug (its `ref`/`img2img` modes were never exercised) — do not port its VAE dtype.
+(Benign: 24× `Kwargs passed to processor.__call__ …` deprecation warnings from the TE's
+`apply_chat_template` on transformers 5.4 — noise, encoding succeeds.)
+
+**Fix (2026-06-26, user-reported black t2i output on rig).** Test project `loom/stubz001`,
+`job_5ed46dc6/flux2_20260626_082100_s1444149108.png`, was not a prompt/color failure: the PNG was
+all black because stage 3 produced **NaN latents** (`x_min/x_max/x_mean = NaN`) and stage 4 decoded
+them without complaint. The queue payload had explicitly sent `flux.2-dev` with **50 steps** and
+guidance `4.0` from the pre-quantized Dev/JSON/full-dev profile. That is outside the locally proven
+Comfy q8 operating point (8 steps with native scaled-FP8 matmul); the run took ~686 s and still
+ended non-finite.
+
+Fixes:
+
+- M2.5 `flux.2-dev` defaults now use the quantized-safe profile: **8 steps / guidance 4.0 / 512²**
+  in both the live catalog variant and the Dev/JSON sampling preset. The vendored worker registry
+  (`FLUX2_MODEL_INFO["flux.2-dev"].defaults`) matches, so unset CLI runs also fall back to 8 steps.
+- `stage3_denoise` now computes finite-aware latent stats and raises `FloatingPointError` if denoise
+  returns NaN/Inf, refusing to decode a likely-black image. The manifest debug path now reports
+  `x_finite`, finite counts, finite ratio, and finite-only min/max/mean.
+- Klein base defaults stayed at 50 steps; only `flux.2-dev` moved to 8. Added no-GPU regression
+  coverage for the dev default and the non-finite guard.
+
+Verification: `test_flux2_dev_quantized.py` **17 passed**, `test_model_catalog.py` **22 passed**,
+targeted `test_flux2_adapter` **2 passed**, direct `/generate` dev-size regression **1 passed**.
+⚠ Restart/reload Loom so the frontend/server sees the updated `/models` catalog before rerunning the
+rig smoke; rerun t2i JSON at the 8-step default, then i2i/postproc.
+
+⚠ **Owed (not gating the no-GPU close):** (1) on-rig dev smoke — real quantized t2i JSON + i2i
+postproc generate on the RX 9070 XT using the **8-step q8 default**, manifest shows `comfy-q8`; (2) a
+Klein `ref` sweep still decodes correctly on the Comfy VAE; (3) FE advanced foldout to surface the
+`text_encoder`/`fp8_matmul` dev knobs (catalog already serves them). (4) confirm
+`Comfy-Org/flux2-dev` is ungated at fetch.
+
+**Follow-ups (2026-06-27): dev knobs on every surface + per-image timing.**
+- **Dev knobs are now inline, not in a foldout.** The `text_encoder`/`fp8_matmul` catalog params
+  dropped `advanced: True` (kept the `models:["flux.2-dev"]` gate), so they render directly in the
+  params panel when dev is selected (supersedes the earlier "advanced foldout" note above).
+- **Stage-B knob visibility fix.** The knobs showed on the t2i cast bar but not the expansion
+  screen: `ParamControls` gated on `values.model_name`, but Stage-B holds its model in a SEPARATE
+  `stageBModel` state (not `advParamsB.model_name`). Added an explicit `modelName` prop to
+  `ParamControls` (falls back to `values.model_name`) and passed `stageBModel` from the Stage-B
+  panel. Backend already accepted them (`validate_params("flux2","ref",…)` + the `channel` →
+  `params` path); it was purely a FE visibility gate. (Corrects the batch-dev note's "FE already
+  wired" claim — the worker guard + `_SHARED_KEYS` were done, but the Stage-B FE gate was missing.)
+- **Per-image generation time in the inspector** (user request — the batch sweep's per-cell cost
+  was invisible; only the batch total showed). The data already existed: Stage-B records per-cell
+  `duration_s` (`run_jobs`), multi records per-candidate `duration_s` (stage_runner /
+  arch_compose_character). Propagated it to `output_meta`: `_batch.parse_batch_result` copies the
+  item `duration_s`; `multi.parse_result` now builds `outputs_meta` (parallel to outputs) with
+  per-candidate `duration_s`+seed+pipeline. The runner already keys `outputs_meta` → `output_meta`
+  by filename. Inspector now shows **`batch`** (whole-batch compute) **+ `image`** (the selected
+  image's own time) for batch jobs, and the existing **`duration`** for single jobs. Tests extended
+  (`test_batch_worker`, `test_multi_adapter`), `OutputMeta` TS type gained `duration_s`/`pipeline`/
+  `pass`. Suite **326**; `tsc` + `vite build` green. (Confirmed the dev-sweep cost is inherent:
+  single dev 512²/8-step denoise ≈ 87 s — 34 GB transformer paged over PCIe on 16 GB — so a 31-cell
+  sweep ≈ 45 min; Klein is the fast sweep workhorse, dev for single key shots.)
+
+⏭ Push at milestone close (carried convention) once the author signs off the on-rig smoke.
+
+---
+
+## M2.6 — Turbo LoRA (low-step `flux.2-dev` sweeps) (spec §12 "M2.6"; 2026-06-27)
+
+**Status: backend built + no-GPU-verified; on-rig quality/speed sign-off OWED.** Goal: make dev
+coverage sweeps practical. A single dev 512²/8-step denoise ≈ 87 s (34 GB fp8 transformer paged over
+PCIe on 16 GB) → a 31-cell sweep ≈ 45 min, and 8 raw steps under-denoise (dev isn't step-distilled).
+The Comfy **Flux2-Turbo LoRA** is a step-distillation adapter that should give good quality at ~4–6
+steps. Author asked: does JSON prompting survive, and can it be an optional dev param? **Yes to both.**
+
+- **JSON prompting persists** — orthogonal: the LoRA adapts only the **transformer** (denoise
+  convergence); the Mistral TE that parses the JSON is untouched. (Distillation softens *guidance
+  adherence* a bit; the structured-prompt content stays.)
+- **LoRA structure** (`Flux2TurboComfyv2.safetensors`): 170 rank-256 BF16 pairs (`B(A·x)`, no alpha ⇒
+  scale = strength, default 1.0). Targets attention + `single_blocks` + embeddings + modulation; NOT
+  the double-block MLPs.
+- **The crux — Diffusers→BFL key map + qkv fusion** (`scaled_fp8.map_comfy_lora_key`). The file mixes
+  two namespaces: `diffusion_model.*` (103 mods) map 1:1 to BFL; `transformer.*` (67, Diffusers) remap
+  — embeddings (`context_embedder`→`txt_in`, `x_embedder`→`img_in`, `proj_out`→`final_layer.linear`),
+  `to_out.0`/`to_add_out`→`*_attn.proj`, and the **qkv fusion**: BFL fuses q,k,v into one `*_attn.qkv`
+  Linear, so the LoRA's separate `to_q/k/v` (+ `add_q/k/v`) apply to **output-row slices**
+  `[0:6144]/[6144:12288]/[12288:18432]`. ✅ Verified: **170/170 map onto real BFL Linears**, in-features
+  match, all 16 fused qkv tiled by exactly the 3 slices; the only uncovered BFL Linears are the
+  (unadapted) double-block MLPs.
+- **Application — forward hooks** (`load_flux2_turbo_lora` / `apply_turbo_lora`). Rather than
+  special-casing `ScaledFP8Linear` vs `nn.Linear`, a `register_forward_hook` adds
+  `strength·F.linear(F.linear(x, A), B)` to each target's output (each at its row offset; one hook per
+  fused qkv carries the 3 q/k/v). A/B resident bf16; `.to(x.device, x.dtype)` in the hook is
+  offload-safe (no-op when matched). The base fp8 matmul is unchanged. ⚙ Attached on `torch_device`
+  (compute device) — hooks fire at denoise, after run() moves the flow model to GPU.
+- **Wiring**: `stage1._load_dev_quantized` + `run_jobs` Phase 2 apply the LoRA when `turbo`; threaded
+  through `run()`/`--turbo`; rides the batch `_SHARED_KEYS`. Catalog adds a **dev-gated `turbo` flag**
+  (inline, like the other dev knobs). Manifest `quantized.turbo` + `quant_stats.turbo_lora`. No forced
+  step change — turbo just *arms* the LoRA; the user picks the (now-viable) low step count.
+- **Tests** (`test_flux2_dev_quantized.py`): keymap unit (diffusers→BFL + qkv offsets), **full
+  170-module coverage** vs the real LoRA + BFL model (gated on the file), forward-hook math (plain +
+  qkv slices + strength), `--turbo` dev-gated argv + catalog shape. Full suite **330**. Monorepo→loom
+  synced (3 files SAME).
+
+⚠ **Owed (on-rig — can't run 34 GB+2.6 GB on 16 GB from CI):** (1) a dev image at 4–6 steps with turbo
+looks good vs the under-denoised no-turbo 8-step, and a sweep is meaningfully faster (the **+2.6 GB**
+bf16 LoRA adds paging — the step cut should still net a win, but that's the empirical question); (2)
+confirm BFL qkv order is q,k,v (standard, but verify the slices land right); (3) tune the step count /
+whether turbo wants lower guidance; (4) a proper 412 weight-gate + fetch for the LoRA file (worker
+currently resolves it from cache, fails clearly if absent).
+
+---
+
+## M2.7 — warm-worker batch queue (spec §12 "M2.7"; 2026-06-27)
+
+**Problem (user).** A batch (Cast/Expansion) is ONE queue job whose worker loops the cells; on pause
+the runner `_discard_partial`s it and re-queues from scratch — every finished image disappears, and a
+sweep is a single opaque queue entry. **Goal:** each image = an individual queue entry that persists
+the moment it's done, serviced by a persistent warm worker (model loads once). Built in phases
+(design: kb-loom-p2.md §12 "M2.7 solution design").
+
+**Phase 1 — flux2 Expansion (DONE no-GPU; on-rig owed).** Built from the safe end inward so the proven
+cold path is never touched (337 tests green throughout):
+
+- **1b — flux2 `--serve` worker** (`run_pipeline.run_serve` + `_ServeGenerator`, `--serve` CLI). Reads
+  one JSON job per stdin line, loads the model ONCE (`stage1.run`, flow+AE resident), writes one image
+  into the job's own `output_dir`, emits a `[serve-result] <json>` line. `{"cmd":"shutdown"}`/EOF
+  exits. **Purely additive** — the runner still dispatched normally, zero queue risk. (commit
+  `2c3802c`.) ⚙ The TE is (re)loaded per cell — the dev 17 GB / Klein Qwen3 TE can't co-reside with
+  the flow model on 16 GB; an encode-ahead buffer to recover that is a later phase.
+- **1c — runner warm dispatch.** A resident `--serve` process lives on `self._warm_proc`/`_warm_group`
+  across `_execute` calls. New `_execute_warm` (a SEPARATE path; cold `_execute` untouched): group
+  match → feed the resident worker via stdin + read its `[serve-result]`; else `_spawn_warm`
+  (evicting any other — one model on 16 GB). `_record_warm` marks the cell done/failed/canceled
+  from its serve-result (output_name + per-cell `output_meta` with coverage_cell/seed/duration +
+  lineage edge). Evict (`_evict_warm`: close stdin → frees VRAM) on **group change**, **end of group**
+  (no more queued same-group cells), **idle/pause** (in `_run_loop`), and **shutdown**. Cancel kills
+  the warm proc via `_procs[running_cell]`; a worker that EOFs without a result fails just that cell.
+  `submit()` gained `warm_group`; the FE/queue render each cell-job naturally.
+- **1d — Stage-B emits N cell-jobs.** The flux2 branch of `/assets/{id}/stage-b` now `submit()`s one
+  `ref`-mode job per coverage cell (carrying `coverage_cell` + a shared `warm_group` =
+  pipeline+model+size+hero+turbo/te/mm) instead of one `batch_items` job. zimage/sd35 stay on the
+  batch path (Phase 2). ⚠ **post-passes (identity/clean/polish) are NOT chained onto warm cells in
+  Phase 1** (per-cell chaining = Phase 2) — raw ref cells stream as individual persistent tiles.
+- **Tests** (`test_warm_worker.py`): the serve protocol (round-trip / shutdown / bad-json + per-job
+  failure isolation, via an injected fake generator) **and** the runner dispatch (reuse one worker
+  across a group, group-change eviction, worker-dies-without-result → cell fails, via a fake serve
+  proc — no GPU/subprocess). Stage-B test updated to assert N individual warm cell-jobs. Suite **337**.
+
+⚠ **Owed (on-rig — can't run the model from CI):** a real klein Expansion sweep streams individual
+tiles that **persist across a pause** and resume with the model loaded once. **Next:** Phase 2 (multi
+Cast + sd35/zimage `--serve`) and post-pass chaining on warm cells; Phase 3 cross-batch warmth + the
+dev encode-ahead buffer.
+
+**Fix (2026-06-27, first on-rig warm sweep — dev OOM).** Klein Expansion streamed warm cells fine, but
+a `flux.2-dev` warm cell crashed at **load** time:
+
+```
+stage1_load_models._load_dev_quantized -> scaled_fp8.load_comfy_flux2_transformer
+  -> load_safetensors_into_model -> _assign_tensor(model, mapped, tensor.to(device))
+torch.OutOfMemoryError: HIP out of memory. Tried to allocate 144.00 MiB ... 63.81 GiB allocated by PyTorch
+```
+
+Cause: `_ServeGenerator._load` hard-coded `cpu_offload=False`, so the **34 GB fp8 transformer loaded
+straight onto the 16 GB GPU** while the Mistral TE was also resident — the exact co-residence the
+cold `run()`/single-run path avoids by forcing `--cpu-offload`. The warm worker's whole premise
+(everything resident across cells) is right for **klein** (fits, and the user confirmed it works) but
+wrong for **dev**, which the journal already flagged as a co-residence problem.
+
+Fix — make `_ServeGenerator` **offload-aware**, gated on the model:
+- `_load`: `self.cpu_offload = job.cpu_offload or model_name == QUANTIZED_DEV_MODEL`. Under offload the
+  flow model loads on **CPU**; refs are encoded with the GPU-resident AE (never the flow model), then
+  the TE is **parked on CPU**. Both flow + TE stay in **CPU RAM** between cells, so the 34 GB disk
+  read + fp8 dequant happens **once per sweep** — the warm win is preserved; only the PCIe shuttle is
+  per-cell (the same cost the cold path already pays, ~87 s/img).
+- `generate` (offload branch only): TE→GPU → encode text → TE→CPU + `empty_cache()` → flow→GPU
+  (ROCm host-pages the 34 GB) → denoise → flow→CPU + `empty_cache()` → decode (AE stayed GPU). The
+  flow + TE never co-reside on the GPU — this is the cold `run()` swap, applied per warm image.
+- **Klein path unchanged**: `cpu_offload=False`, everything resident, the fast warm path.
+
+`ComfyMistralEmbedder` is an `nn.Module` that reads its device dynamically (`forward` looks at
+`embed_tokens.weight.device`), so `.cpu()`/`.to(device)` shuttling is safe. Both `run_pipeline.py`
+copies (loom mirror + monorepo) updated byte-identical; 7/7 warm-worker tests green (the offload swap
+is GPU-path code → **on-rig dev Expansion sweep still owed**, alongside the klein pause/resume sweep).
+
+**Fix #2 (2026-06-27, first on-rig dev warm sweep — per-cell flow thrash).** The OOM was gone and the
+dev sweep produced correct images, but each cell was **wildly slow and getting slower**. Hard numbers
+from `loom/stubz001` (17-cell dev/ref sweep, 8 steps, 512², turbo): cold dev **t2i** single-run =
+**~185 s** (load + denoise + decode); warm dev **ref** cell 0 = **676 s**; cell 1 ran **>22 min with
+no image** — and cell 1 bears **no model load**. A no-load cell slower than the load-bearing cell 0 is
+the tell: Fix #1's per-cell swap moved the **34 GB flow model CPU<->GPU on every cell**, and ROCm's
+HMM managed memory accumulated/thrashed so each round-trip got worse than the last.
+
+The cold **batch** path (`run_jobs` Phase-1) never had this — it loads the flow model to the GPU
+**once** and denoises all cells with it resident (~87 s/cell; HMM pages only *during* denoise). Fix #2
+makes the warm worker do the same:
+- `_load` (offload): load flow on CPU, encode refs, free the TE, then **`flow.to(GPU)` ONCE** — the
+  flow model is now resident for the whole group.
+- `generate` (offload): only the **small TE** is shuttled GPU<->CPU for the text encode; the flow
+  model is **never migrated per cell**. (The TE is fp8 → can't encode on CPU via `_scaled_mm`, so it
+  rides onto the GPU briefly; HMM absorbs the transient flow+TE pressure for the seconds-long encode.)
+
+Net: cell 0 ≈ load + one denoise (~the cold t2i ~185 s + ref encode); cells 1..N ≈ TE encode + denoise
++ decode (≈ cold-batch ~87–185 s/cell), with no per-cell 34 GB migration. 7/7 warm tests green; both
+`run_pipeline.py` copies synced byte-identical. **The stuck in-flight sweep must be cancelled and
+re-run on the fixed worker — the running process still has Fix #1's code.** On-rig confirmation that
+cells 1..N hold steady (no per-cell creep) still owed.
+
+**Fix #3 (2026-06-27, sweep seed + inspector pose hint — user, after the dev warm path ran clean).**
+Two UX gaps the first good dev sweep surfaced:
+- **Seed was incremental** (`base_seed + index` → 0,1,2,…), and an unset seed defaulted to a fixed 0.
+  The user wants ONE seed for the whole sweep (random, or entered in the params section) so pose/angle
+  /expression are the only per-cell variation (and the flux2 ref path keeps identity steady). Fix:
+  `recipe.build_recipe` gains `shared_seed` (every cell gets `base_seed`); `stage_b` resolves the seed
+  **once** — `req.base_seed` if given, else a fresh `random.randrange(2**31)` — and passes
+  `shared_seed=True`. The UI already had the seed control (catalog `seed` → `base_seed`), so this is
+  backend-only. Default `shared_seed=False` preserves the legacy per-cell draw for the recipe API.
+- **No readable pose hint in the inspector.** The full per-cell prompt (incl. the pose) lives in a
+  collapsed `<details>`; the only always-visible cell line showed raw frozen keys (`three_quarter_left`)
+  in muted text. Fix: the inspector's coverage line now leads with `🎭 pose: <angle>` (un-muted,
+  humanized — `three_quarter_left` → "three quarter left"), shown for queued AND completed cells from
+  `job.coverage_cell` / `output_meta[…].coverage_cell`. (The `¾`/`°` in the dev JSON pose directive
+  were a false alarm — stored correctly as `¾`; only my cp1252 console mangled them.)
+
+Tests: `test_shared_seed_gives_every_cell_the_same_seed` (recipe) + a one-seed assertion on
+`test_stage_b_flux2_cells_are_individual_warm_jobs`. 338 backend green; frontend `tsc --noEmit` clean.
+
+### Phase 2a — sd35/zimage Expansion warm cells (2026-06-27; on-rig owed)
+
+Extends the proven flux2 warm path to the img2img coverage sweep (user pick — the direct, lowest-risk
+Phase 2 increment; `multi`/Cast needs a different mechanism, see §12 phasing). The runner side is
+already pipeline-agnostic (`_execute_warm` gates on `hasattr(adapter, "serve_argv")`), so 2a is
+worker + adapter + the Stage-B dispatch:
+
+- **Workers** (`sd35`, `zimage` `run_pipeline.py`): a `--serve` loop mirroring flux2's (one JSON job
+  per stdin line → one image + `[serve-result]`; `{"cmd":"shutdown"}`/EOF exits). The per-image
+  generate+save body was **extracted from `run_jobs` into a shared `_generate_item`** so the
+  `--jobs-file` batch loop and the `--serve` warm loop **can't drift** on the (subtle) img2img/inpaint
+  path; `run_jobs` now just calls it. The serve `_ServeGenerator` loads the pipeline ONCE (the model
+  is the load-bound part of the warm_group) and reuses it per cell. It honors the catalog's INVERTED
+  flags directly (`no_cpu_offload`, sd35 `no_skip_layer_guidance`) since the warm spec doesn't pass
+  through `build_batch_argv`'s inversion. **No offload dance** (unlike flux2-dev): these fit 16 GB and
+  `enable_model_cpu_offload`'s per-call hooks persist across warm jobs.
+- **Adapters** (`sd35.py`, `zimage.py`): `serve_argv` (file-path invocation + `--serve --device
+  --output-dir`, NOT `-m`) + `SERVE_RESULT_PREFIX`.
+- **Stage-B** (`main.py` else-branch): emits **N img2img cell-jobs per realization group**, each with
+  a mode+strength-bound `warm_group` (so a group's cells share one resident worker; img2img and
+  inpaint groups run back-to-back). **Gated**: `warm_cells = is_flux2 or (no post_passes and realize
+  != "mixed" and serve-capable)`. Post-pass sweeps + `mixed` keep the **cold batch job** (post-passes
+  chain there) until 2b — so identity/clean/polish are never silently dropped. The dry-run
+  `planned_jobs` now reports the real job count (`len(cells)` for warm) — this also corrected flux2's
+  Phase-1 dry-run, which still said `1`.
+- **Vendor sync (R162)**: `_generate_item`/serve landed in all copies byte-identical — sd35 ×2
+  (monorepo + multistack), **zimage ×3** (monorepo + `pipelines/zimage` + multistack). The drift
+  guard (`test_vendored_workers_match_monorepo_source`) is green.
+- **Tests**: `test_sd35_zimage_serve_argv` (adapter argv), `test_stage_b_zimage_cells_are_individual_
+  warm_jobs` (N cell-jobs + shared warm_group), `test_stage_b_with_post_passes_keeps_the_cold_batch_
+  job` (the gate), updated dry-run/flux2 shape assertions. The serve **protocol loop** is byte-
+  identical to flux2's (already round-trip-tested); the heavy workers can't be imported in-process
+  (bare-import name collision between sd35/zimage `stage1_load_pipeline`), so it's covered by the
+  adapter argv + the pipeline-agnostic runner dispatch (`test_warm_worker`) + the byte-identical sync.
+  **340 backend green.**
+
+⚠ **Owed (on-rig — can't run the model from CI):** a real sd35/zimage Expansion sweep streams
+individual img2img tiles that **persist across a pause**, model loaded once. **Next:** 2b (post-passes
+on warm cells → drop the cold-batch fallback), then 2c (multi/Cast individual jobs).
+
+### Phase 2a follow-ups (2026-06-27, user on-rig) — klein offload + keep-warm-across-pause
+
+Two issues from the user's sd35 + flux2-klein on-rig run (sd35 ✓; klein showed the dev symptom):
+
+- **klein warm cells slowed each image** (2nd > 1st) — the **same per-cell HMM thrash** dev had.
+  Phase 1's "klein fits resident, stays resident" was **wrong**: klein-4b (~8 GB flow) + Qwen3 TE
+  (~8 GB) = 16 GB with **no room for the latents**, so keeping both resident thrashes ROCm HMM and
+  worsens per cell (the single-run klein path forces `--cpu-offload` for exactly this reason). Fix:
+  **every** flux2 model offloads in warm mode — `_ServeGenerator.cpu_offload = bool(job.get(
+  "cpu_offload", True))` (was dev-only). Flow loads on GPU **once** (resident for the group), the TE
+  is shuttled GPU↔CPU per cell; nothing is migrated per cell. Synced to both run_pipeline.py copies.
+
+- **"serialize the up-front encoding so a pause doesn't redo it?"** — the honest answer: the warm
+  worker doesn't pre-encode all jobs up front (that's the Phase 3 encode-ahead buffer); what it does
+  ONCE is **load the model** (the real cost — and it can't be usefully serialized: it's weights→VRAM,
+  and the weights are already the HF cache) + encode the hero ref (cheap, seconds). The reload was
+  happening because the idle-evict freed the worker **on pause**. Better fix than serializing the
+  cheap part: **keep the worker warm across a brief pause.** `_run_loop` now evicts only for HARD
+  reasons (no project / shutdown / disk hard-stop / sweep drained or group-changed); a pause WITH
+  queued same-group cells keeps the model resident for `WARM_IDLE_GRACE_S` (default **180 s**,
+  `LOOM_WARM_IDLE_GRACE_S`) — a quick pause→inspect→resume reuses the loaded model (no reload, no ref
+  re-encode), and a longer pause still frees the GPU. Decision factored into
+  `_warm_evict_reason_locked` ('free' / 'drained' / 'grace' / None) + unit-tested
+  (`test_warm_kept_across_a_brief_pause_then_evicted_after_grace`). 341 backend green.
+
+⚠ Owed on-rig: confirm klein warm cells now hold steady (flat per-cell), and that a brief pause→resume
+skips the reload. The dev **encode-ahead buffer** (pre-encode all prompts + persist them, killing the
+per-cell TE shuttle and surviving a full eviction) remains the Phase 3 option if the per-cell shuttle
+proves to matter.
+
+**On the "serialize the encoding to survive an app restart" ask (user clarified: restart, not a brief
+pause).** The keep-warm grace only covers an in-session pause — across a process restart the worker
+dies and the model reloads regardless. But there's little to serialize: the **done tiles already
+persist** (each warm cell is its own queue entry), so only the remaining cells re-run; the **model
+load** (the real cost) can't be serialized faster than the HF cache already is (weights→VRAM); and the
+hero-ref **encode is cheap** (seconds). Conclusion: not worth persisting the encoding for the restart
+case. The Phase 3 encode-ahead buffer (pre-encode all prompts + persist) is the only thing that would
+save real work across a restart, and even then the model reload dominates — deferred unless it bites.
+
+### Phase 2b — post-passes on warm cells (2026-06-27; on-rig owed)
+
+Lifts the Phase 1/2a deferral: warm Expansion cells can now run post-passes (identity/clean/polish),
+so a sweep with them no longer falls back to the cold batch.
+
+- **`runner._record_warm`**: after a warm cell is marked done + lineage, it chains its post-passes via
+  the **same `_submit_chained`** the cold `_finalize` uses — each cell is a 1-output parent, so the
+  chained pass is a 1-item job over THAT cell's image (carrying its `coverage_cell` so curation
+  survives). Best-effort (a chain failure leaves the cell done).
+- **`main.py` Stage-B**: both warm branches (flux2 + sd35/zimage) now pass `post_passes=post_passes`
+  to each cell submit, and the `not post_passes` gate is gone — `warm_cells = is_flux2 or (realize !=
+  "mixed" and serve-capable)`. `mixed` is the lone remaining cold-batch case.
+- **No warm-worker thrash**: the pass jobs are created as cells finish (later `created_at`), so FIFO
+  runs ALL the sweep's warm cells first (the resident worker is never evicted mid-sweep for a pass),
+  then the passes. Each pass tile is its own pause-safe job — consistent with the "everything
+  individual" goal. (Trade-off: diffusion passes (clean/polish) load their backend per cell; identity
+  — the common Stage-B pass, inswapper onnx/CPU — is cheap. Warming the pass backends is a later
+  optimization if clean/polish-heavy sweeps need it.)
+- **Tests**: `test_warm_cell_chains_its_post_passes_on_completion` (a warm cell chains a clean pass
+  over its output, coverage_cell carried), `test_stage_b_post_passes_now_ride_warm_cells` (post-passes
+  → warm, not cold). `mixed`-stays-cold is still covered by the birefnet two-batch-jobs test. 342 green.
+
+⚠ Owed on-rig: a real Stage-B sweep with identity (anchor) confirms each cell streams + gets an
+identity-locked pass tile, all pause-safe. **Next:** 2c (multi/Cast individual jobs).
+
+### Phase 2c — multi (Cast) individual queue jobs (2026-06-27; on-rig owed) — Phase 2 COMPLETE
+
+The last batch-generation surface. A Cast no longer submits one opaque `multi` job that fans out
+*inside* a subprocess; the **orchestrator** fans it out into `num_candidates × |lineup|` INDIVIDUAL
+t2i candidate jobs (one per pipeline × candidate seed). This is sound because the casting **ideate**
+stage was already *independent t2i per pipeline+seed* (verified in `arch_compose_character`), and
+clean/polish already chain as post-passes — so bypassing the `multi` worker for casting loses nothing
+in use.
+
+- **`model_catalog`**: `IDEATION_LINEUP` + `ideation_lineup(preset)` — the (pipeline, model) trio per
+  preset (fast: klein-4b/sd3.5-large-turbo/zimage-turbo; refined: klein-9b/sd3.5-large/zimage-base),
+  mirroring the vendored worker's `IDEATION_PRESETS` (R162 — can't import the worker; a validity test
+  guards that every entry is a real catalog variant).
+- **`main.py` `/generate`**: the `is_multi` branch now loops the lineup × `num_candidates`, submitting
+  a `t2i` job per candidate with `model_name` + a per-candidate `seed` (`base+c`, the SAME seed across
+  the 3 pipelines, matching the worker). Each candidate carries the sweep's `post_passes` (so clean/
+  polish/identity chain per candidate, Phase 2b) and a **per-(pipeline,model) `warm_group`** — so the
+  3 pipelines run back-to-back with each model resident across ITS candidates (Cast gets warmth, not
+  just pause-persistence). The dry-run previews the first candidate's real t2i argv + the `lineup`.
+- **No warm thrash, by construction**: a cast submits all of pipeline-A's candidates, then B's, then
+  C's (contiguous), and FIFO + the same-group keep-warm logic services each pipeline's candidates on
+  one resident worker before evicting for the next.
+- **Frontend**: unchanged. The grid is derived per-job (a job's outputs → tiles) and the inspector
+  falls back to `job.pipeline`, so N 1-output candidate jobs render as N tiles with the right pipeline
+  label — no single-`multi`-job assumption anywhere. `tsc --noEmit` clean.
+- **Tests**: `test_ideation_lineup_models_are_valid`, `test_cast_fans_out_into_individual_warm_t2i_
+  candidates` (6 jobs for 2×3, 3 warm groups × 2, seed shared across pipelines); updated the two
+  done-line/dry-run assertions that pinned the old `multi`/`ideate` argv. **344 backend green;
+  frontend tsc clean.**
+
+⚠ Owed on-rig: a real Cast streams its candidates as individual tiles that persist across a
+pause/cancel, with each pipeline's model loaded once. **Phase 2 (warm-worker batch queue) COMPLETE** —
+flux2 + sd35/zimage Expansion warm cells (2a), post-passes on warm cells (2b), Cast fan-out (2c); the
+remaining cold-batch case is `realize="mixed"` Expansion (a later phase if wanted).
+
+**Fix (2026-06-28, user on-rig — zimage-base 17-min "inference").** A refined-preset Cast's
+`zimage-base` candidate (`job_0d82f0d2`) sat `running` for **17 min**. NOT the flux2-dev thrash and
+NOT slow compute: the manifest showed `generate` = **1026.87 s** while the visible **denoise was ~16 s**
+(50 steps; first step 15 s was a one-time AOTriton attention compile). So ~1011 s was OUTSIDE the
+denoise — `enable_model_cpu_offload` shuffling the big zimage-base components (text-encoder /
+transformer / VAE) CPU↔GPU on 16 GB ROCm. The transformer denoised fast *resident*, so the GPU compute
+is fine; offload was pure overhead. (Not a regression: the old `multi` worker's `invoke_zimage`
+defaulted `cpu_offload=True` too, so the pre-2c refined cast was equally slow — fast/turbo casts
+avoided it.) Fix: the zimage **warm** `_ServeGenerator._load` now defaults **resident**
+(`cpu_offload = bool(job.get("cpu_offload", False)) and not job.get("no_cpu_offload", False)`) — zimage
+fits 16 GB at the casting/expansion sizes (~11 GB est). Offload is still honored if a job explicitly
+asks. Synced to all 3 zimage copies; warm/batch tests green (the offload default is GPU-path, not
+unit-tested). ⚠ On-rig: confirm zimage-base resident is fast (≈30 s) and doesn't OOM at 1024²; if it
+OOMs we gate it back to offload.
+
+**Probe + root cause + the missing single/batch fix (2026-06-28, user on-rig).** The warm fix above
+only covered the `--serve` path. The user then ran a **single** `zimage-base` t2i (`job_b4ae9136`,
+non-warm) that was *still* ~15 min, so I added a `[zimage-probe]` (`callback_on_step_end` splitting the
+diffusers call into encode+setup / denoise / decode+post; commit `4bbb968`). It printed the smoking
+gun: **`encode+setup=11.5s denoise=1.0s decode+post=894.1s total=906.7s`** at 1024²/50 steps, with
+`[stage1] Pipeline loaded … (cpu_offload)`. So the cost is **entirely the VAE decode under
+`enable_model_cpu_offload`** — the transformer denoises fast on-GPU during offload (the hook keeps it
+resident for the loop), so *only the final VAE decode* pays the offload tax and lands on a ~15-min
+path; resident keeps the VAE on the GPU where decode is seconds. The single + batch paths were never
+told to go resident: `emit_argv` and `_batch.build_batch_shared` only act on params **present** in the
+request, and the catalog `no_cpu_offload` **default is never injected** (`emit_argv` skips absent
+params; `build_batch_shared` only inverts if the flag is truthy) — so single ran `cpu_offload = not
+args.no_cpu_offload = True` and batch ran `shared.get("cpu_offload", True)`. **Fix:** the **zimage
+adapter** `build_argv` now `p.setdefault("no_cpu_offload", True)` — the single seam both single + batch
+flow through — so all three dispatch routes (warm/serve, single, batch) default resident and agree. A
+request may still force offload with an explicit `no_cpu_offload=False` (OOM escape hatch). **Loom-only
+orchestrator change** (no vendored/drift-guarded worker touched → no monorepo sync needed, per the
+author's "loom is the only repo that matters"). +3 tests (single emits `--no-cpu-offload`; batch
+`shared.cpu_offload=False` with no explicit flag; explicit `False` still offloads). **348 orchestrator
+tests green.** ⚠ Still owed on-rig: confirm the resident decode drops `decode+post` from 894 s to
+seconds and doesn't OOM at 1024². **✅ PUSHED `6e637fe`.**
+
+**RESOLVED — it was never offload OR placement; it's MIOpen on Windows ROCm (2026-06-28).** The
+resident fix above did NOT help: a resident `zimage-base` single (`job_39303cd7`) still showed
+`[zimage-probe] encode+setup=2.6s denoise=1.0s decode+post=888.8s` at 1024². The user rightly
+challenged the story (zimage-**turbo** is fast — yet it shares a **byte-identical** VAE, so the VAE
+decode can't be the differentiator). Web research (see `.github/copilot/kb-zimage.md` new chapter
+"VAE Decode Catastrophically Slow on Windows ROCm") found the documented root cause: on native
+Windows PyTorch-ROCm, MIOpen falls back to the **naive direct-conv solver** (`ConvDirectNaiveConvFwd`,
+`workspace=0`) for the **convolution-heavy FLUX VAE decoder** under the default `MIOPEN_FIND_MODE` —
+while the conv-free transformer (matmul/attention via rocBLAS/AOTriton) is unaffected (ROCm/TheRock
+#3077; ROCm #4742 "VAE decode slow… 9070 XT"; ROCm #4729; ComfyUI #10460). **Fix (on-rig
+confirmed):** `MIOPEN_FIND_MODE=2` (FAST) → VAE-only probe decode **888 s → 1.9 s cold / 0.4 s warm**
+(≈470×; CPU fallback 13.9 s, GPU+tiling 0.3 s). Wired in `orchestrator/main.py` startup:
+`os.environ.setdefault("MIOPEN_FIND_MODE", "2")` BEFORE any worker spawns (the spawns build
+`{**os.environ, …}` and stage_runner copies `os.environ`, so the whole subprocess tree inherits it;
+real env wins; MIOpen-only var = harmless no-op off ROCm). **Fixes every conv worker** (sd35/zimage
+VAE + postproc), not just zimage. 348 orchestrator tests green. The earlier resident default
+(`6e637fe`) stays — it's still correct (avoids the offloaded-VAE path + thrash) and now the decode is
+fast on top of it. **✅ PUSHED `7bb4961`.**
+
+---
+
+## P2-era fixes (non-milestone)
+
+### Vendoring-completeness audit + guard (2026-06-28, user-asked)
+
+**User:** "I've checked the local pipeline code in `loom/loom-loreweave-studio/pipelines/` — there's
+only krea2, multistack and zimage. Are we not still running pipelines from code in `src/pipeline`?
+Make sure all code that runs in loom is copied in `loom/loom-loreweave-studio/`."
+
+**Finding — all present, nothing escapes to the monorepo.** The three top-level entries are the whole
+set: `krea2` + `zimage` are flat (file-path-invoked standalone), and **everything else is bundled
+inside `multistack/src/pipeline/`** — flux2, sd35, multi, ltxv, and all four postproc passes
+(birefnet, identity, face_restore, frame_harvest), plus the BFL flux2 lib at `multistack/flux2/src`.
+Simulated the real resolver (`config._resolve_pipeline_roots`) with the monorepo `src/pipeline/`
+**fallback removed**: all 10 inference adapters **and** the zimage trainer (`trainers/loom_zimage_lora.py`)
+still resolve in-repo. `multi` self-locates (`stage_runner` `REPO_ROOT`/`FLUX2_LIB_SRC`) entirely
+inside `multistack/`. The only monorepo references left in the orchestrator are **model weights**
+(`village_ai/models`, R160 — one shared ~330 GB set, intentionally never vendored). So `src/pipeline/`
+is a pure dev convenience that is **never reached at runtime** because every pipeline is vendored.
+
+**Side finding — 3 vendored files are intentionally *ahead* of the stale monorepo copy** (whole-tree
+md5 scan: 75 sync, 0 missing, **3 drift**), all loom-only features edited directly in the loom repo and
+never back-ported: `krea2/stage1_load_pipeline.py` (`40e5265` "Add Krea2 Turbo" — turbo-only @768²),
+`flux2/stage3_denoise.py` + `flux2/util.py` (`7579cbd` "Route flux2 dev through quantized Comfy
+backend" — non-finite-latent black-image guard + dev→8-step default). Direction is loom-newer, so
+nothing loom runs is stale; the monorepo R162 mirror is the stale side. **No code changed** — left for
+the author to decide (back-port to monorepo to restore the single-source invariant, or accept
+loom-authoritative). The recent warm-worker edits (flux2/sd35/zimage `run_pipeline.py`,
+`zimage/stage2_generate.py`, `stage1_load_pipeline.py`) are all **in sync**.
+
+**Guard added** (`test_batch_worker.py::test_every_adapter_resolves_without_the_monorepo_fallback`):
+drops the monorepo fallback root and asserts every adapter (+ trainer) still resolves a worker under
+the app repo — so a future pipeline/adapter added without vendoring its worker **fails CI** instead of
+only working on a checkout that happens to sit beside the monorepo. Presence-only by design (the R162
+byte-match guard is separate; the 3 loom-ahead files must not trip a completeness check). 27/27
+`test_batch_worker.py` green. **✅ PUSHED `a0c40f0`.**
+
+### Krea2 Turbo vendored as a Loom T2I generator (2026-06-25, user-requested)
+
+Author direction: keep **Krea 2 Turbo** as the practical target after the local smoke produced a
+768² image in under 5 minutes, and do not chase Raw/full-fp16 fit. The prior `src/pipeline/krea2/`
+spike followed `.github/copilot/kb-krea2.md`'s Proposed Pipeline layout; this pass vendors the Turbo
+path into Loom.
+
+- **Vendored worker:** copied the Krea2 source pipeline into `pipelines/krea2/` (R162 vendoring) and
+  narrowed the Loom vendored model registry to **`krea2-turbo` only**. Defaults are **768×768 / 8
+  steps / guidance_scale 0.0 / CPU offload** for the 16 GB ROCm target. Raw remains intentionally
+  absent from Loom.
+- **Adapter + backend wiring:** added `orchestrator/adapters/krea2.py` (file-path invocation, same
+  manifest-as-truth parse shape as zimage/sd35), registered it in the runner adapter table,
+  `/capabilities`, and `/generate`, with a **16 GB VRAM estimate**. `model_catalog.CATALOG_VERSION`
+  bumped to 2 and now serves `krea2-turbo` with advanced optional Quanto knobs
+  (`quant_backend`, `quant_dtype`, `quant_skip_modules`) left **unset by default** after the fp8 color
+  smoke showed artifacts.
+- **Mode contract:** local Diffusers exposes **`Krea2Pipeline` only** (`diffusers/pipelines/__init__`
+  imports `["Krea2Pipeline"]`), not a `Krea2Img2ImgPipeline`; Loom therefore advertises **T2I only**
+  (`modes=["t2i"]`). Stage-B/hero expansion stays on zimage/sd35/flux2.
+- **Frontend:** Stage-A/Sandbox pipeline selector now includes **`krea2 turbo`** and the existing
+  catalog-driven parameter drawer exposes Krea2's tunables. No Stage-B or postprocess backend option
+  was added because those are image-conditioned paths.
+- **Tests / verification:** Krea worker `--help` imports clean and shows `--model-name {krea2-turbo}`;
+  focused no-GPU tests `pytest -p no:cacheprovider orchestrator/tests/test_krea2_adapter.py
+  orchestrator/tests/test_model_catalog.py` = **28 passed**; `npm run build` clean. ⚠ The existing
+  `.pytest_cache` directory under the Loom repo has an ACL that denies traversal/removal; pytest was
+  rerun with the cache provider disabled so it did not affect verification.
+
+**✅ PUSHED `40e5265`** (Krea2 Turbo vendoring + adapter/catalog/UI/tests + this journal entry);
+follow-up journal-only commit records the hash after Git assigned it.
+
+### flux.2-dev Stage-B size + silent batch failure (2026-06-22, user-found in `loom/stubz001`)
+
+Two issues from a real `npc_lite` flux2-dev ref-mode Stage-B run. 295 backend tests; build clean.
+
+- **The 512² default didn't reach Stage-B (✅ PUSHED `b56a6fd`).** M0e Part A wired the model-aware
+  size default into `/generate` only; Stage-B has its own endpoint and `StageBRequest.width/height`
+  default to **1024**, so a `flux.2-dev` sweep ran at 1024² (~4k latent tokens — the slow regime). The
+  `stage_b` endpoint now resolves the per-cell size model-awarely (mirrors `/generate`): UNSET →
+  `model_size_default` (dev → 512²); non-dev keeps 1024²; explicit dims (top-level or params channel)
+  win. The drawer's model-aware placeholder is now honest for Stage-B too. +1 `test_flux2_adapter` test.
+- **The batch worker failed silently (✅ PUSHED `4fb76bc`).** A pre-loop bail (text-encode / model-load /
+  reference-encode) printed only `[batch-done] 0 ok / 0 failed / 17 skipped` and wrote the exception
+  ONLY into the batch manifest (pruned with the job). New `_fail_preload()` in the flux2 batch
+  `run_jobs` prints `[batch-error] <reason>: <exc>` + a full traceback to stderr (→ job log + console)
+  and folds the reason into the manifest error. Vendored byte-identical (R162; md5 match). ⚠ The root
+  cause of the user's dev-batch skip-all is still unknown (the manifest/log were pruned) — the next run
+  will now surface it. Guidance: for a many-cell coverage sweep use the **Balanced** (klein-base) preset
+  (fits 16 GB); reserve **Dev/JSON** for a few t2i hero shots → then upscale (dev's 60 GB flow model
+  paged across 17 cells × 50 steps is impractical on the 16 GB rig).
+
+### Styles add-to-top · individual image deletion · remove-from-curation (2026-06-21, user-found)
+
+Three UX bugs/inconveniences the author reported after M0e. Fixed as **Pass 1** of two (the bigger
+**Visual-Styles tiles + enlarge + per-style preview-generation** redesign is **Pass 2 — DEFERRED**,
+author's call 2026-06-21: quick fixes first; the persistent per-style **sample image** model is agreed).
+286 backend tests (284→+2); `tsc` + `vite build` clean. **✅ PUSHED `ede3903`** (code only — this
+journal entry rides the next journal commit; the parallel LoRA/trainer workstream is not in it).
+
+- **(A) New visual style lands at the TOP** (`bible.add_style` `append`→`insert(0, …)`). The author
+  wanted a fresh style front-and-centre to edit immediately, not buried at the bottom; the add does NOT
+  change the active default. +1 test (`test_styles.test_new_style_lands_at_the_top`).
+- **(B) Image deletion is now strictly INDIVIDUAL.** Root cause: the grid 🗑 called `deleteJob(c.job.id)`
+  → `RUNNER.delete` → `shutil.rmtree(out/<job>)`, so deleting any tile of a **multi-cast pool** or a
+  **Stage-B batch** physically nuked the *whole* batch. New `RUNNER.delete_output(job_id, output)` prunes
+  ONE image (file + `.json` sidecar) and its `result.output_names`/`output_meta`/`partial_outputs`,
+  persisting; it falls through to a whole-job `delete()` only when that was the last/only output. New
+  endpoint `DELETE /jobs/{id}/output?output=<rel>` (409 unknown/not-terminal, 404 not-an-output) + client
+  `deleteOutput`. FE: the old `onDelete(id)` became `onDeleteCell(job, output, key)` — a multi-output tile
+  deletes just that image ("the rest of the batch is kept"), a single-output tile deletes the whole gen.
+  +1 test (`test_queue_feedback.test_delete_single_output_keeps_the_rest_then_whole_job`).
+- **(C) Curated images are now removable in the Curation screen.** A kept image is a **durable copy** in
+  `refs/` (survives source-job deletion by design), so after deleting its source generation it lingered in
+  Stage C as a `durableRefCells` tile whose only removal control was the ✓ toggle (read as "keep", not
+  discoverable as un-keep). Added an explicit **🗑 "remove from the curated set"** on every kept tile in
+  Stage C (durable refs *and* kept job tiles) → culls via `remove_ref` (drops from `ref_set` + deletes the
+  `refs/` copy); the whole-job 🗑 is suppressed on kept curated tiles so a curated tile's 🗑 means
+  remove-from-curation, never delete-the-source-job. The ✓ toggle stays. FE-only (cull endpoint unchanged).
+
+### Visual Styles redesign — tiles + expand-to-edit + per-style preview generation (Pass 2 of 2, 2026-06-21)
+
+The deferred half of the styles work (Pass 1 = add-to-top above). Replaces the stacked full-editor list
+with a **tile grid + an expand-to-edit detail panel that can generate a persistent sample image** per
+style. 292 backend tests (286→+3 + parallel-workstream tests); `tsc` + `vite build` clean. **✅ PUSHED
+`d002b6a`** (code only — this journal entry rides the next journal commit; the parallel LoRA/trainer
+workstream is not in it). ⚠ Visual sign-off owed on the running app.
+
+- **Persistent per-style sample (backend, like a face anchor).** `StyleEntry` gains an optional `sample`
+  {file, source_output, job_id, prompt, model, set_at}; `story.schema.json` documents it. `bible.py`:
+  `set_style_sample` copies an out/-relative output into **`<project>/bible/styles/<style_id>.<ext>`**
+  (durable — survives source-job deletion + out/ pruning), `clear_style_sample`, `style_sample_path`;
+  `remove_style` now also deletes the copy. Endpoints `POST /bible/styles/{id}/sample {output,prompt,model}`,
+  `DELETE …/sample`, `GET …/sample/file` (served unauth, mutations token-gated). +3 tests
+  (set/serve/clear + survives source delete; unknown-style/bad-output/traversal 404; delete-style removes copy).
+- **Tile grid + detail (frontend).** Visual Styles is now a `StyleTile` grid (title + sample thumbnail or 🎨
+  placeholder; ★ = the project default; click to select/expand). The selected tile opens **`StyleDetail`** —
+  the name + **Style prompt** + **Negative prompt** editors (the old StyleRow controls) **plus a PREVIEW
+  section**. Adding a style auto-selects it (it lands at the top, Pass 1) so the author edits immediately.
+- **Per-style preview generation.** The preview section = a prompt input + a **sd3.5-medium / zimage-turbo**
+  model selector + **✨ generate sample**. Generate fires a **project-scoped t2i with THIS style applied**
+  (`generate({pipeline, mode:"t2i", model_name, prompt, apply_style:true, style_id})` — sd35 for medium,
+  zimage for turbo) on the shared GPU queue; a self-contained poll (`getJob` every 1.5 s) pins the output as
+  the style's sample on completion (`setStyleSample`). The preview image shows **🔍 magnify** (lightbox via a
+  new `onView` prop → the App `viewer`) + **🗑 delete** (clear sample); while generating it shows queued/
+  running status + **✕ cancel** (`cancelJob`). New client fns: `setStyleSample`/`clearStyleSample`/
+  `styleSampleUrl` (cache-busted by `sample.set_at`) + `getJob`. CSS: `.style-tiles`/`.style-tile`/
+  `.style-thumb`/`.style-detail`/`.style-preview*`. No `src/pipeline/` touched → no re-vendor.
+  - **Refinement (2026-06-21, user-found, ✅ PUSHED `9ff7366`):** tiles **enlarged on click** — `.style-tiles`
+    used `minmax(116px, 1fr)`, so opening the detail panel toggled the `.world` scrollbar → stole width →
+    `auto-fill` dropped a column → the remaining `1fr` columns each grew. Fix: **fixed 108px tile columns**
+    (no `1fr`) so they stay small + never resize, + `scrollbar-gutter: stable` on `.world` so the scrollbar
+    can't reflow the grid. CSS-only.
+
+### Unlock a finalized version + delete a character (2026-06-21, user-found in `loom/stubz001`)
+
+Two more author-reported gaps. 294 backend tests (292→+2); `tsc` + `vite build` clean. **✅ PUSHED
+`00dfa33`** (code only — this journal entry rides the next journal commit; the parallel LoRA/trainer
+workstream is not in it).
+
+- **Curation "can't be cleaned up" → UNFINALIZE/unlock.** Root cause: the project's `char01` active
+  version was **`finalized: True`** (17 refs, 34 rejected), and the Stage-C grid gates every curation
+  control on `curable = … && !locked` — a finalized version shows NO keep/cull/remove. Finalize was a
+  one-way door (`finalize_version`, no inverse). Added `assets.unfinalize_version` (sets `finalized=False`,
+  re-stamps `saved_at`, idempotent) + `POST /assets/{id}/versions/{vid}/unfinalize` + client
+  `unfinalizeVersion`; the version-bar's static "🔒 finalized" badge became an **"🔒 finalized — unlock 🔓"**
+  button (`onUnfinalizeVersion`, confirm-guarded). The finalize lock is a *declaration of intent*, not a
+  hard guarantee — this is the explicit author escape hatch (vs. deep-duplicate-to-a-new-version).
+  +1 test (`test_unfinalize_unlocks_a_finalized_version`).
+- **Delete a character (L2 asset).** No delete-asset capability existed (only spine-character delete, a
+  different thing). Added `assets.delete_asset` (rmtree the profile dir `assets/<class>/<slug>/` + all
+  versions — refs/casting/faces/anchors; out/ generations + lineage left, project-level + rebuildable) +
+  `DELETE /assets/{id}` (404 unknown) + client `deleteAsset`. FE: a hover-revealed **🗑** on each character
+  row in the L2 rail (`.asset-row-wrap`/`.asset-del`), confirm-guarded `onDeleteAsset` → falls back to the
+  Sandbox if the deleted character was active + refreshes the list. +1 test
+  (`test_delete_asset_removes_profile_and_all_versions`). No `src/pipeline/` touched.
+
+### flux2-klein-9b crashed encoding a non-ASCII stdout char (Windows cp1252) — 2026-06-18 18:56
+
+**User:** running **flux2-klein-9b** died right after stage-2 text-encode with
+`UnicodeEncodeError: 'charmap' codec can't encode character '→'` — the worker's offload log
+line `"[offload] Moving text encoder → CPU, flow model → GPU"`.
+
+**Cause (orchestrator `runner.py`, affects ALL pipelines):** the worker spawn used
+`Popen(..., text=True)` with **no explicit encoding**, so on Windows the worker ENCODES its stdout
+as the console default **cp1252**, which can't represent `→` (or `★`, `≤`, …). Any worker that prints
+such a char crashes mid-run — flux2's two-phase offload line just happens to hit it on the klein-9b
+path. (The earlier `≤`→`<=` argparse-help fix only patched one string; this is the general cause.)
+
+**Fix:** at the spawn point — **`PYTHONIOENCODING=utf-8`** in the worker env (worker encodes stdout
+UTF-8 → represents all Unicode) **+ `encoding="utf-8", errors="replace"`** on the `Popen` (runner
+decodes the pipe as UTF-8, and a stray byte never fells the read loop). Both sides now agree; fixes
+**every** pipeline worker at once. **Orchestrator-only — no `src/pipeline/` worker code touched (no
+re-vendor).** 252 backend tests green. ⚠ A *manual* `python -m pipeline.flux2.run_pipeline` run
+outside the orchestrator would still need `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8` in the shell. **✅
+PUSHED `4a9961e`.**
+
+### flux2/multi: ideate marked all candidates failed — cp1252 stderr decode (regression of the above) — 2026-06-19
+
+**User:** a multi **ideate** job marked **all 6 candidates failed** even though every sub-run saved
+its image + printed `[done] Pipeline completed`. Persisted errors:
+`'charmap' codec can't decode byte 0x8f … <undefined>` (a `UnicodeDecodeError`).
+
+**Cause (regression of `4a9961e`):** that fix sets `PYTHONIOENCODING=utf-8` on workers, which the
+multi worker's **sub-runs inherit** (`stage_runner._build_env_for` = `os.environ.copy()`), so they
+now emit **UTF-8 stderr**. But `stage_runner._run_subprocess` captured that stderr with
+`subprocess.run(text=True)` and **no encoding** → cp1252 on Windows → raised on a UTF-8 byte `0x8f`.
+The exception propagated out of `invoke_*`, so `candidates.py` recorded every candidate **failed**
+(rc/output were actually fine; the image existed). The orchestrator↔worker pipe was already
+UTF-8-safe; the **worker↔sub-run** pipe wasn't.
+
+**Fix:** decode the captured stderr as `encoding="utf-8", errors="replace"` (matches the sub-runs'
+output + the orchestrator's own decode). `_run_subprocess` is the **only** subprocess capture in the
+multi pipeline → covers all candidates + clean/polish stages. **Monorepo-first (R162), re-vendored
+byte-identical** (drift test green). 257 backend tests. **✅ PUSHED `dec372b`.** ⚠ Rig re-run owed to
+confirm a real ideate now reports ok candidates.
+
+### identity: undetectable (stylized) anchor failed the whole expansion — 2026-06-19
+
+**User:** char02 Stage-B expansion hard-failed: `[batch-error] no face (det >= 0.5) found in the
+ANCHOR`. Inspected the anchor (512² in `loom/stubz001`): a **clear face**, but a stylized cyberpunk
+character (chrome/neon/3-quarter/dramatic light). Probed insightface directly — **SCRFD detects ZERO
+faces even at det 0.2** (it's a photoreal detector). Hard-failing the anchor killed the entire
+17-cell identity pass. ⭐ Limitation: inswapper/SCRFD can't anchor a heavily-stylized character
+(PuLID-class identity is the real answer, deferred to P5 Track B).
+
+**Fix (worker monorepo-first + re-vendored; observer/UI follow):**
+- Detector floor lowered to `_ANCHOR_DET_FLOOR=0.2` + a **lenient anchor retry** (catches borderline
+  0.2–0.5 stylized faces; per-TARGET detection still uses `min_det`, so no false swaps).
+- **Graceful degradation:** when the anchor face is still undetectable, **pass every image through
+  unchanged** (identity SKIPPED, clear warning, `meta.identity="anchor_no_face_passthrough"`) instead
+  of failing — the expansion dataset stays complete. (The 17 img2img cells already existed in the
+  parent job; only the identity overlay is skipped.)
+- **Verification guard:** a passthrough run locks nothing, so it must NOT verify the anchor (else
+  default-on identity arms a permanent no-op). The observer + the stage-b history scan now require
+  ≥1 output with `identity=="locked"` (shared `_identity_job_locked`); the frontend `anchorVerified`
+  matches. +1 test (passthrough doesn't verify). **258 backend tests**, build clean. **✅ PUSHED
+  `21f9b8e`.** ⚠ For a stylized character, identity-lock will passthrough (no-op) — use a more
+  photoreal anchor, or wait for P5 PuLID-class identity.
+
+---
+
+## Carried-forward P1 UI fixes (during P2) — the "UI-rewire pass"
+
+Bugs found in the P1 UI after P1 closed; fixed here since the journal is closed. (Not P2 milestones.)
+
+### Stale Stage-C ref tiles leak onto a new/imported character — 2026-06-14
+
+**User:** in `loom/stubz001/`, working on char001 in **Stage C (Curation)** then clicking
+**+Character** → char002 showed char001's ref tiles as broken-image placeholders; they cleared only
+after clicking through states/characters.
+
+**Cause (frontend-only, App.tsx):** `onCreateAsset` (and `onImportFile`) did a **partial** per-asset
+reset — set the new `activeAsset` + cleared `casting`/`selected`, but **never called
+`refreshCasting`** and **never reset `stage`**. So the previous asset's `refSet` (+ `rejected`,
+`promptTemplate`, `anchorInfo`, `versionList`) stayed in state and `stage` stayed `"C"`. Stage C
+synthesizes `durableRefCells` from `refSet`, each rendered via `refUrl(activeAsset.id,
+refItem.file)` — i.e. char001's filename under **char002's** id → 404 → placeholder. The exact
+"leak class the asset switch had" the code already names (App.tsx ~L651); `onSelectAsset` /
+`_switchToVersion` were fixed earlier, but the **create + import** paths were missed.
+
+**Fix:** route both create and import through the existing `onSelectAsset(newAsset)`, which does the
+full reset (stage→A, selection/bulk/filters/Stage-B controls cleared, `refreshCasting` rescopes
+casting/refSet/rejected/anchor/versions to the new id). Resetting `stage`→A alone already stops
+`durableRefCells` from rendering; `refreshCasting` then clears the stale set. Removed the now-unused
+thin `onSelectAssetReset` helper. **Frontend-only**, no backend/`src/pipeline/` touched; `tsc` +
+`vite build` clean (243 backend tests unaffected). **✅ PUSHED `a507c1f`.**
+
+### Single-pipeline cast ignored the advertised size default (1024² → 1280×720) — 2026-06-14
+
+**User:** in `loom/stubz001/`, A-Cast with **sd35** at the drawer's default **1024×1024** produced
+**1280×720** images. The displayed default must match what's generated (per-model defaults are fine,
+as long as they're marked accurately).
+
+**Cause (backend, `main.py` `/generate`):** `GenerateRequest.width/height` default to **1280×720**
+(the P0/Wan project default). The **multi** branch already strips that when unset so the catalog's
+native default applies (M6 review #2, `1c0ac06`), but the **single-pipeline `else` branch never
+did** — so an sd35/zimage cast that didn't explicitly set dims kept 1280×720 even though the drawer
+advertises the per-pipeline catalog default (sd35/zimage **1024²**, flux2 **1360×768**). The drawer
+was always accurate (it renders `param_default(pipeline,·)` as the field placeholder, per-pipeline,
+App.tsx ~L1452/L2674); only the backend ignored it. Note this is display-vs-reality, *not* a UI
+default change — the user explicitly accepts different per-model defaults.
+
+**Fix:** in the single-pipeline branch, mirror the multi fix — when `width`/`height` are unset
+(neither in `req.model_fields_set` nor the params channel), set them to
+`model_catalog.param_default(req.pipeline, dim)`. Explicit values (top-level or params channel)
+still win. **Backend-only**, no worker/`src/pipeline/` touched. +1 regression test
+(`test_single_pipeline_unset_size_uses_catalog_default_not_project_default`: sd35/zimage→1024²,
+flux2→1360×768; explicit top-level + params-channel dims still win). **244 backend tests** (243→+1),
+green. **✅ PUSHED `8d8dd95`.**
+
+---
+
+## zimage-base "15 min/image" — root-caused to the denoise floor; 768² default + torch.compile opt-in — 2026-06-29 22:15 CEDT
+
+Not a P2 trainer milestone — a performance/workflow fix on the casting side, run during P2.
+
+**The chase.** A `zimage-base` t2i at 1024² took many minutes on the 16 GB ROCm rig (gfx1201 / RX
+9070 XT, torch 2.9.1+rocm7.2.1). I spent hours blaming the **VAE decode** (shipped `MIOPEN_FIND_MODE=2`,
+GPU-freed decode, full-frame, a `--cpu-vae` path) — all wrong. **The user caught it:** *"I don't think
+it's the VAE… I think it is the denoising, the 8.23 it/s is misleading."* Correct.
+
+**Root cause = the transformer denoise, and it's a hardware floor.** HIP kernels enqueue
+**asynchronously**; tqdm bars and `callback_on_step_end` fire on host-enqueue, not GPU-compute. The
+probe timed phases **without `torch.cuda.synchronize()`**, so ~700 s of denoise compute drained at the
+next forced sync (inside `vae.decode`) and was misread as "decode = 888 s". One `synchronize()` per
+timestamp fixed the measurement. Synced truth @1024²: **base encode+denoise = 705 s, decode = 2.5 s**;
+turbo 38 s / 2.2 s. The VAE is innocent. The base↔turbo gap is purely denoise (50 steps × CFG ≈ 100
+forwards vs turbo's 9, no CFG).
+
+**Every kernel lever is exhausted** (on-rig sweeps, `scratchpad/zimage_denoise_sweep.py`):
+- Not GTT paging — peak alloc ~12.6 GB, ~15.5 GB free at every resolution.
+- **AOTriton SDPA (the diffusers default) is the FASTEST attention backend** @1024²: default **10.3
+  s/step**; `_native_efficient` 11.9, `_native_flash` 14.5, `native` 14.9, `_native_math` 43.4 (21 GB),
+  `flex` 78.8 (24.7 GB). No swap helps.
+- **`aiter` is DEAD on Windows** — the pip pkg (`0.13.*`) is a pure-python **stub**: no compiled
+  kernels, no `flash_attn_func`; diffusers falls back to native. (User installed it; confirmed hollow.)
+- **`torch.compile` ≈ 10% only** (`compile_repeated_blocks`: 10.3 → 9.1 s/step), capped because
+  ZImage's 3D RoPE uses **complex arithmetic TorchInductor can't codegen** (graph-breaks to eager).
+- ~10 s/step ≈ **27 % MFU** for a 6B CFG forward — a typical Windows-ROCm ceiling, not a config bug.
+
+So the real win is **workflow**: spend fewer tokens (resolution) / fewer steps. 768² ≈ 3× faster/step
+than 1024² (~165 s vs ~500 s for 50 steps); 512² ≈ 7×.
+
+**KB corrected.** `.github/copilot/kb-zimage.md`'s chapter previously claimed *"the VAE decode is the
+bottleneck"* — rewrote it ("Z-Image-Base Slow at 1024² — the Transformer Denoise Floor") with the
+synced measurements, the async-timing lesson, the backend sweep, aiter-dead, compile-marginal, and the
+resolution table. Demoted `MIOPEN_FIND_MODE=2` from "the fix" to "kept (helps the conv workers + cold
+MIOpen find), but it did NOT fix zimage-base." Also fixed the now-contradicted "use native_flash"
+advice earlier in the file (AOTriton-default is fastest; leave it unset). *(Monorepo doc — per the
+user, loom is authoritative, but this is their working zimage KB so the correction belongs there.)*
+
+**Wire #1 — zimage-BASE defaults to 768²** (the user's call). Added `width/height: 768` to the
+`zimage-base` variant `defaults` in `model_catalog.py` — the same `model_size_default()` mechanism
+M0e gave `flux.2-dev` (512²). An UNSET base cast now resolves to 768² (`/generate` main.py:942 +
+drawer placeholder main.py:1593 both read it); explicit dims still win; **turbo keeps 1024²**.
+Extended `test_model_size_default_dev_is_512_others_none` to assert base→(768,768).
+
+**Wire #2 — optional `torch.compile`** (ROCm-gated opt-in). New catalog `compile` flag → adapter
+`WIRED_PARAMS` → worker `--compile`. `stage1_load_pipeline._compile_transformer()` runs AFTER offload
+(they coexist), prefers `compile_repeated_blocks(fullgraph=False)`, sets a **persistent
+`TORCHINDUCTOR_CACHE_DIR`** (derived from `HF_HOME`'s parent → on F:) so the ~60 s compile amortises
+across worker processes, and degrades to eager if inductor/triton is missing (never raises). Threaded
+through `run()` (single), `run_jobs` (batch, added to `_BATCH_SHARED_ONLY` — load-bound), and the
+`--serve` warm path; provenance lands in the load-stage manifest. Best for **fixed-size batches**
+(recompiles per shape).
+
+**Vendoring + tests.** Both loom zimage copies (flat + `multistack/`) edited identically (synced via
+copy, verified byte-identical); the `run_pipeline.py` drift-guard target in the monorepo
+(`src/pipeline/zimage/`) re-vendored so `test_vendored_workers_match_monorepo_source` stays green
+(stage1 is not guarded but synced too, so the monorepo worker stays runnable). **351 orchestrator
+tests green**; all edited files `py_compile`-clean; `emit_argv`/size-default round-trip verified.
+**✅ PUSHED `11fa6d8`** (loom main, `1c8e1f5..11fa6d8`). *(Monorepo working tree carries the matching
+KB-correction + re-vendored worker, left uncommitted per "ignore the monorepo".)*
+
+**Known wrinkle (not changed):** the `--serve` `_load` comment (`run_pipeline.py` ~L506) still cites
+"denoise was ~16 s" as the reason zimage runs resident in the warm path — that figure is an
+async-blind-era misreading. The resident-default decision may still be right (offload adds real
+shuffle overhead), but the rationale's number is stale; revisit if the warm-path cost is ever
+re-profiled.
+
+---
+
+## M2.8 — MVP-close review + robustness remediations (spec §12 "M2.8"; 2026-07-04)
+
+started: 2026-07-04 ~09:00 (review); finished: 2026-07-04 13:20 (remediations + tests green)
+
+**Part 1 — the review (docs + code).** Full docs-vs-code + core review at the MVP close, before M3
+(scope + verdict in spec §12 "M2.8"): verification gates green at HEAD `f35fc5b` (**351 tests** /
+tsc+vite / cargo), `.docs/` spec+journal verified CURRENT, **foundation sound — no refactor**. Two
+doc drifts fixed same day: **README** (broken `../../.github/copilot/kb-loom-*` links → `.docs/`;
+layout tree missing postproc/training/flux2_prompt/krea2/trainers + 3-of-13 adapters; status block
+ended at "next M2") and the stale **`/version.token_required`** list (+11 newer token-gated
+endpoints). Seven small robustness findings recorded as spec §12 "M2.8" #1–#7.
+
+**Part 2 — the remediations (all 7, same day; spec "M2.8 remediations" carries the designs + the
+three implementation deviations).** Author started the pass (#4 snapshot scans + #6 lineup-max VRAM
+admission landed first); the rest implemented on review:
+- **#1** `runner._drop_warm()` — the two abandoned-warm-worker paths (stdin-write failure,
+  died-without-result) now REAP the proc (terminate if alive → `wait()`; plain kill, no tree-walk —
+  serve workers are single-process) instead of bare-dropping the refs; **`_warm_cancel_job`** = a
+  per-resident-worker kill Job Object registered per-cell in `_cancel_jobs`, so cancel of a warm
+  cell gets the atomic `TerminateJobObject` tree-kill (closed only by `_evict_warm`/`_drop_warm`,
+  never at cell finalize).
+- **#2** the postproc queue endpoint UNWINDS on a mark-queued failure (concurrent step delete):
+  `cancel` + `delete` the just-submitted job before the 409 — no orphan job outside its stack.
+  *(Deviation: unwind instead of the proposed cross-module critical section.)*
+- **#3** store locks — `postproc._STORE_LOCK` (decorator on the 5 mutators), `training._STAGED_LOCK`
+  (stage/delete/queue store ops), `assets._VERSION_LOCK` (ONE module RLock on all 16 record
+  mutators; deviation from per-asset locks). Kills the API-thread ↔ observer-thread lost-update race.
+- **#5** `training.queue_staged` = **claim-then-restore** (pop+persist BEFORE submit → no
+  double-queue; submit failure restores the record); `assets.resolve_version_dir`/`write_version`
+  public helpers replace the `# noqa: SLF001` private reaches; + fixed a latent unknown-asset
+  `TypeError`→500 in `_version_dir_for`.
+- **#7** style provenance — `bible.resolve_l1` returns the **resolved** style id (4-tuple); Stage-B
+  stamps `style_id` on every cell `meta` (flux2-warm + sd35/zimage-warm + cold branches);
+  `_submit_chained` carries it through chained passes; `keep_ref` stores it (`version.schema` +
+  `RefItem`/`OutputMeta` TS types extended); `training_context.json` refs include it. ⚠ Advisory
+  gap: sketch-harvest frames carry no style_id (the ltxv parent has no per-output meta).
+
+**Tests (+5 → 356):** warm die-test now asserts the reap (+ `_procs`/`_cancel_jobs` cleanup);
+postproc queue-unwind (409 leaves the job table unchanged) + a 2-thread store hammer (40/40 stacks);
+`queue_staged` submit-failure restore (+ re-queue succeeds); cast admission gates on a too-heavy
+lineup member (422, nothing queued); curated refs + training_context carry `style_id` (stage-b
+cell-meta assert added to the zimage warm-cells test). **356 backend green; `tsc` + `vite build`
+clean.** No `src/pipeline/` worker code touched → no re-vendor. **✅ PUSHED `780c33d`** (this
+hash-recording line rides the follow-up journal commit, per convention).
+
+---
+
+## M2.9 — Phase A close-out (spec §12 "M2.9"; 2026-07-04)
+
+started: 2026-07-04 13:40
+
+**Author call:** finish Phase A's owed items before opening Phase B/M3; gathered as **M2.9 a–d**
+(spec §12 "M2.9" — added same day, with the Phase-A list entry 3e + the P2-10 WBS row re-pointed
+`M2 (build) → M2.9b (rig smoke)`).
+
+**a — Train panel (Stage D) ✅ BUILT.** The M2-owed `[Train LoRA]` surface, as a **dedicated
+component** `app/src/TrainPanel.tsx` (monolith policy — App.tsx only mounts it): the bootstrap strip
+gains a **`D · Train`** tab (stage state `"A"|"B"|"C"` → `+"D"`; Stage D shows the panel, not an
+image grid). Panel = R118 surfaced literally: **⚙ Stage** (trigger token + steps; disabled without
+curated refs / on a finalized version) → **STAGED** rows (trigger, caption count, steps, ctx digest;
+**▶ Add to queue** = the explicit first-GPU-moment transition; **✕** delete) → this version's
+**trainer jobs** (status/progress/note from the normal `/jobs` poll, ✕ cancel; "promote is M6" note).
+`orchestrator.ts`: `StagedTraining` type + `getStagedTraining`/`stageZimageLora`/
+`queueStagedTraining`/`deleteStagedTraining`; new `.train-*` CSS block. ⚠ Visual sign-off owed.
+
+**b — P2-10 queued resume smoke 🟡 PREPPED (GPU run = author's go, R141 no-surprise-GPU).**
+Located + verified the M1 isolated dependency overlay on the rig:
+`F:\source\repos\stubz-002-tripo-sf\.tmp\ai-toolkit-deps` (peft present; torchao/bitsandbytes
+disabled shims intact). ⚙ New rig-level config default **`LOOM_TRAINER_OVERLAY`**
+(`config.trainer_overlay`, central loader env>`.env.local`>`.env`) — `training.stage_zimage_lora`
+falls back to it when the request carries no `runtime_overlay` (explicit wins), so the Train panel
+needs no path field; README env table documents it. Full procedure + acceptance in spec §12 "M2.9b"
+(steps 60 / save_every 50 ⇒ one mid-run checkpoint; BOTH kill modes — graceful + crash — must
+reload `queued`+paused "recovered (resumable)" and resume **from step 50, not 0**).
+
+**c — Turbo-LoRA weight gate ✅ BUILT** (the M2.6 owed item #4). `models.json`
+`postproc.flux2_turbo_lora`: single-`filename` entry (`Comfy-Org/flux2-dev` ·
+`split_files/loras/Flux2TurboComfyv2.safetensors`, ~2.6 GB — NEVER a snapshot: the repo also hosts
+the 34 GB transformer + TEs); `/generate` + `stage_b` **412** when the request arms `turbo` and the
+file isn't cached, hint `POST /components/fetch?postproc=flux2_turbo_lora` (generic single-file
+fetch). Drift-guarded: a test imports the vendored `pipeline.flux2.scaled_fp8` and asserts the
+entry mirrors `COMFY_FLUX2_REPO`+`TURBO_LORA_FILE` exactly.
+
+**d — consolidated on-rig sign-off checklist (author-owned, non-blocking)** — spec §12 "M2.9d":
+M2.5 dev smoke · M2.6 turbo quality/speed · M2.7 warm-sweep pause/flat-per-cell/Cast streaming ·
+M0d/M0e + styles-Pass-2 visuals · (separate, carried from P1: the formal A–H stamp).
+
+**Tests (+4 → 360):** turbo 412 on stage-b AND /generate (present → passes; no `turbo` → gate never
+consulted); the models.json↔worker drift guard; `LOOM_TRAINER_OVERLAY` default (env picked up,
+explicit request wins). Suite green; `tsc` + `vite build` clean. **✅ PUSHED `3e9dfbd`** (a+c+d +
+b-prep; this hash line rides the follow-up journal commit). ⏭ **M2.9 closes** when the author (1)
+runs/greenlights the **P2-10 rig smoke** (§12 "M2.9b" procedure) and (2) eyeballs the Stage-D panel
+(visual sign-off). The d-checklist items stay on the author's ledger, non-blocking. Then: **Phase B
+/ M3 template captioning.**
+
+**Addendum — author review nits (2026-07-04 16:46, ✅ PUSHED `c922d0e`).** The author reviewed the
+M2.9 slice and filed 6 non-blocking observations; 4 applied, 2 deferred by the author's own call:
+
+- **Applied:** #2 the Train-panel steps input clamps to the backend bound 1–10000 (on blur + at
+  submit — what's shown is what's sent); #4 `batch_id` derives via
+  `staged_id.removeprefix("stg_")` (no longer assumes the `_`-split shape of `new_id`); #5 an
+  explicit `DELETE /training/staged/{id}` test (200 → durably gone on re-fetch → 404 on repeat)
+  closes the stage/queue/delete triangle; #6 TrainPanel `busy` is per-action (`"stage"` | the
+  staged id) so an in-flight queue no longer disables every other row's buttons.
+- **Deferred (recorded, not owed):** #1 a `?version_id=` server-side filter on
+  `GET /training/staged` — the panel filters client-side, moot at single-user scale, revisit only
+  if staged records ever grow; #3 `stage_zimage_lora` writes `version.json` before the staged
+  record persists — idempotent on re-stage, no data loss, strict ordering not worth the
+  complexity now.
+
+Tests +1 → **361 green**; `tsc` + `vite build` clean. M2.9 close conditions unchanged (P2-10 rig
+smoke + Stage-D visual sign-off).
+
+## flux2 i2i dtype fix — user-found rig crash (2026-07-04 17:19, ✅ PUSHED `246f42f`)
+
+**Symptom:** a stacked **Clean** postproc step in `loom/stubz001` (flux2 i2i) crashed at
+`ae.encode(img_tensor)` → `encoder.conv_in`: *"Input type (c10::BFloat16) and bias type (float)
+should be the same"*.
+
+**Root cause — an M0d↔M2.5 dtype collision.** `run_img2img` (M0d Part C-i2i) cast the init image
+to **bf16**, correct against the gated BFL VAE it was written for. M2.5's gated-repo elimination
+re-pointed the VAE to Comfy's `flux2-vae.safetensors`, **deliberately float32** (the policy
+comment sits at the `load_comfy_vae` call: fp32 required for ref/i2i encode; bf16-latent *decode*
+is fine via promotion in `inv_normalize`). t2i and multi-ref were adapted (BFL's
+`encode_image_refs` feeds fp32 and casts only the resulting *tokens* to bf16) — the single-image
+i2i path kept its bf16 cast, and flux2-i2i had not run on the rig since the swap (it sat on the
+owed flux2-rig-E2E ledger). This stacked Clean job was its first real execution.
+
+**Fix (2 lines, mirrors the proven ref path):** encode input →
+`dtype=next(ae.parameters()).dtype` (robust if the VAE dtype ever changes); latents →
+`ae.encode(...).to(torch.bfloat16)` for the bf16 flow model (fp32 latents would trip its matmuls
+one call later).
+
+**Sync + guards:** `stage3_denoise.py` turned out to be the **only** drifted flux2 worker file —
+its M2.5 NaN-guard edits had missed the monorepo parent sync. Parent re-synced from the vendored
+copy (md5 match; disk-only — the monorepo is not a git repo), the file added to the R162 md5
+drift guard (`test_batch_worker.py`), and an i2i dtype-contract test added
+(`test_flux2_dev_quantized.py`: encode input follows the AE's dtype, latents leave as bf16, the
+bf16 image cast is gone). Tests +2 → **363 green**. ⏭ The re-run of the stacked Clean job on the
+rig doubles as the owed flux2-i2i E2E check. **→ Clean jobs confirmed working on the rig by the
+author (2026-07-04) — the flux2-i2i E2E check is now DONE.**
+
+## flux2 expansion probe — `[flux2-probe]` (2026-07-04 18:11, ✅ PUSHED `a448579`)
+
+**Symptom (author):** a flux2 Stage-B expansion "even with the turbo on" produced no first image
+after ~10 min (process shut down). Author asked for the zimage-base treatment: instrument the
+worker so the next run *records* where the time goes, instead of theorizing.
+
+**What landed — probe lines in the warm `--serve` worker** (the path every flux2 expansion takes;
+`_ServeGenerator` in `run_pipeline.py`), carrying the zimage probe's hard-won rule: HIP is async,
+so every boundary calls `torch.cuda.synchronize()` first or the time lands on the wrong phase.
+Output streams into the cell job's `log_tail` (Inspector) like any worker line:
+
+- `[flux2-probe] warmup stage1=…s {per-model load timings} ref_encode=…s (n_refs/ref_tokens)
+  te_free+flow_to_gpu=…s | model=… cpu_offload=… turbo=… | MIOPEN_FIND_MODE=… free_vram=…` —
+  once per sweep; splits disk load vs ref encode vs the one-time flow-model→GPU migration.
+- `[flux2-probe] denoise begin steps=… img_tokens=… ref_tokens=… W×H free_vram=…` — flushed
+  BEFORE the denoise, so even a killed sweep shows how far it got + how big the sequence was.
+- `[flux2-probe] cell text_encode=…s denoise=…s (N steps, …s/step) decode+save=…s total=…s |
+  free_vram=…` — per cell.
+
+**Two findings recorded en route (the probe surfaces both honestly):**
+1. **Klein ignores `turbo`.** `stage1_load_models.run` only applies the Turbo LoRA on the
+   quantized-dev branch; a Klein request accepts-and-drops the flag (the LoRA is dev-trained).
+   The probe prints `turbo=on(IGNORED — <model> has no turbo path)` so "turbo on" can't imply a
+   speedup that never happened. If the author's sweep ran a Klein variant, turbo did nothing.
+2. **klein-9b oversubscribes the card.** The serve loader parks the WHOLE flow model on the GPU;
+   klein-9b is ~18 GB bf16 on a 16 GB card → ROCm HMM pages it every step (the "fits in 16 GB
+   fully resident" comment is klein-4b-sized). Hypothesis, not yet measured — the probe's
+   `free_vram≈0` + s/step on the re-run will confirm or clear it.
+
+**Read guide for the re-run:** big `stage1`/`flow_to_gpu` = load/migration (one-time, per sweep);
+`denoise begin` printed but no `cell` line for minutes = the denoise itself (check s/step,
+img+ref token counts, free_vram≈0 → paging); huge first-cell `decode+save` with
+`MIOPEN_FIND_MODE=(unset)` = the conv-solver regression back from the dead.
+
+R162: parent re-synced (md5 match) + `flux2/run_pipeline.py` added to the drift guard. Tests +1
+→ **364 green**. ⏭ Author re-runs the expansion (a FEW cells suffice) and reads the first cell's
+log tail; next action follows the numbers.
+
+**→ Probe read on the author's live dev-turbo sweep (same day, ~16:20Z, `loom/stubz001`):**
+warmup ≈ **130 s one-time** (TE load 34.4 s · turbo LoRA 3.6 s · ref encode 14.5 s ·
+**flow→GPU 76.3 s**); `turbo=on(applied)`, `MIOPEN_FIND_MODE=2` — config suspects cleared.
+**Bottleneck measured: VRAM oversubscription** — `free_vram=0.00GB` at denoise begin (fp8 dev
+transformer ~18 GB > 16 GB card → HMM re-streams weights per step; real denoise ≥20 s/step while
+the async tqdm bar "finished 8 steps in 1.4 s" — the exact illusion the probe was built for).
+Sequence: img 1024 + **ref 4096 tokens** (the 1024² hero ref at flux2's 1-token-per-16px rate —
+the BFL ~2K² single-ref limit is a ceiling, not an upscale → 80 % of the attention sequence).
+Candidate lever if steady-state s/step stays paging-bound: cap the Stage-B ref encode at ≤1024².
+
+**→ RESOLVED (author, same day): dev-turbo at `num_steps=4` ≈ 100 s/warm-cell** (steady state,
+512² ref sweep; first cell still pays the ~130 s warmup) — right on the probe arithmetic
+(4 × ~25 s/step paging floor) and close enough to klein-9b's ~80 s that the author accepted it
+as the **dev expansion operating point**. The ~500 s baseline was 8 steps + first-cell warmup.
+De-facto evidence toward the M2.9d "M2.6 turbo quality/speed" checklist item (author's call to
+stamp it). **Parked, available on request:** the ≤1024² Stage-B ref-encode cap (4096→1024 ref
+tokens; a modest further cut while weight-paging dominates, bigger win on klein ref sweeps). **Also settled (author question): AOTriton vs the locally
+compiled flash-attention (editable `flash_attn` 2.8.4 → `F:\…\flash-attention\`) do NOT clash** —
+AOTriton ships inside the torch ROCm wheel behind `F.scaled_dot_product_attention` (the
+UserWarning is aten picking its good path); the local flash_attn build only runs if explicitly
+imported/selected and NOTHING in the flux2 worker (BFL lib = pure SDPA; Mistral TE = transformers
+sdpa path; pipelines carry no `import flash_attn`) loads it — dormant, no symbol/DLL overlap.
+
+## UI: bootstrap stage switch → titlebar (2026-07-04 18:40, ✅ PUSHED `8e5fdf0`)
+
+Author-reported cramming: the **Cast/Expand/Curate/Train** (A–D) strip had wrapped under the
+character name + versioning controls in the `stage-ctx` bar. Moved into the **header** next to
+the project name (stable space), rendered **only in L2 · Assets with a character selected**
+(per-asset stages; Sandbox/L1 World never show it). The stage-ctx bar keeps name · version
+selector · +version · finalize/unlock · Export. No CSS changes (`.titlebar` flex + inline-flex
+`.stage-switch` compose as-is). `tsc` + `vite build` clean; backend untouched.
+
+## NaN-black cell: guard + per-cell ↻ re-run (2026-07-04 21:59, ✅ PUSHED `cb022a1`)
+
+**Symptom (author):** warm dev-turbo@4 expansion cell `job_426c7a02` (of the 17-prompt set;
+"three quarter right · face closeup · smile") produced a **100 % black PNG** — pixel-verified
+all-zero — while reporting `ok=True` (probe: healthy 20.9 s/step, decode 1.5 s). Siblings: 7/8
+done cells fine → NOT a config break; one prompt×seed numerically blew up (4-step turbo runs
+nearer the bf16 edge than 8-step; the failure class M2.5 met on dev).
+
+**Root defect = silent success.** M2.5's `_ensure_finite_latents` guard covered only the
+single-run t2i/i2i paths; the **warm serve loop** and the **cold batch loop** decoded NaN
+latents without checking (NaN→0 → black tile, one careless ✓ from a training ref set). Both
+paths now run the guard before decode → the cell/item **fails loudly** with the latent stats.
+No auto-retry (M2.7 policy: a failed cell just fails). Parent re-synced, md5 match.
+
+**Recovery = `POST /jobs/{id}/rerun`** (the author's ask: a sweep cell can't be re-created from
+the recipe bar — the prompt set is generated; only the JOB record holds the cell's exact
+prompt + coverage cell). Clones a TERMINAL (done/failed/canceled) job into a new queue entry —
+same params/batch/stage/warm_group/coverage_cell, `meta.rerun_of` provenance — with
+**catalog-validated overrides** via the existing `validate_params` channel (seed / num_steps /
+guidance / any catalog knob; 422 on unknown keys). Mirrors the /generate turbo-412 + disk-507
+gates; trainer jobs excluded (Stage-D staged records are their re-queue path). Token-gated,
+`token_required` updated. **UI:** `RerunPanel.tsx` (dedicated component, monolith policy) in
+the Inspector on any terminal generation — seed/steps/guidance prefilled from the job's own
+param aliases (`num_steps` vs `num_inference_steps` vs `steps` etc.), blank = keep; the fresh
+tile streams into the same grid. The still-`done` black tile from today is directly
+re-runnable this way (bump the seed), then 🗑 the black one.
+
+**Tests +3 → 367 green** (rerun clone/overrides/provenance; 409/404/422 refusals; serve+batch
+guard source-contract), `tsc` + `vite build` clean.
+
+## M2.10 — expansion style fidelity: the reference owns the style (2026-07-04 22:52, ✅ PUSHED `6f50f20`)
+
+**Problem (author):** flux2-dev expansion has great prompt adherence but infuses sd35-cast
+sweeps with the dev house style — it follows the restated L1 style *text* more coherently than
+the hero image that already embodies it. Full problem/findings/remediations recorded in **spec
+§12 "M2.10"**; investigation was web research (route 1 = flux2 JSON/ref prompting, route 2 =
+sd35/zimage prompting + refine pass).
+
+**Key finding:** FLUX.2 reference conditioning is **role assignment via text** — the model takes
+from a reference exactly what the prompt assigns to it and takes everything unassigned
+(especially style) from the text (BFL: *"describe how each input should be used"*; *"Apply the
+style of image 1 to the entire new scene"*; community "style blend/flip" + *"keep everything
+else unchanged"* anti-drift suffix; guidance ~2–3 moderates the imposed look vs 4).
+
+**Implemented (route 1, author go):** flux2 Stage-B **drops the L1 style text** from cell
+prompts (the hero already embodies it — restating it handed dev the style authority) and
+substitutes at the recipe slots: subject clause += `flux2_prompt.REF_PRESERVE_CLAUSE` (identity
+pinned to the reference), style slot = `REF_STYLE_DIRECTIVE` (assigns the reference's art
+style/palette/rendering + "keep everything else unchanged"). Covers labeled (klein) AND JSON
+(dev) forms; `style_sid` provenance (M2.8 #7) still stamps every cell — the intended style now
+arrives *via* the hero. Non-flux2 expansion keeps the L1 text (zimage/sd35 i2i re-diffuse the
+styled source). **Dev default guidance 4.0 → 3.0** ("make it 3 for now") in the catalog variant
+defaults + Dev/JSON sampling preset + vendored worker `FLUX2_MODEL_INFO` (BFL-lib mirror is
+intentionally ahead of the stale monorepo copy — unchanged practice). **Parked:** route 3
+"StyleLock" chained post-pass (sd35/zimage i2i @ ~0.3 + L1 text applied there), Klein KV-edit
+expansion mode, ≤1024² ref-encode cap.
+
+**Sources:** [BFL prompting guide](https://docs.bfl.ml/guides/prompting_guide_flux2) ·
+[BFL image editing](https://docs.bfl.ml/flux_2/flux2_image_editing) ·
+[andreaskuhr Flux.2 guide](https://andreaskuhr.com/en/the-flux2-guide.html) ·
+[fal FLUX.2 prompt guide](https://fal.ai/learn/devs/flux-2-prompt-guide) ·
+[Apatero Klein i2i](https://www.apatero.com/blog/flux-2-klein-image-editing-guide) ·
+[RunComfy Klein KV edit](https://www.runcomfy.com/comfyui-workflows/flux-2-klein-9b-kv-image-edit-in-comfyui-precision-prompt-editing) ·
+[SD3.5 guide (MonAI)](https://wiki.monai.art/en/tutorials/prompting_SD3-5) ·
+[Stability SD3.5 via Civitai](https://civitai.com/articles/8846/stabilityai-has-released-an-sd35-prompting-guide) ·
+[Z-Image official prompting guide](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/discussions/8).
+
+**Tests +1 → 368 green** (stage-b dry-run contract: flux2 prompt carries the ref directives and
+NOT the L1 text, zimage still does; dev guidance mirrors catalog=preset=worker at 3.0).
+⏭ Author eyeballs the next dev sweep for style fidelity; if still drifty, route 3 (StyleLock
+post-pass) is the next lever.
+
+**Addendum — early rig validation + toggle UX (2026-07-04 23:10, ✅ PUSHED `b75d86f`).**
+Author reports the first reduced-guidance dev expansion is "already producing much better
+images" — route 1 validating on the rig. UX follow-up (author): a ticked-but-bypassed global
+style toggle read as confusing → **Stage-B now has its own "L1 style" checkbox, default OFF for
+every expansion run** (`styleOnB`, independent of the cast bar's global `applyStyle`). Rationale:
+the hero already carries the style on EVERY expansion path (flux2 assigns the reference's style;
+zimage/sd35 i2i re-diffuse the styled source). Trade recorded honestly: with the toggle off,
+`style_sid` resolves None → kept refs stamp `style_id: null` (truthful — no L1 text applied);
+ticking it back on restores the provenance stamp (flux2 still substitutes the ref directives for
+the text, unconditionally). `tsc` + `vite build` clean; backend untouched.
+
+**Addendum 2 — route 3 "StyleLock" built as an ON-DEMAND preset (2026-07-05 00:34, ✅ PUSHED
+`e951f4b`).** Author call: not auto-chained — an optional step on the M0c Inspector postproc
+stack. `_PP_PRESETS["stylelock"]` = i2i (zimage|sd35, default sd35 @ 0.3, variable strength);
+at queue time the step's prompt = the source's own prompt + the **L1 fragment resolved fresh**
+(`style_id` step param pins one, else the active style; 409 when none resolves) — the pass's
+backend owns the look, so the text pulls TOWARD the source/L1 style. flux2 backend → 422 (the
+drift source the pass corrects; also hidden in the panel's picker for this preset). Store
+schema enum + request `Literal` + `PostprocStep` TS type extended; panel option "StyleLock 🎨
+(i2i 0.3)". Tests +1 → **369 green** (422/defaults/pin-style/fresh-append/strength-rides);
+`tsc` + `vite build` clean. Spec §12 "M2.10" remediations updated (route 3 parked → built).
+
+**Addendum 3 — one stage-aware apply toggle (2026-07-05 00:35, ✅ PUSHED `c44144c`).** Author
+2nd-pass UX: the new Stage-B "L1 style" checkbox DUPLICATED the bottom L1 bar's "apply". Back to
+one toggle, in the bottom bar, now stage-aware: **A·Cast** binds the global `applyStyle`
+(default ON, Save persists it as before); **B·Expansion** binds `styleOnB` (default OFF — the
+hero already carries the style). The Stage-B bar checkbox is gone; tooltips explain per stage.
+`tsc` + `vite build` clean; backend untouched.
+
+**Addendum 4 — StyleLock target pulldown (2026-07-05 00:40, ✅ PUSHED `74f404b`).** Author ask:
+show WHICH L1 style the pass pushes toward. When StyleLock is the selected preset, the add-step
+row gains a pulldown of all L1 styles — "(active style)" resolves the current default fresh at
+queue time; picking one pins it on the step (`params.style_id`, already server-supported).
+`tsc` + `vite build` clean; backend untouched.
+
+## M2.11 — expansion cell picker + generated pose icons (started 2026-07-05 01:06, finished 01:23, ✅ PUSHED `dfd6cee`)
+
+**Ask (author):** generate *individual* images from an expansion pose recipe — an openable
+param-style window with every pose of the selected recipe as a small icon, multi-select, fire
+only those. Icons: **generated with the pipeline** (author call, over the SVG-pictogram
+proposal) — flux2-dev advanced prompting on a neutral subject, configured from a 4th L1 tab.
+
+**Built (design + status in spec §12 "M2.11"):**
+- **Subset firing:** `StageBRequest.cells` = indices into the ALWAYS-fully-built recipe (same
+  seed rule → a subset cell is **byte-identical** to that cell in a full sweep, so incremental
+  sweeps + single-pose re-rolls stay dataset-coherent). Empty/out-of-range → 422; dry-run
+  reports the subset (`first_cell` = first *selected*).
+- **Pose icons (the L1-styles sample pattern, pose-keyed):** `bible.pose_key` =
+  `shot__angle__expression` (background is sweep noise, not pose identity — recipes sharing a
+  pose share its icon); durable copies in `bible/poses/<key>.<ext>`; `GET /bible/poses`
+  (index-aligned with Stage-B), `POST /bible/poses/generate` (dedup by key; one **256² flux2
+  t2i** per missing pose — M0d directive prompts, JSON on dev, neutral mannequin subject
+  default, NO L1 style/refs, ONE shared warm_group; weight/turbo/disk gates),
+  `POST /bible/poses/{key}/icon` + `GET …/file` (client closes the loop on job completion,
+  like style samples). `token_required` += the two POSTs.
+- **UI (`PosePicker.tsx`, dedicated file):** `PosesPanel` on the new **L1 · 🕴 Poses** rail tab
+  (preset + subject + turbo, ⚙ Generate missing / ↻ All, live n/N fill via a 3 s job poll) and
+  `CellPicker` on the Stage-B bar's **`▦ cells`** button (icon/text-chip tiles, click-toggle,
+  all/none, count badge on the button, selection resets on preset change, empty-subset guard).
+
+Side benefit recorded in the spec: a wrong-looking icon = a directive bug caught at 256² cost.
+**Tests +4 → 373 green** (subset contract incl. real submit of exactly cell N; index-aligned
+listing; dedup/256²/JSON/meta-key/single-warm-group; durable set→serve→skip-on-regenerate),
+`tsc` + `vite build` clean. ⏭ Author: generate an icon set on the rig + fire one subset sweep
+(= the M2.11 visual sign-off).
+
+## R170 amended — GraphRAG index deferral LIFTED (author, 2026-07-05 01:44, ✅ PUSHED `0c800e1`)
+
+**Author decision:** the R170 rule that kept the **persistent GraphRAG/retrieval index build**
+out of scope (post-v1/P6) is removed — the index may now be built as soon as it is useful. The
+author's edit deleted the R170 row from `kb-storyboard01.md`; per the decision-record's own
+convention (amend, never hole the numbering — ~20 cross-refs cite R170, incl. the round-28
+index), the row was **restored as amended**: GraphRAG-style posture unchanged (typed facts +
+stable IDs + graph/vector retrieval; P2/P4 keep writing graph-ready artifacts), **deferral
+lifted**, **P6 = backstop home**, still must never block LoRA training or alpha.
+
+**Consistency sweep (12 sites, forward-looking spec text only — journal history untouched):**
+`kb-storyboard01.md` (amended R170 row · R138 + R145 rows · P6 phase-table cell · project-tree
+`graph_index/` comment), `kb-loom-p4.md` (§13.3 body · §19 R170 row · §20 summary — P4's own
+plan unchanged: it makes the index cheap, doesn't build it), `kb-loom-p6.md` (deferred-work
+table cell · §6 body · R138 + R170 rows — P6 keeps the deliverable as backstop). `kb-loom-p2.md`
+parent line ("R1–R170") stays valid; the P2 pre-M1 "resist pulling GraphRAG into P2" journal
+guidance stays as history. No scope was re-planned: no phase was ASSIGNED the index build — the
+gate is simply open (that scheduling call is the author's, when wanted).
+
+**→ Scheduled (author, same session, 2026-07-05 01:49): SPIKE in P2, IMPLEMENTATION in P4
+alongside the embedding model (R137).** Second sweep (15 sites across
+`kb-storyboard01.md`/`kb-loom-p4.md`/`kb-loom-p6.md`): the R170 row now names the assignment;
+R138/R145 + both phase-table cells + the `graph_index/` tree comment re-pointed; P4 §13.3 is
+now "GraphRAG in P4" (milestone placement decided when P4 opens); P6's deliverable row/section
+marked MOVED OUT (its §6 stack description stays as P4's reference). New P2 spec entry
+**3h. "M2.12 — GraphRAG retrieval-index SPIKE"**: a small local graph/vector index over P2's
+graph-ready artifacts (lineage, bible styles/poses, ref_set coverage/style ids,
+training_context) answering relational queries; **non-gating** (R170: never blocks the
+done-line or training); sequencing at the author's call — naturally after M4 readiness, whose
+queries it overlaps.
+
+## M2.11 addendum — per-icon ↻ re-run + 🗑 delete (2026-07-05 16:11, ✅ PUSHED `9311902`)
+
+**Author (on-rig):** batch icon runs each missed a few cells, and filling the gaps with more
+batches left ODD characters mixed into the set (each batch renders its own mannequin
+interpretation). Fix = per-icon control:
+
+- **`GeneratePoseIconsRequest.keys`** — generate exactly these pose keys; regeneration is
+  implied for them (the skip-existing rule doesn't apply); unknown keys 422. **Seed nuance:**
+  batch runs use the fixed set-seed (7) for consistency, so a same-seed re-run would reproduce
+  the same odd render — the UI's per-tile **↻** sends ONE key + a **fresh random seed**.
+- **`DELETE /bible/poses/{key}/icon`** (`bible.delete_pose_icon`) — the cell falls back to a
+  text chip; 404 when none. `token_required` += the DELETE.
+- **UI:** hover a tile in L1 · Poses → **↻** (re-roll just this icon; disabled while its job is
+  pending) and **🗑** (delete). Batch buttons unchanged.
+
+Tests +1 → **374 green** (keys-subset regenerates-despite-icon w/ caller's seed · unknown-key
+422 · delete → listing off/file 404/repeat 404); `tsc` + `vite build` clean.
+
+## Resize ⤢ (Lanczos) postproc preset — M0e Part D (2026-07-12 11:55–12:25, ✅ PUSHED `601f931`)
+
+**User:** `job_26ee632d` (a 1024²→512² "downscale" of `job_2afa1041`) came back with distorted,
+blurred lines/shapes — "can we pick different models for scaling?" **Diagnosis (job record):** the
+downscale ran through the `Upscale ✨` preset = a full 40-step **sd35 cn-inpaint re-render** (tile CN
+at 0.6 the only conditioner, strength 1.0, generic one-line prompt) at half the latent resolution,
+in a different model family than the zimage source. Inherent to every model path, not a model choice:
+diffusion "resize" re-paints; the tile CN invents detail going up, it doesn't preserve it going down.
+**Author call: add a model-free Lanczos resize step** (spec §12 "M0e solution design · Part D").
+
+- **Worker** `postproc/resize/run_pipeline.py` — pure PIL `Image.resize(..., LANCZOS)`; batch-shaped
+  like `face_restore` (STOP file, `resize_batch_<ts>.json` jobs_batch manifest, `  Image:` lines);
+  palette→RGBA promote, alpha survives; CPU, ms/image. Vendored + parent-synced (disk-only, R162)
+  and added to the md5 drift guard + the vendored-completeness guard.
+- **Adapter** `adapters/resize.py` (io-pass family: inputs.json w/ width/height/items) registered in
+  `ADAPTERS` (both import branches) with `VRAM_ESTIMATES["resize"] = 0.0`; `/capabilities` row added.
+- **Orchestrator** `_PP_PRESETS["resize"] = {backend:"resize", mode:"resize", params:{scale:0.5}}`;
+  allowed params = ONLY the M0e Part B size resolver (`scale` | explicit `W×H` — no prompt/model/
+  strength, and **no source-prompt requirement**: nothing is re-rendered); queue endpoint gets a
+  `mode == "resize"` io branch (source + Part B target dims) and skips the weight pre-flight
+  (`elif backend != "resize"`); preset Literal + store-schema enum += `resize`.
+- **UI** PostprocPanel: `Resize ⤢ (Lanczos)` preset → just the Part B size row ("size: source"
+  option hidden for resize — a source-size resample is a no-op; select seeds at ×0.5), explainer
+  line "pure resample — no model, nothing re-rendered"; restore's blend no longer leaks into other
+  presets' params (guarded to `preset === "restore"`). TS `PostprocStep.preset` += "resize".
+- **Division of labour:** downscale / exact scaling → **Resize**; creative enlarge → i2i scale
+  (Part b) / tile-CN `Upscale ✨` (Part c).
+
+Tests **+5 → 379 green** (`test_resize_pass.py`: real 64²→32² Lanczos E2E incl. alpha + manifest
+shape + per-item isolation rc=2 · adapter argv/inputs.json + vendored-script resolve · configure/
+queue shape w/ ×0.5 default → 512² dims + explicit-W×H override · rejects strength/prompt/model/
+blend/scale-8/width-only + fixed backend); `tsc` + `vite build` clean.
+
+## Trainer overlay diagnosis + Train-panel advanced row (2026-07-12 12:30–12:57, ✅ PUSHED `fc84201`)
+
+**User ran the first real trainer job (`job_0675b7a8`, char02) — failed at ai-toolkit import:**
+`ModuleNotFoundError: No module named 'oyaml'`. Root cause: the job's `runtime_overlay` was
+**None** — `LOOM_TRAINER_OVERLAY` was never added to `.env.local` (M2.9b step 1, still pending),
+so the staged record baked in no overlay and the trainer ran against the bare shared venv
+(R103: ai-toolkit's deps — oyaml/peft/albumentations/… — live ONLY in the isolated overlay
+`F:\source\repos\stubz-002-tripo-sf\.tmp\ai-toolkit-deps`; oyaml+peft verified present).
+**Fix (env-only, gitignored — recorded here, no code change):** the `LOOM_TRAINER_OVERLAY=…`
+line is now in `.env.local`; `CONFIG.trainer_overlay` verified resolving. Retry path = restart
+the app → RE-STAGE → queue (the overlay is baked at STAGE time; the failed job's params froze
+`None`, and trainer jobs are /rerun-excluded by design; staged store was empty — no stale
+record). Leftover `_temp/lora_char02_ver_e14f82_stg_ef3486f8/` = M6 cleanup fodder.
+
+**Train panel "advanced ⚙" row (author: "is steps all ai-toolkit offers?") — an M5
+pull-forward slice, FE-only.** The staging endpoint ALREADY accepted `rank`/`alpha`/
+`learning_rate`/`resolution` (backend-validated: 1–256 / 1–256 / (0,1] / 256–2048÷16) — the
+panel just never rendered them. Now: a `▸ advanced` disclosure between steps and ⚙ Stage with
+the four knobs (blank = the M1-accepted preset 16/16 · 1e-4 · 512px; clamps mirror the backend
+bounds, resolution snaps ÷16, junk lr clears); staged rows now show the full recipe
+(`… steps · r16/a16 · 512px · lr 0.0001 · stg_…`); `stageZimageLora` client body extended.
+**Deliberately NOT exposed until M5** (rig-safety-pinned on 16 GB): quantize/qtype, low_vram,
+gradient checkpointing, optimizer (8-bit needs bitsandbytes — shimmed off in the overlay),
+batch size, save_every, EMA, caption dropout, sample prompts. M5 owns the per-model preset
+system that makes the full knob matrix coherent.
+
+Backend untouched — **379 tests green**; `tsc` + `vite build` clean.
+
+## Trainer live progress: real % + step-counter note (2026-07-12 13:40–14:05, ✅ PUSHED `b54ee42`)
+
+**User:** "some sort of feedback on how the job is progressing… at least a step counter —
+`job_40b04cde` is at 8% for about an hour now." **Diagnosis (live log):** the per-job log DOES
+stream ai-toolkit's tqdm line every step (`loom_char02_…:  44%|████▍ | 222/500 [54:28<1:08:12,
+14.72s/it, lr: … loss: …]`) — but `zimage_trainer.progress` only matched `step N/M`-shaped text
+and the wrapper's coarse markers, so the % froze at the 8% `[train-resume]` marker while the
+run was really at 44%.
+
+- **`zimage_trainer`:** `_STEP_PATTERNS` += the tqdm shape (`\b(\d+)\s*/\s*(\d+)\s*\[`) → the %
+  now tracks every ~15 s step line; new **`collect_note(line)`** parses the same line into
+  **`step 222/500 · loss 0.370 · ~1:08:12 left`** (loss/ETA best-effort — tqdm prints `<?,`
+  before its first rate estimate).
+- **Runner (cold path `_execute`):** new optional adapter hook **`collect_note`**, mirroring
+  `collect_output` — a non-None note lands on `job["note"]` inside the same throttled locked
+  update. Warm-serve loop untouched (trainers never warm-serve).
+- **FE: zero change** — TrainPanel + the queue panel already render `note`, the Inspector the
+  log tail; they now show a live step counter.
+
+Tests **+2 → 381 green** (real tqdm line → progress 0.444 + exact note · warm-up `<?,` line →
+counter w/o ETA · markers/explicit-step lines unchanged · timer/noise lines stay silent ·
+source-contract: `_execute` honors `collect_note`); `tsc`+`vite` untouched (backend-only).
+⚠ Applies on the NEXT orchestrator start — the fix was written while `job_40b04cde` was mid-run
+(~44%), and a restart would reap it (resumable from the last save_every=50 checkpoint); guidance
+= let it finish, then restart.
+
+## Phase A → B pivot: full-state review + docs pass + hardware blocker (2026-07-12 18:19–18:45)
+
+**Full-state review (agent, this session):** verified at HEAD `505e8d2` — **381 backend tests
+green** (RTK run), **tsc + vite build clean**, all 34 vendor/md5-drift-guard tests green, worktree
+clean + synced. Rig-state inspection of `loom/stubz001` found the author's **first real trainer
+runs (2026-07-12)**: `job_0675b7a8` failed (overlay, fixed same day), `job_40b04cde` canceled on
+restart (~step 222), **`job_62629914` stranded `running`** (app closed ~17:38 mid-run at ~step
+129/500, healthy 1.4 s/it — no VRAM paging this segment). Its log: `[train-preflight]` +
+`[train-resume]` fired, **step-100 checkpoint saved**, and the step-vs-elapsed arithmetic
+(129/500 at 1:50) proves the segment **resumed mid-count (~50), not from 0** — the P2-10 resume
+machinery has de-facto operated on the rig. On next launch it recovers + resumes from ckpt 100.
+
+⚠ **HARDWARE BLOCKER (author, 2026-07-12): sustained training load hard-shuts-down the system.**
+Suspected summer thermals or GPU power transients (earlier full-load inference was bursty by
+comparison — training holds ~100 % for hours, a different duty cycle). Consequence: **M2.9b's
+formal completion (a run finishing after a resume) is blocked until the rig is stable**; it stays
+on the ledger, does NOT gate Phase B (author call, same day: proceed to the remaining P2 work).
+Suggested diagnostics before the next attempt (author-owned): HWiNFO log of GPU hotspot/VRAM temp
++ 12 V rail during a run; cap the GPU power limit (−10…−15 %) in AMD software; verify PSU headroom.
+
+**Docs pass — the 5 review adjustments (author's go), spec + README (this commit):**
+1. **M3 re-scoped** (spec §12 Phase B entry 4 + §6 "Editable" bullet + WBS P2-3): deterministic
+   caption GENERATION already landed in M2 at stage time — M3 = the **caption-edit override
+   layer**: review/edit UI, durable per-ref overrides on the version (survive re-staging),
+   staging emits edited text (`origin: template|edited` per row), `captions_hash` hashes the
+   FINAL text (policy hash still identifies the template), reset-to-template.
+2. **M5 front-gate added** (spec §12 entry 6 + WBS P2-5 → 🔴 gate): an M1-style **sd35-trains-
+   on-ROCm SPIKE before** preset/knob/UI work (same class of unknown P2-0 was); if no-go,
+   diffusers-PEFT becomes sd35's primary path. PEFT deps get their own overlay (R103), never the
+   shared venv.
+3. **M2.9d ledger burn-down** (spec §12 "M2.9" d): STAMPED with recorded evidence — M2.5 dev
+   smoke (live probe sweep + Clean-on-rig), M2.6 turbo (accepted operating point + better-images
+   report), M2.7 flat-per-cell (probe), M2.11 icon-gen (author's on-rig batch runs). Kept owed:
+   pause→resume-keeps-tiles, Cast streaming, subset sweep, visual sign-offs (M0d/M0e/styles/
+   TrainPanel/Stage-D), P1 A–H, M2.9b formal completion (hardware). M2.9b section re-statused
+   🟡 PREPPED → 🟠 DE-FACTO EXERCISED / blocked-on-hardware.
+4. **README status block** brought current: stale "Train-panel UI owed" line fixed; M2.9/M2.10/
+   M2.11/M0e-Part-D added; "Next: M3 — caption review/edit (the override layer)".
+5. **Spec §12 Phase A list reordered** 3e→3f→3g→3h (was 3e→3g→3h→3f; text unchanged).
+
+⏭ **Phase B opens: M3 (caption-edit override layer) next.** **✅ PUSHED `e9891c1`.**
+
+## M3 — caption review/edit: the override layer (started 2026-07-12 18:22, finished 18:37) ✅
+
+**Scope (the re-scoped M3 — generation landed in M2):** durable per-ref caption edits that
+survive re-staging, staging that respects them, and hash honesty. Spec §12 Phase B entry 4 + §6.
+
+**Backend (`training.py`):**
+- **`caption_overrides` on the VERSION** (`ref_id → {caption, edited_at}`; declared in
+  `version.schema.json` with the M2 fields `trigger_token`/`caption_status`/`training_context`
+  that had been additional-properties-only) — durable, so an edit persists across re-staging;
+  an override is a **literal caption** (re-staging under a new trigger regenerates template rows
+  but keeps edited text verbatim; `has_trigger` flags a missing trigger, advisory per R14).
+- **`list_captions`** = read-only preview WITHOUT staging (template from the frozen coverage
+  contract + overrides applied; per-row `origin`, `template_caption`, `has_trigger`, cell).
+- **`set_caption_override`** (whitespace collapsed — the dataset `.txt` is one line; ≤1000 chars;
+  empty → error; unknown ref → error; finalized version refuses) · **`clear_caption_overrides`**
+  (one ref idempotently, or ALL — also drops orphaned overrides of culled refs).
+- **`_write_captions` applies overrides:** rows bumped to **`schema_version: 2`** with
+  `origin: template|edited` (+ `template_caption` on edited rows — what the edit replaced);
+  dataset `.txt` gets the edited text; `caption_status` gains `edited_count`;
+  `training_context.refs[]` gain **`caption_origin`** (graph-ready).
+- ⭐ **Pre-existing M2 nit found by the new tests and FIXED:** `caption_policy_hash` hashed the
+  whole policy record **including `created_at`** → a NEW hash every staging; it never actually
+  identified the template. Now hashes the stable **policy identity** (template + source fields +
+  contract version — `trigger_token`/`created_at` stay in the FILE, out of the hash), so
+  "caption changed" (captions_hash) vs "template changed" (policy hash) finally works as spec'd.
+
+**API (`main.py`):** `GET /assets/{id}/captions` (unauth read, `?version_id=`) ·
+`PUT /assets/{id}/captions/{ref_id}` (400 on refusals) · `DELETE …/captions/{ref_id}` ·
+`DELETE …/captions` (reset all) — the three mutators token-gated + added to `token_required`.
+
+**FE:** `orchestrator.ts` `CaptionRow`/`CaptionsResponse` + `getCaptions`/`setCaptionOverride`/
+`clearCaptionOverride`; **TrainPanel** gains a collapsed **`▸ captions (n · m edited)`** section
+between the stage form and the staged list: per-row single-line editor (draft → 💾 save as
+override), **✎** edited badge (tooltip shows the replaced template), **⚠** missing-trigger badge,
+per-row **↺** reset + **↺ reset all**, template/trigger hint line; re-fetches after ⚙ Stage (a
+trigger change regenerates templates). Finalized version = read-only review. New `.cap-*` CSS.
+
+**Tests +5 → 386 green** (`test_captions.py`: preview-without-side-effect + 404 · the core
+contract (durable on version.json → staged dataset `.txt` + jsonl `origin`/`template_caption` →
+captions_hash CHANGES while policy_hash HOLDS → `caption_status.edited_count` +
+`training_context.caption_origin`) · reset restores the ORIGINAL captions_hash byte-identically +
+idempotent repeat · clear-all + has_trigger advisory flags · refusals (unknown ref 400/404,
+whitespace 400, empty/oversize 422, finalized locks mutators but read stays open));
+`tsc` + `vite build` clean. **✅ PUSHED `69974b9`.** ⏭ **M4 — proxy readiness meter.**
+
+## M4 — proxy readiness meter (started 2026-07-12 18:40, finished 18:54) ✅
+
+**⭐ P2 DONE-LINE REACHABLE (R169): M2 trainer + M3 captions + M4 readiness are all built.**
+Spec §7 + §12 Phase B entry 5 (P2-4). Everything ADVISORY (R14) — recommends, never blocks.
+
+**Backend — new `orchestrator/readiness.py`:**
+- **Three INLINE tiers** (on-disk data, no GPU, computed per request): **coverage** (which
+  frozen coverage-cell axis values the ref_set spans — per-axis present/missing + distinct
+  cells + mean-coverage score; `background` advisory-only per the P1 contract note),
+  **dupes** (pure-PIL **dHash** 8×8/64-bit, Hamming ≤6 = near-dup, greedy clustering →
+  groups/extras/ratio, warn >20 %), **captions** (M3 preview: count/edited/missing-trigger).
+- **on_model tier** = an identity **`score`** job (queued — insightface never runs on the
+  API thread): worker `postproc/identity/run_pipeline.py` gains **`"mode": "score"`**
+  (monorepo parent edited FIRST, re-vendored byte-identically — the existing R162 md5 row
+  covers it): embeds each ref's best face, **no swap, no images** (`output_path: ""`, the
+  batch manifest is the product), `meta.anchor_cos` vs the OPTIONAL anchor +
+  `meta.centroid_cos` vs the set's normalized mean (**R120 no-anchor fallback**); faceless
+  refs stay ok w/ `face:false` (back views are data); loads buffalo_l ONLY
+  (`_load_stack(with_swapper=False)` — the research-licensed inswapper is never fetched
+  for measuring). Adapter: `score` wired (anchor optional, mode in inputs.json), score
+  parse path (ok WITHOUT outputs — `_batch.parse_batch_result` requires images, score
+  rows have none), `[item i/n]`-based progress (no `  Image:` lines to count).
+- **Snapshots:** `readiness.json` (schema `loom.p2.readiness.v1`, atomic) +
+  `version.readiness_status` {status/recommended/on_model/computed_at} (schema-declared).
+  v1 heuristics are named constants (`DUPE_MAX_DISTANCE=6`, `COVERAGE_WARN_BELOW=0.5`,
+  `MIN_REFS_INFO=6`, `ONMODEL_ANCHOR_WARN_BELOW=0.30`, `ONMODEL_OUTLIER_FLOOR=0.25`,
+  outlier = metric < max(floor, mean−0.15)).
+
+**API:** `GET /assets/{id}/readiness` (unauth live view — inline tiers fresh + last
+persisted on_model; **never writes**) · `POST /assets/{id}/readiness/embed` (token —
+queues the score job, `meta.ref_id` per item = the harvest key, anchor path when set;
+400 on empty ref_set/finalized) · `POST /assets/{id}/readiness` (token — persist snapshot;
+`job_id` harvests a DONE score run first, scope-guarded via `_require_job_owned_by`, 409
+unfinished/cross-version; the client-closes-the-loop pattern). `token_required` updated.
+
+**FE:** TrainPanel **`▸ readiness`** block (above captions): four tier rows (✅/⚠️/ℹ️ +
+compact facts incl. missing axis values, dupe groups on hover, missing-trigger count,
+on-model mean cos/outliers) + advisory line ("looks good to train — your call either way"
+/ reasons) + **🔬 scan** (embed → 3 s poll → auto-persist w/ job_id → snapshot replaces
+the view) + ↻. Client `Readiness` type + `getReadiness`/`queueReadinessEmbed`/
+`persistReadiness`.
+
+**Tests +8 → 394 green** (`test_readiness.py`, real-PNG fixtures: live view scores
+coverage axes/dupes/captions + GET-never-writes + small-set=info · byte-identical refs
+cluster + warn · persist writes snapshot + version status + live view reports
+persisted_at · embed queues ONE score job w/ ref_id meta + absolute inputs + centroid
+flag · crafted done score manifest harvests to on_model (centroid mode, outlier flagged
+below mean−0.15, persists, live view serves it) · refusals (404 asset, 409 unfinished +
+cross-version guard, 400 empty/finalized, GET open on finalized) · adapter score contract
+(inputs.json shape, no-outputs parse ok, [item]-line progress) · worker source-contract
+(run_score exists, mode dispatch, with_swapper=False, no inswapper fetch in score,
+centroid pass, no images)); `tsc` + `vite build` clean; identity md5 drift row green
+(parent + vendored in sync). ⚠ On-rig (when stable): one real 🔬 scan sanity check —
+buffalo_l is already on the rig from P1 identity use. **✅ PUSHED `2cc32a2`.** ⏭ **M5 — train options + sd35 +
+PEFT** (opens with the sd35 ROCm spike front-gate — GPU, rig-blocked; the no-GPU parts
+build first).
+
+## M5 (no-GPU slice) — train options: presets, gates, seed-from-parent (started 2026-07-12 18:56, finished 2026-07-13 16:55 — session pause overnight) ✅
+
+**Scope honesty:** the M5 front-gate (the **sd35-trains-on-ROCm spike**) is GPU work and
+the rig is hardware-blocked, so this slice builds everything that does NOT stand on the
+unproven trainer — and encodes the gate IN SOFTWARE so nothing can jump it by accident.
+GPU-owed remainder listed at the end.
+
+- **Per-family preset registry (P2-9)** — `training.TRAINER_PRESETS`: `zimage` (the
+  M1-validated preset, status `validated`, 16 GB **vram_fit** envelope: ≤768 px · batch 1 ·
+  qfloat8 · low_vram · grad-ckpt) and `sd35` (**status `spike_pending`** — ⚙ projected
+  values, spike-validate-then-trust: `stabilityai/stable-diffusion-3.5-medium` (2.5B — the
+  16 GB-fit pick; large 8B is out of envelope), `arch: sd3`, otherwise the zimage knob
+  shape). `GET /training/presets` (unauth) serves the roster + backends; sd35 reports
+  `enabled:false` until the gate is stamped.
+- **The spike front-gate as code** — new `config.trainer_sd35_go`
+  (**`LOOM_TRAINER_SD35_GO`**): staging `base_family="sd35"` **refuses (400)** until the
+  rig spike passes and the flag is set — the honest software mirror of spec §12 entry 6.
+- **Generalized staging** — `training.stage_lora(base_family, backend, train_init, …)`
+  (`stage_zimage_lora` kept as the back-compat alias); `_write_aitk_config` takes the
+  family's `arch` from settings (was hardcoded zimage); `job_name`/`artifact_name` carry
+  the family suffix; staged records + queue params gain
+  `base_family`/`backend`/`train_init`/`seed_artifact`; record `kind` =
+  `sd35_lora_train` for sd35. Route: **`POST /assets/{id}/lora/stage`** (the M2
+  `…/lora/zimage/stage` name kept as an alias — both registered on one handler);
+  `token_required` updated.
+- **Backend roster (R115)** — `TRAINER_BACKENDS = ("ai_toolkit",)`; requesting
+  `backend="peft"` → 400 "declared but not yet enabled — lands after the M5 spike
+  decides its role" (spike GO ⇒ PEFT = advanced option; NO-GO ⇒ PEFT = sd35's primary
+  path). The queue/manifest contract stays backend-agnostic so the PEFT trainer slots in
+  without record changes.
+- **R68 seed-from-parent** — `train_init="seed_parent"`: resolves the PARENT version's
+  (`derived_from`) promoted LoRA (`versions/<p>/lora/*.safetensors`; explicit 400s: no
+  parent / parent never promoted — names M6) and **pre-places it as the step-0 checkpoint**
+  (`run_dir/<job_name>/<job_name>_000000000.safetensors`) where ai-toolkit's own
+  checkpoint discovery looks — training continues FROM those weights for the full step
+  budget (the same mechanism the P2-10 resume exercised on the rig 2026-07-12). Full
+  provenance on the staged record (`seed_artifact`: source/checkpoint/sha256).
+  ⚠ resume-from-step-0 semantics = **spike-verify on the rig** (one seeded 60-step run).
+- **FE** — TrainPanel stage form gains **base** (`zimage` / `sd35 ⚗`) and **init**
+  (`from base` / `seed parent`) selects (server refusals surface on the error bar);
+  staged rows show family + `(seeded)`; client `stageZimageLora` posts the generalized
+  route with the new fields; `StagedTraining` type extended.
+
+**Tests +6 → 400 green** (`test_m5_train_options.py`: roster gates sd35 until the env
+flag flips it · sd35 staging 400s pre-gate then writes `arch: sd3` + medium repo +
+`_sd35` artifact post-gate · peft 400 (R115) + unknown enums 422 · seed_parent places the
+byte-identical step-0 checkpoint w/ sha provenance + from_base stays clean · seed
+refusals (no parent / never promoted) · the legacy zimage route still stages);
+`tsc` + `vite build` clean.
+
+⚠ **M5 GPU-owed (rig, after hardware is stable):** (1) the **sd35 spike** — one 60-step
+sd35-medium LoRA via ai-toolkit on the rig (go/no-go; GO ⇒ set `LOOM_TRAINER_SD35_GO=1`
++ validate the preset values, NO-GO ⇒ PEFT becomes sd35's path and gets built then);
+(2) **seed-from-parent semantics check** — one seeded short run resumes from step 0 with
+the parent's weights; (3) the **PEFT backend build** itself (deliberately NOT built
+blind — it needs GPU verification loops and the spike decides its role). Also owed:
+sd35 inference-side LoRA loading flags exist (`--lora-*` on the sd35 worker) — verify
+the trained artifact loads (pairs with M7's verify step).
+**✅ PUSHED `4e8fc30`.** ⏭ **M6 — promote + cleanup + LoRA management.**
+## M6 — promote (Stage E) + manual cleanup (R13) + LoRA management (started 2026-07-13 16:57, finished 17:04) ✅
+
+**Backend (`training.py` M6 block + 3 endpoints):**
+- **Promote** — `POST /training/jobs/{id}/promote` (DONE trainer runs only, 409 otherwise):
+  COPIES the adapter (result outputs → fallback `run_dir` search for `artifact_name`) into
+  `versions/<vN>/lora/` + writes **`lora.manifest.json`** (`loom.p2.lora_manifest.v1`) with
+  the **P2-13 graph-ready facts** — `caption_policy_hash`/`captions_hash`/`context_digest`
+  now ride the JOB PARAMS from stage time (M5+ staging injects them; the version-dir
+  `training_context.json` is only the fallback for pre-M5 jobs — a later re-stage can no
+  longer misattribute an older run's manifest), plus `dataset_hash` (sha of the run's
+  `dataset_manifest.json`), settings/base_model/trigger/train_init/`seed_artifact`,
+  `trained_by_job`, trainer-manifest status + duration, and **`replaces`** (the previous
+  promoted sha — re-promoting an unfinalized version overwrites honestly). Sets
+  **`version.lora`** {file, sha256, manifest, base_family, trigger_token,
+  lora_weight_default, promoted_at, job_id} (schema-declared: null/absent = untrained,
+  still a valid P1 version). Finalized version → 400 (retrain ⇒ new version, R58). Temp
+  is NOT touched (R13: promote-then-MANUAL-cleanup).
+- **Cleanup** — `POST /training/jobs/{id}/cleanup` (terminal runs only, 409 while
+  queued/running): rmtree of the run's `_temp/lora_*` dir, **idempotent**, and
+  **hard-guarded to the project temp tree** (a foreign `run_dir` → 400, nothing deleted).
+- **Preview (P2-11)** — `POST /training/jobs/{id}/preview`: queues ONE zimage t2i with
+  the FRESH un-promoted adapter straight from the run dir (`lora_path`/`lora_weight` —
+  the M1 loader), default prompt = `<trigger>, front view, portrait, neutral expression`
+  (the train.yaml sample), prompt/seed overridable; scoped to the version's grid
+  (stage D). sd35 preview → 400 until the spike lands the sd35 inference LoRA flags.
+- `token_required` += the three routes.
+
+**FE:** trainer-job rows (TrainPanel) gain **🖼 preview / ⬆ promote / 🧹 cleanup** on done
+runs (🧹 also on failed/canceled); the stale "promote is M6 (not wired yet)" footer is
+replaced by a **✨ promoted-LoRA line** (file · family · trigger · date · sha8 · manifest
+path); **the version selector now shows LoRA presence** (`name ✨🔒`) — `ProfileVersion.lora`
+typed, App passes `lora` + `onPromoted` (asset-detail reload) into the panel. Client fns
+`promoteTrainedLora`/`cleanupTrainingRun`/`previewTrainedLora`.
+
+**Tests +5 → 405 green** (`test_m6_promote.py`, hand-finished trainer jobs in the real
+staged→queued layout: promote copies bytes + manifest carries THIS run's stage-time
+hashes + dataset_hash + duration + version.lora flips + asset detail serves it + temp
+survives (R13) · re-promote overwrites + `replaces` records the old sha · refusals (404
+unknown / 409 not-done / 400 non-trainer / 400 artifact-vanished / 400 finalized) ·
+cleanup idempotent + 409 while queued + foreign-path 400 leaves the tree intact ·
+preview loads the run-dir artifact w/ trigger prompt + seed/prompt overrides + 409
+not-done); `tsc` + `vite build` clean. **✅ PUSHED `09cc02e`.** ⏭ **M7 — acceptance.**
+## M7 — acceptance: the narrative harness (started 2026-07-13 17:05, finished 17:15) 🟡 stamp = author's rig run
+
+**Built: `test_p2_acceptance.py` — the §1 done-line walked END-TO-END through the real
+API in one narrative test** (+1 → **406 green**): P1 character w/ 4-cell curated set →
+D1 template captions + ONE edit (the override survives into the staged dataset `.txt`s —
+the M3→M2 handshake asserted) → D2 readiness snapshot persisted → D3 **staged** (nothing
+on the GPU queue, R118) → explicit **▶ queue** (resumable, stage D) → run hand-finished
+exactly the way the wrapper finishes (the M2/M6 pattern — the ONLY substitution is the
+GPU step) → **E promote** (manifest carries `caption_policy_hash` + `context_digest` +
+`captions_hash` + `dataset_hash` = the §1 requirement, all matching the staged record) →
+`version.lora` flips → **verify test-gen queued WITH the adapter** (trigger prompt,
+version-scoped) → R13 explicit cleanup (temp gone, promoted copy stays).
+
+**The P2 STAMP itself is the author's rig run** — blocked on the 2026-07-12 hardware
+shutdowns. **Procedure (author, when the rig is stable — mirrors the harness):**
+1. ~~**Hardware first:** HWiNFO log (GPU hotspot/VRAM temp + 12 V rail) during a short
+   sustained load; cap the GPU power limit −10…−15 % in AMD software if thermal/transient.~~
+   **✅ SUPERSEDED 2026-08-08 — RESOLVED by fan curves, no power cap needed.** The author
+   raised **CPU + GPU fan speeds** and a full 500-step run completed. The diagnosis was
+   right (thermal) but the remedy was cooling, not throttling — so the rig keeps its full
+   clocks. ⚠ Standing caveat: an ambient **heatwave (42–43 °C recorded)** is in play, so
+   watch temps on long runs; the author expects it to be temporary. See "Hardware resolved".
+2. **Finish M2.9b free:** launch → `job_62629914` recovers **queued+paused** → unpause →
+   it resumes from its step-100 checkpoint → completes (exit 0, manifest `completed`) →
+   record timings/hashes here → **M2.9b STAMPED**.
+3. **M7 stamp (char02 or fresh):** `D · Train` → readiness **🔬 scan** (one real on-model
+   run — also the owed M4 sanity check) → review captions (edit at least one) → **⚙ Stage**
+   → **▶ Add to queue** → train completes → **🖼 preview** (the eyeball: does the character
+   reproduce on-model?) → **⬆ promote** (✨ appears on the version selector) → **🧹** →
+   record here → **P2 ACCEPTED**.
+4. **M5 gate (separate, non-blocking):** the sd35 spike — set `LOOM_TRAINER_SD35_GO=1`
+   (the flag IS the author's spike switch), stage a 60-step sd35-medium run, GO ⇒ keep the
+   flag + validate the preset values; NO-GO ⇒ unset + PEFT becomes sd35's path (built then).
+   Plus the R68 seed-semantics check: `+ version` off the promoted v1 → stage w/ init
+   `seed parent` @ 60 steps → the log's `[train-resume]` must report the step-0 seed.
+
+Docs synced this close: spec §12 Phase B entries 4–8 carry build-status markers; README
+Phase B block current. P2 remains OPEN until the author's stamps land (M2.9b · M7 · the
+M5 gate) — everything buildable without the rig is now built. **✅ PUSHED `ec155ec`.**
+## ⭐ M2.9b STAMPED + two rig findings fixed (2026-07-13 ~21:00–21:45; rig run 17:52–18:04)
+
+**M2.9b / P2-10 — STAMPED (user-confirmed: "a full lora training job was completed").**
+`job_62629914` (char02, 500 steps) finished on the rig: trainer manifest
+`status: completed`, final segment **612.49 s** (runner: `done job_62629914 in 612.7s →
+loom_char02_v1_base_zimage.safetensors`), artifact real in the run dir. The job's
+lifetime exercised the WHOLE R88/R159 surface for real — crash-branch recovery
+("recovered (resumable)"), **mid-count checkpoint resume across multiple restarts**
+(incl. the 2026-07-12 hardware shutdowns), step-100 checkpoint save, live tqdm
+progress + step-counter note, exit 0. The 🔴 WBS row **P2-10 is done**; spec §12
+"M2.9" b + d and the README updated.
+
+**Rig finding 1 — 🖼 preview FAILED: `load_pipeline: PEFT backend is required for this
+method` (`job_af29227d`, 17 s in).** Root cause: diffusers refuses `load_lora_weights`
+without **PEFT — which lives ONLY in the isolated trainer overlay** (R103; the M2
+runtime contract even recorded `requires_peft_for_lora_inference: true` — the
+inference side was simply never wired to the overlay). **Fix:** `preview_request` puts
+`runtime_overlay` on the preview job (the trainer job's own overlay first, the
+`LOOM_TRAINER_OVERLAY` rig default second; explicitly-empty ⇒ no param) and the
+runner's cold spawn now **prepends a job's `runtime_overlay` to the worker's
+PYTHONPATH** — the same mechanism the trainer wrapper uses for its inner ai-toolkit
+process, now generic for any LoRA-loaded job (sd35 preview will ride it after the M5
+spike). The shared venv stays unmutated. **Retry = click 🖼 again on the done run.**
+
+**Rig finding 2 — "cleanup failed" was a FEEDBACK gap, not a failure.** The log + disk
+prove both dead runs' temp dirs WERE deleted on the first click
+(`job_0675b7a8` 18:03:29 `existed=True` → 18:04:09 repeat `existed=False` = the
+idempotent no-op; `job_40b04cde` 18:04:14 `existed=True`; `_temp/` now holds only the
+completed run) — but the UI changed nothing visible, so it read as failure. **Fix (FE):**
+per-row confirmation notes ("🧹 temp cleaned ✓" / "🧹 already clean"; preview reports
+"🖼 preview <id> queued → grid") + failed/canceled trainer rows gain **🗑 remove-row**
+(best-effort temp cleanup, then the existing terminal-job `DELETE /jobs/{id}` — record,
+log and trainer manifest gone; the row disappears on the next poll). Done rows keep
+🖼 ⬆ 🧹 only — a completed run is never row-deleted from here.
+
+**Tests +1 → 407 green** (`test_preview_rides_the_trainer_overlay_for_peft`: overlay
+rides the preview params from the env default · runner `_execute` source-contract
+(PYTHONPATH prepend) · explicitly-empty overlay keeps the param off the job);
+`tsc` + `vite build` clean.
+
+**P2 ledger after this session:** M2.9 **a ✅ · b ✅ (2026-07-13) · c ✅ · d** = only the
+author's visual stamps remain. Still rig-owed: the **M7 stamp** (🖼 preview → ⬆ promote
+eyeball — now unblocked by finding 1's fix; restart the app first so the new code
+runs), the **M5 sd35 spike** + **R68 seed check**. The trained char02 adapter is ready
+to promote. **✅ PUSHED `e86493e`.**
+## Rig findings 3+4 — preview scoping + "is the adapter even working?" levers (2026-07-15)
+
+**User ran the FIXED preview (`job_cf7c6038`, done, 987 s): the overlay fix works** — the
+manifest records the M1 adapter provenance (`lora` block w/ sha256, `set_adapters` @ 1.0),
+so the LoRA **was loaded and active**. Two new findings:
+
+**Finding 3 — the preview tile landed in the SANDBOX, not the character's grid.** The
+grid filters on `requester_id == the VERSION id` (the P1 /generate convention) but the
+M6 preview submitted `requester_id = the ASSET id` → matched nothing → Sandbox. **Fixed:**
+`preview_request` (and the M4 readiness-embed submit, same inconsistency) now use the
+version id.
+
+**Finding 4 — "a profile image of an asian guy", not the character.** Diagnosis, in
+order of likelihood: (1) **undertrained** — char02's dataset is **79 images**; the
+M1-accepted 500 steps ≈ **6 epochs**, light for a set this size (the M1 spike validated
+500 on a much smaller fixed set) — the "asian guy" is Z-Image's (Tongyi) base prior
+showing through a weak identity; (2) the preview silently rendered **1024² against a
+512²-trained adapter** (dilutes learned features, 4× the render time — 19 s/step ×50);
+(3) the default prompt asks for a *portrait* — the expected T-pose full-body needs a
+custom prompt, which the FE didn't expose. **Built (the diagnosis levers):**
+- `preview_request`: **size defaults to the TRAINED resolution** (settings.resolution);
+  overridable `prompt/seed/width/height/lora_weight/num_steps`; **`with_lora=false`** =
+  the same-seed A/B against the bare base (adapter-signal test); requester = version id.
+- FE: **🖼 preview ▸ opens an inline options row** on the done run — prompt (hint: include
+  the trigger token; T-pose example in the tooltip), seed, size (blank = trained), weight
+  (raise 1.2–1.5 if identity is weak) + **▶** and **⚖ A/B** (queues LoRA + base at the
+  same seed; the row note names both job ids).
+
+**Author's diagnosis path (next rig session):** ⚖ A/B at the trained res, same seed —
+**if the pair looks identical, the adapter carries no signal** → re-stage with more
+steps (≈1500–2500 for 79 images, i.e. ~20–30 epochs; the steps field + advanced row
+already take it) and consider rank/alpha 32/32; **if the pair differs but identity is
+weak**, try weight 1.2–1.5 first, then more steps. Either way the M7 stamp waits for a
+preview that reproduces the character (that IS the acceptance criterion), then ⬆ promote.
+
+**Tests +1 → 408 green** (scoping = version id · trained-res default · full override set
+· with_lora=false strips lora_path+overlay at the same seed · ÷16 bound), `tsc` + `vite
+build` clean. **✅ PUSHED `424aeaa`.**
+
+## ⭐ Rig finding 5 — the adapter WORKS (resolution, not undertraining) + preview pose picker + the Stage-D grid (started 2026-08-08 09:40, finished 10:22 CEDT)
+
+**Session opened as a state audit** (author: "establish the current state from the docs and
+match it against the source"). Gates at HEAD `b5e6a3c`: **408 backend tests green**, `tsc` +
+`vite build` clean, worktree clean + synced with `origin/main`. Docs↔code agreement was
+high; the audit found three drifts, and the author's live rig run then settled the big one.
+
+### ⭐ The identity miss was RESOLUTION, not undertraining — finding 4 is CLOSED
+
+The author ran a preview off the promoted char02 adapter (`job_9a2dad37`, 219 s, 512²).
+Held against the 2026-07-15 run (`job_cf7c6038`, 987 s, 1024²) the pair is a controlled
+experiment — **same prompt, same seed 12345, same adapter, same weight 1.0; only the size
+differs**:
+
+| | 2026-07-15 · 1024² | 2026-08-08 · 512² (trained res) |
+| --- | --- | --- |
+| result | photoreal stranger, no char02 traits | **char02**: black/purple hair + pink highlights, magenta eyes, dark jacket w/ pink accents, cyberpunk palette |
+| reading | the bare Z-Image prior (the "asian guy") | the adapter carrying identity |
+
+**So finding 4's hypothesis (2) was the whole story, and (1) "undertrained" was wrong.**
+The 500-step / ~6-epoch run on 79 images is *sufficient*; a 512²-trained adapter simply had
+no purchase at 1024². The trained-res default shipped in `424aeaa` is what fixed it — the
+fix landed before the diagnosis it was built to run.
+
+**Consequences, both good:**
+- **The proposed 1500–2500-step re-train is not needed.** That matters more than it looks:
+  at the measured **1.34 s/it** (`job_62629914` log) it implied **33–56 min of continuous
+  100 % load**, against a rig whose longest surviving training segment is **~9 min** (the
+  400-step final segment) and which hard-shut-down repeatedly on 2026-07-12. The hardware
+  blocker and the "needs more steps" remedy were **one coupled problem**, never recorded as
+  such — and it has now dissolved rather than been solved. ⚠ The blocker itself is still
+  open and undiagnosed; it just no longer sits on the P2 critical path.
+- **New known limitation:** identity holds at the trained resolution and collapses at 2×.
+  For larger output, render at 512² and use the M0e postproc upscales (Lanczos `Resize ⤢`
+  or the sd35 Tile-CN `Upscale ✨`) rather than generating large directly. Training at a
+  higher resolution is the real fix, and it is a P5/P6 question, not a P2 one.
+
+### Drift 1 — the promote happened on 2026-07-15 and was never journalled
+
+`lora.manifest.json` is stamped **`promoted_at 2026-07-15T15:51:14Z`** with `version.lora`
+set and all four P2-13 hashes present and matching the staged record — i.e. **M6 promote ran
+for real**, 13 minutes before `424aeaa` was pushed (18:04 local) and *after* the preview that
+had just failed to reproduce the character. The journal entry from that same evening still
+described promote as future work gated on a passing preview, so the docs and the workspace
+disagreed for 24 days. Recorded here; the promoted artifact is the one the 512² preview has
+now vindicated, so the ordering was lucky rather than wrong. **Code note:** `promote` guards
+only that the trainer job carries a promotion target — there is no readiness/preview gate, by
+design (R118 keeps the author in charge), so nothing prevented the out-of-order call.
+
+### Drift 2 — M4 readiness has never run on real data · Drift 3 — the promoted run predates M3
+
+No `readiness.json` and no `version.readiness_status` on `ver_e14f82`: the 🔬 scan has only
+ever executed inside the no-GPU narrative. And the staged dataset was built **2026-07-12
+17:22**, an hour *before* M3 was built (18:22–18:37) — all 79 caption rows carry
+`origin: null` and `caption_overrides` is empty, so the promoted adapter's provenance chain
+was produced by pre-M3 code. The captioner is correct (it writes `origin: template|edited`
+today); the artifact is simply older than the feature. **A clean M7 record therefore still
+wants one re-stage** so the M3→M6 handshake is real on disk, plus the owed readiness scan.
+
+### ⭐ Built: LoRA-preview pose picker (author request, 5 framings)
+
+The preview's framing is now a **pick**, not a fixed portrait — the author asked for
+T-pose front · full body front neutral · waist up front neutral · portrait front neutral ·
+face close-up. Placement: the author suggested "L2 · World/Pose"; poses actually live in
+**L1 · Poses** (`l1Tab`), and the natural fit was better than a new store —
+`PREVIEW_POSES` (`training.py`) keys each pose to the **M2.11 `bible/poses/` icon key**, so
+the picker renders the icon set the L1 · Poses tab already generates (**4 of the 5 already
+had icons in `stubz001`**; `t_pose` shows a placeholder until one is generated).
+
+**The vocabulary decision (the load-bearing one):** four poses are real coverage cells, so
+their prompt is **`coverage.build_caption` verbatim** — byte-identical in shape to the
+captions the adapter trained on, which is exactly why they read strongest. **T-pose is NOT
+added to the frozen enums**: `SHOT_SIZES`/`ANGLES`/`EXPRESSIONS` are the P1→P2 contract
+(`CONTRACT_VERSION`), and adding to them would invalidate every existing caption + policy
+hash. It carries a hand-written prompt, is flagged `in_vocabulary: false` with a ⚠ in the UI,
+and is **out-of-distribution by construction — the training set contains zero T-pose images**
+(0/79), so the base model supplies the pose and the adapter only the identity. Expect it to
+read weakest; that is a property of the dataset, not a defect.
+
+**Default stays `portrait`** — `preview_pose_prompt("portrait", trigger)` reproduces the old
+hardcoded string byte-for-byte (asserted). The audit had proposed defaulting to T-pose; the
+0/79 finding reversed that, since an out-of-distribution default would be a poor identity
+check. Surfaces: `GET /training/preview-poses` (trigger-resolved prompts + `has_icon`),
+`pose` on `LoraPreviewRequest` (an explicit `prompt` still wins), and a thumbnail row in the
+TrainPanel preview options.
+
+### ⭐ Fixed: the Stage-D grid — finding 3 was only half a fix
+
+`job_9a2dad37` carried the **correct** `requester_id = ver_e14f82`, yet still landed in the
+Sandbox. The 2026-07-15 fix read the grid filter as "requester_id == the VERSION id", but it
+is a **conjunction**: `j.requester_id === activeAsset.active_version && (j.stage ?? "A") ===
+gridStage`, and `gridStage` was `stage === "A" ? "A" : "B"`. A preview is **stage D** → it
+matched neither branch and was excluded from the character grid regardless of requester.
+Worse, `stageCells` short-circuited to `[]` on stage D, so **the D tab had no grid at all** —
+`🖼 preview … → grid` was a promise nothing could keep. (It surfaced in the Sandbox only
+because `applyJobs` seeds `batchIds` from queued/running jobs when the grid is empty, which
+it was after a fresh project open.) **Fixed:** `gridStage` maps D → `"D"`, stage D renders
+its tiles below the Train panel with its own empty-state line, and the row note now reads
+"→ the grid below (<framing>)".
+
+**Tests +3 → 411 green** (pose menu is vocabulary-backed + icon-keyed, with the frozen
+contract asserted unchanged · `pose` picks the framing, explicit prompt wins, unknown pose =
+400, default byte-identical · the stage-D job carries BOTH filter halves + the App.tsx source
+contract for the grid mapping), `tsc` + `vite build` clean.
+
+**P2 ledger after this session:** the M7 acceptance criterion — *test-gen reproduces the
+character on-model* — **is now met at the trained resolution**. Rig-owed to stamp M7 cleanly:
+the **🔬 readiness scan** (M4, never run for real), **one re-stage** so captions/provenance
+are M3-era, then preview → promote on that run. Still open and unchanged: the **M5 sd35
+spike** (🔴 gate, `LOOM_TRAINER_SD35_GO`), the **R68 seed check**, **M2.12** GraphRAG spike
+(non-gating), and the **hardware blocker** (now off the critical path, still undiagnosed).
+**✅ PUSHED `36039c7`.**
+
+## Hardware resolved (fan curves, not a power cap) + Stage-D blank-tile fix (2026-08-08 10:22–11:05 CEDT)
+
+### ⚠→✅ The hardware blocker is CLOSED — and the fix was cooling, not throttling
+
+**Author, this session:** raised the **fan speeds on both CPU and GPU**, and a full
+**500-step LoRA training run completed** on the rig. The 2026-07-12 diagnosis ("summer
+thermals or GPU power transients") was correct in kind, but the remedy was **more airflow,
+not less power** — so the suggested **−10…−15 % GPU power cap is SCRUBBED** and the rig
+keeps its full clocks. The M7 procedure's "Hardware first" step is struck through above.
+`HWiNFO` logging and the PSU-headroom check are likewise no longer prerequisites.
+
+⚠ **Standing caveat (temporary):** an ambient **heatwave — 42–43 °C recorded** — is in
+play. Sustained training is exactly the duty cycle that exposes it (~100 % for the whole
+run, unlike bursty inference), so **watch temps on long runs while the heat lasts**. The
+mitigation that already exists is unchanged and proven: `save_every: 50` (~67 s of work at
+1.34 s/it), so even a thermal cut costs about a minute and the job resumes from its last
+checkpoint on relaunch. The author expects the heatwave to pass.
+
+**Net effect on P2:** the blocker that shadowed the ledger since 2026-07-12 is off it in
+both directions now — the re-train that needed it is dropped (previous entry: the identity
+miss was resolution), *and* the rig can sustain a long run again if a future milestone wants
+one. **M5's sd35 spike no longer has a hardware excuse in front of it.**
+
+### Fixed: the Stage-D grid was about to show blank tiles (caught by the M4 walk-through)
+
+Working out the author's exact "how do I run M4 on real data?" steps surfaced a **regression
+in this session's own grid fix**: stage D is shared by **three** job kinds and only one makes
+an image.
+
+| stage-D job | pipeline / mode | requester | in the D grid? |
+| --- | --- | --- | --- |
+| M6 LoRA preview | `zimage` / `t2i` | **version** | ✅ yes — the one that makes an image |
+| M4 readiness scan | `identity` / `score` | **version** | ❌ produces NO output |
+| trainer run | `zimage_trainer` | **asset** | ❌ listed in the Train panel |
+
+`GridCell` renders a done job with no output as a bare **"—" placeholder tile**, so opening
+the D grid after a readiness scan would have shown a blank cell next to the preview. The
+readiness scan is the one that mattered: it is **version-scoped exactly like the preview**,
+so only its `mode` distinguishes it. (The trainer was never grid-eligible — it requests as
+the **asset**, a leftover of the same requester-id inconsistency finding 3 hit; harmless
+here because the Train panel finds it by `profile_version_id`, so it is left alone rather
+than churned.) **Fixed:** the D grid admits image producers only —
+`j.pipeline !== "zimage_trainer" && j.mode !== "score"`.
+
+**Tests +1 → 412 green** (all three stage-D kinds asserted at their real coordinates, incl.
+the trainer's asset-scoped requester, + the FE filter's source contract). The test caught
+the trainer-requester assumption wrong on first write — the assertion is now the truth on
+disk, not the guess.
+
+### M4 on real data — the answer to the author's question
+
+`char01` is **not** the candidate: it holds **2 casting candidates and 0 curated refs**
+(Stage A, nothing kept). **`char02` is the one to scan** — 79 curated refs, a face anchor,
+trigger `char02_lw`, version `ver_e14f82` unfinalized. The three inline tiers (coverage /
+dupes / captions) already compute on demand from disk; what has never run is the **on-model
+tier**, and `readiness.json` only lands when a scan is harvested — which is exactly why the
+file is absent. Steps recorded in the reply; no code needed, the surface has been built
+since M4.
+
+### ⚠ M4 finding on first contact with real data: the dupes tier is a FALSE-POSITIVE generator
+
+Running the inline tiers against char02 (`ast_596757` / `ver_e14f82`, 79 curated refs) before
+answering the author's question produced a verdict that is **wrong in a specific, fixable way**:
+
+| tier | result |
+| --- | --- |
+| coverage | ✅ **ok — score 1.0**, 79 refs, 78 distinct cells, no missing value on any axis |
+| captions | ✅ ok — 79, 0 edited, 0 missing trigger |
+| dupes | ⚠ **warn — 57 "extras" in 15 groups (72 % of the set)** |
+| on_model | not_run |
+| **advisory** | **warn — `recommended: false`**, solely because of the dupes tier |
+
+**Every one of the 57 flagged extras is a DISTINCT coverage cell — 0 true duplicates.** Group
+sizes 8/8/8/6/5/5/5/5/4/4/4/4/2/2/2; the largest is eight `full_body` refs spanning front,
+both three-quarters and both profiles, at two expressions. Spot-checked visually:
+`ref_6c8f0f` (front) vs `ref_551971` (right profile) are plainly different poses in the same
+street scene, and dHash calls them near-duplicates.
+
+**Root cause — the heuristic is mis-tuned for exactly this corpus.** `DHASH_SIZE = 8` reduces
+an image to 9×8 grayscale (64 gradient bits) and `DUPE_MAX_DISTANCE = 6` allows ~9 % of them
+to differ. A character-LoRA dataset is *by construction* the same character, same wardrobe,
+same palette, similar composition — so the low-frequency structure dHash measures is what
+**should** be constant across the set, while what actually varies (angle, expression, framing)
+is high-frequency detail dHash throws away. The tier is measuring sameness the dataset is
+supposed to have. It gets worse the *better* the style-consistency work is (M2.10 route 1).
+
+**Not fixed here — the author's call** (these are documented advisory constants, R14: the meter
+recommends, it never blocks, and it did not block the char02 training that already succeeded).
+Options, cheapest first: (1) raise `DHASH_SIZE` to 16 (256 bits) so pose survives the
+downsample; (2) drop `DUPE_MAX_DISTANCE` to ~2–3 of 64; (3) only compare refs **within the same
+coverage cell** — the structurally correct fix, since two refs in different cells are
+*intended* to differ and a duplicate only means anything inside a cell; (4) weight the tier out
+of the advisory rollup. (3) is the one that matches what the tier is actually for.
+
+**Interim reading for the author:** treat char02's dupes warning as noise. Coverage 1.0 with
+78 distinct cells over 79 refs is close to an ideal set, and the adapter trained from it
+reproduces the character — the advisory `recommended: false` is an artifact, not a verdict.
+
+**✅ PUSHED `eba0202`.**
+
+## ⭐ M4 EXERCISED on real data — the owed scan is discharged, and the meter disagrees with reality (2026-08-08 11:02)
+
+**The author ran the 🔬 scan on char02** (`job_f8cf9b0c`, 11.2 s, 79 items) and
+`readiness.json` + `version.readiness_status` landed at `2026-08-08T09:02:46Z`. **The M4
+item that had never touched real data since it was built on 2026-07-12 is now discharged** —
+this was the last un-exercised step of the §1 done-line narrative. What it produced,
+against what §7 says it should produce:
+
+| tier | §7 intent | actual on char02 | verdict |
+| --- | --- | --- | --- |
+| coverage | flag thin matrix cells | **1.0** · 79 refs · 78 distinct cells · no missing value on any axis | ✅ works as designed |
+| captions | present for every ref | 79 / 79, 0 edited, 0 missing trigger | ✅ works as designed |
+| dupes | perceptual-hash near-duplicates | **57 "extras" in 15 groups — all 57 distinct cells, 0 true dupes** | ❌ false positives (previous entry) |
+| on_model | **anchor-distance when an anchor exists**, else centroid (R120) | **fell back to `centroid` — `anchor_face: false`** | ⚠ silent anchor rejection |
+| **rollup** | **"good to train"** (§1 done-line wording) | **`recommended: false`** | ❌ disagrees with reality |
+
+### ⚠ New finding A — the face anchor is DEAD and nothing says so
+
+`version.anchor` is populated (`anchor.png`, set 2026-07-04) and `faces/anchor.png` exists,
+so `embed_items` passed `anchor_image` correctly — the job params prove it. But the batch
+manifest records **`anchor_face: false`**: insightface **detected no face in the anchor**, so
+R120's centroid fallback engaged and every `anchor_cos` is null.
+
+**R120 did its job perfectly** — the scan produced a usable result instead of failing, which
+is exactly the guarantee it was written for. **The gap is reporting:** the panel shows
+`mode: centroid`, which is indistinguishable from "this version has no anchor". The author
+set an anchor, believes they have the *firmer* reference §7 promises, and is silently getting
+the weaker one. **Nothing in the UI or the snapshot says "your anchor was rejected".**
+
+**Why it fails:** the anchor is an extreme close-up of the stylized character wearing a black
+mask over nose + mouth, partly cropped. Note the detector found faces in **77 of 79 refs**, so
+the anime styling alone is not fatal — the mask + crop is the likely killer. **Cheap fix
+available to the author:** re-anchor to any of those 77 face-detected refs (a front or
+three-quarter shot), then re-scan; the tier flips to anchor mode with no code change.
+
+### ⚠ New finding B — the outlier rule penalises the coverage matrix's own variation
+
+`mean_cos 0.772` over 77 scored refs is **healthy**, and 71 of 77 sit above the outlier line
+(`max(0.25, mean − 0.15)` = **0.622**). But the 6 flagged outliers are not quality problems:
+
+| driver | evidence |
+| --- | --- |
+| **expression** | **4 of 6 outliers are `smile`**. Mean cos by expression: serious **0.805** · neutral 0.780 · surprised 0.775 · sad 0.762 · **smile 0.718** |
+| **angle** | the other 2 are a `back` and a full-body `profile_right`. By angle: 3q-left 0.843 · profile-left 0.817 · 3q-right 0.801 · profile-right 0.713 · front 0.708 · back 0.707 |
+| **undetectable** | both no-face refs (`ref_039173`, `ref_b09d8e`) are `sad` **face_closeup**s |
+
+**Expression and angle are two of the four FROZEN coverage axes** — the dataset is *required*
+to vary them, and the coverage tier scores 1.0 precisely *because* it does. So **the on-model
+tier penalises exactly the diversity the coverage tier rewards**; the two pull against each
+other on a well-formed set. Same shape as the dupes finding: a heuristic measuring global
+similarity on a corpus engineered to be globally similar and locally varied.
+
+### Where this leaves the done-line
+
+**§1 requires the meter to say "good to train"; it says `recommended: false`.** Both warning
+tiers are structural artifacts, neither reflects a defect in the data, and the adapter trained
+from this exact set demonstrably reproduces the character. **§7 + R14 make the meter advisory
+and explicitly "never a hard lock", so nothing is blocked** — but the literal done-line clause
+is unmet, and it is the only one still outstanding.
+
+**Not fixed here — the author's call**, same standing as the dupes constants. Two coherent
+routes: **(a) tune the heuristics so the verdict is trustworthy** — per-coverage-cell dupe
+comparison, and score on-model *within* expression/angle bands rather than against one global
+centroid (plus surface a rejected anchor loudly); or **(b) amend §1's wording** to "the
+readiness meter has been consulted" and let the tiers stay advisory noise. **(a) is the
+recommendation** — the meter should earn its verdict, and 2 of 4 tiers currently do not.
+Either way the fix is documentation-or-heuristics, not the pipeline.
+
+**✅ PUSHED `e9115ce`.**
+
+## ⭐ M4 heuristics retuned — the meter now earns its verdict (author's go, 2026-08-08 11:05–11:40 CEDT)
+
+**Author's instruction:** tune the heuristics as recommended, **but never use the inspection
+as a blocker** — "at this moment in time I would not want any constraints on any creation in
+the app"; a **second development cycle** is planned for rigorous fine-tuning (code, inference
+settings, possibly the base models). Also clarified: **the face anchor is a generation-support
+reference for flux2 dev/JSON with the inswapper deliberately OFF** — identity scoring was never
+its job, so a rejected anchor is not a defect to nag about.
+
+### The fix in one line per tier
+
+**Dupes → compared only WITHIN a coverage cell.** Two refs asked for different poses are
+*supposed* to differ, so a duplicate only means something against a ref of the same pose.
+The tier now reports `scope`, `cells_compared`, `cells_total`.
+
+**On-model → each ref judged against what its OWN coverage cell should score.** Measuring the
+three frozen axes on char02 (global mean 0.772) showed **all three** shift the embedding, and
+`shot_size` hardest of all:
+
+| axis | high | low |
+| --- | --- | --- |
+| shot_size | portrait **+0.027** | **full_body −0.097** (a full-body face is small in frame) |
+| angle | 3q-left **+0.071** | front **−0.063** |
+| expression | serious **+0.033** | smile **−0.054** |
+
+Banding on the full cell is impossible (78 distinct cells over 79 refs ⇒ ~1 ref per band), so
+each axis contributes an **additive offset**: `expected = global mean + Δshot + Δangle + Δexpr`,
+and a value needs `ONMODEL_MIN_BAND` (5) members to earn its offset — below that it contributes
+0 and that ref is judged globally, so small sets behave exactly as before. Outliers are then
+`< max(FLOOR, expected − MARGIN)`.
+
+**Plus an outlier RATIO gate** (`ONMODEL_OUTLIER_WARN_RATIO` = 0.1): a handful of odd refs in a
+big set is normal. Below the ratio they are still **listed for review**, but they no longer
+flip the verdict — the tier stops treating "3 of 77" as a reason not to train.
+
+**Anchor rejection is now said out loud.** `anchor_status` ∈ `used | no_face | absent`
+distinguishes "anchor set but insightface found no face in it" from "no anchor at all", which
+the old bare `mode: centroid` could not. It surfaces as an advisory **note** and a `ⓘ anchor
+unreadable → centroid` chip — never a warn reason, because the anchor's job is generation.
+
+### char02, before → after (same scan job, re-harvested — no re-run)
+
+| | before | after |
+| --- | --- | --- |
+| dupes | **warn** — 57 extras in 15 groups | **ok** — **1** extra in 1 group (a true positive: the only cell holding 2 refs) |
+| on-model | **warn** — 6 outliers | **ok** — 3 outliers of 77 (ratio 0.039), all genuinely lowest-scoring |
+| advisory | **warn · `recommended: false`** | **ok · `recommended: true`** + 1 note |
+
+The 3 surviving outliers are `waist_up/back` (identity is unverifiable from behind), and two
+smiles at 0.501 / 0.457 — the lowest scores in the set. Exactly the refs worth an eyeball.
+`readiness.json` + `version.readiness_status` for char02 were **re-persisted from the existing
+`job_f8cf9b0c`**, so the author sees the tuned verdict without re-scanning.
+
+### Never a blocker — now asserted, not just intended
+
+Readiness was already advisory in fact (`canStage = !versionLocked && refCount > 0 && …`
+never consults it; `stage_zimage_lora` never reads it). Per the author's instruction that is
+now **locked by a test**: a version reading `warn` + `recommended: false` still stages AND
+queues a training job. The advisory payload also carries **`blocking: false`** explicitly, and
+the FE spells out "advisory only, Train stays enabled" on a non-recommended verdict.
+
+**Tests +6 → 418 green** (dupes within-cell both ways · band offsets absorb a whole low band
+while a ref below its OWN band still flags · the ratio gate · anchor `no_face` vs `absent`
+reported as a note never a reason · readiness never blocks stage/queue), `tsc` + `vite build`
+clean.
+
+### What this does NOT claim
+
+The tuning makes the meter's verdict *trustworthy on a well-formed set*; it does not make the
+proxies *good*. dHash still cannot see pose, ArcFace is still a photographic model reading
+stylised art, and the offsets are a first-order additive model fitted by eye to one character.
+**That is the author's planned second cycle**, and §7 already routes the real answer through
+the **P4 VLM** (richer on-model judgement + semantic coverage). These constants are documented
+where they are precisely so that pass can move them.
+
+**✅ PUSHED `7ff587a`.**
+
+## 📋 P2 remaining-work ledger — audited at HEAD `84053aa` (2026-08-08 11:55 CEDT)
+
+Session close-out. Verified against the spec §12 list, the WBS table, the code and the live
+`stubz001` workspace — not from the journal's own claims. **Gates: 418 backend tests green ·
+`tsc` + `vite build` clean · worktree clean + synced.** Everything buildable without the rig
+is built; what remains is one short rig run, one open R&D gate, and a pile of author sign-offs.
+
+### A — Blocks the P2 stamp (one item, ~15 min of rig time)
+
+**M7 acceptance — a clean end-to-end run on char02.** Every other done-line clause is now
+satisfied: template captions ✅ · readiness `ok`/`recommended: true` ✅ (retuned today) ·
+stage → explicit queue ✅ · trained ✅ · promoted ✅ · **test-gen reproduces the character ✅**
+(512², 2026-08-08). The single gap is *provenance*, not capability: the promoted adapter's
+dataset was staged **2026-07-12 17:22**, an hour before M3 was built, so all 79 caption rows
+carry `origin: null` and the **M3→M6 handshake exists in `test_p2_acceptance.py` but never on
+disk**.
+
+**Path (all code exists; nothing to build):** `D · Train` → ⚙ Stage (captions now emit
+`origin: template|edited`) → ▶ Add to queue → train (**500 steps ≈ 11 min** at the measured
+1.34 s/it, and the rig now sustains it) → 🖼 preview at the trained resolution → ⬆ promote →
+**P2 ACCEPTED**. *Cheaper alternative if the author prefers: keep the current adapter and
+record the pre-M3 provenance as a known caveat — the character reproduces either way. The
+re-train is recommended because it is now only ~11 minutes and it makes the acceptance record
+literally true.*
+
+### B — Real work still open (does NOT block the stamp)
+
+**M5 — the sd35 spike (🔴 the last open R&D gate in P2).** Confirmed unrun:
+`LOOM_TRAINER_SD35_GO` is absent from `.env.local`, and `TRAINER_PRESETS["sd35"]` refuses at
+stage time until it is set. The no-GPU slice around it is done (presets, gate-as-code,
+generalized `/lora/stage`, R68 plumbing). **The unknown is the same class P2-0 was:** does
+ai-toolkit train an SD3.5 LoRA on RX 9070 XT / ROCm / 16 GB *at all*? Procedure: set the flag,
+stage a 60-step sd35-medium run, GO ⇒ keep the flag + validate the preset values; **NO-GO ⇒ the
+diffusers-PEFT backend becomes sd35's primary path and must then be BUILT** (today it is
+`DECLARED` only — `POST /lora/stage {"backend": "peft"}` returns 400/R115, per R115). *This is
+the one item that could still add real build effort to P2.* **⚠ Now unblocked** — the hardware
+blocker closed today (fan curves), so nothing stands in front of it but the author's go.
+
+**R68 seed-semantics check (small, rides along with M5).** `+ version` off the promoted v1 →
+stage with init `seed parent` @ 60 steps → the log's `[train-resume]` must report the step-0
+seed. Plumbing built, never exercised.
+
+**M2.12 — GraphRAG retrieval-index SPIKE.** Unbuilt (no module in `orchestrator/`).
+**Explicitly non-gating (R170)** — never blocks the done-line or training; P4 implements the
+real index alongside the embedding model. Sequencing is the author's call.
+
+### C — Author sign-offs (no code, author's word is the artifact)
+
+None of these gate anything; they are the ledger's honest remainder.
+
+| item | state |
+| --- | --- |
+| M0d / M0e / styles-Pass-2 / Train-panel / Stage-D **visual** sign-offs | surfaces in daily use since build — implicit, stamp is the author's |
+| M2.7 — pause→resume **keeps tiles** mid-sweep · **Cast streams** individual candidates | two deliberate checks, never run on purpose |
+| M2.11 — one **subset sweep** fired from the `▦ cells` CellPicker | icon generation stamped; the subset fire itself owed |
+| M2.5 — eyeball `comfy-q8` in a dev job manifest | one glance on the next dev run |
+| **P1 A–H formal rig acceptance** | carried from P1, tracked separately — not a P2 row |
+
+### The honest read
+
+**P2 is one ~15-minute rig session from its stamp**, and the only thing that could still
+enlarge it is an sd35 NO-GO forcing the PEFT backend build. The three findings that shadowed
+the ledger for the last month are all resolved: the identity miss was resolution (not
+undertraining), the hardware shutdowns were cooling (not power), and the readiness meter's
+false verdict was two mis-scoped heuristics (not a bad dataset). Nothing is currently blocked
+on anything but the author's time.
+
+**Not in P2 and deliberately so** (flagged here only so the ledger reads honestly): the
+readiness proxies remain *first-order* — dHash cannot see pose, ArcFace is a photographic model
+reading stylised art, and today's offsets are fitted to one character. §7 routes the real
+answer to the **P4 VLM**, and the author has a **second fine-tuning cycle** planned (code,
+inference settings, possibly base models). Neither is a P2 deliverable.
+
+**✅ PUSHED `25c69ce`.**
+
+## ⭐ M2.12 — GraphRAG retrieval-index SPIKE ✅ + M5/R68 rig prep (started 2026-08-08 12:10, finished 17:55 CEDT)
+
+Author's list for the P2 remainder: **(1) M5 sd35 spike · (2) R68 seed check · (3) M2.12
+GraphRAG spike**, then a UI facelift. (1) and (2) need the GPU, so they are **prepped to
+one-click** here; (3) is no-GPU and is **built**. ⚠ Noted for the author: **M7 acceptance
+was not on the list** — dropping it is a legitimate call (keep the current adapter, log the
+pre-M3 provenance as a caveat) but it is what actually stamps P2.
+
+### M5 + R68 — prepped, nothing left but the author's run
+
+- **Weights are local and complete:** `stabilityai/stable-diffusion-3.5-medium` is fully
+  cached (**34 GB**, diffusers layout + all text encoders). No download, no gated repo.
+- **Gate opened:** `LOOM_TRAINER_SD35_GO=1` added to `.env.local` with the GO/NO-GO
+  semantics written beside it. ⚠ **Requires an orchestrator restart to take effect.**
+- **UI already exposes both**, so neither needs code: Train panel → **`base: sd35 ⚗`** and
+  **`init: seed parent`** dropdowns (`TrainPanel.tsx`).
+- **Preset for the spike:** sd35-medium · arch `sd3` · **512²** (`resolution_max` 512, vs
+  zimage's 768) · rank/alpha 16/16 · qfloat8 · low-vram · grad-checkpointing.
+- **Procedure:** stage a **60-step** sd35 run → GO ⇒ keep the flag + validate the preset
+  values against what ran; **NO-GO ⇒ unset the flag**, and diffusers-PEFT becomes sd35's
+  primary path — today `DECLARED` only (`{"backend":"peft"}` → 400/R115) and **would have
+  to be built**. That branch is the one thing that could still enlarge P2.
+- **R68:** `+ version` off the promoted v1 → stage with `init: seed parent` @ 60 steps →
+  `_resolve_parent_lora` seeds from v1's promoted adapter → the log's `[train-resume]` must
+  report the step-0 seed.
+
+⚠ **Test-isolation bug the flag exposed (fixed):** two M5 gate tests asserted the CLOSED
+state but read it through `config._get`, which falls back to the `.env.local`-loaded dict —
+so opening the gate locally turned them red. `delenv` does not help (it re-exposes the file
+value); an **empty real env var** is what deterministically shuts it. Both tests now set
+`LOOM_TRAINER_SD35_GO=""` and are `.env.local`-proof. **A gate test must not depend on
+whether the author has run the spike.**
+
+### M2.12 — the spike: BUILT, and it found three things
+
+`orchestrator/factgraph.py` — CPU-only, **embedding-free by construction** (a test greps
+the source for `torch`/`faiss`/`cosine`/… because the embedding model ships in P4 and the
+real index uses that same family, R137/R170 — anything vector-shaped here would be
+throwaway). Facts are plain typed triples rebuilt from disk on demand and written to
+**`context/project_facts.jsonl`**, the path `kb-loom-p4.md` §5 already reserves. Surfaces:
+`GET /context/facts[?rebuild=true]` (the verdict) and `GET /context/query?q=…`.
+
+**On the author's live project it extracts 1 675 facts:** 2 assets · 2 versions · 19 styles ·
+80 pose icons · 661 jobs · 79 refs · **29 derivation edges**.
+
+**Named query 2 — "which cells lack a kept ref?" → ✅ FULLY ANSWERABLE.** char02: the frozen
+vocabulary enumerates **120** cells (4 shot × 6 angle × 5 expression), **78 filled, 42
+missing**, and the missing list is exact and actionable (it opens with the entire `back`
+column — `face_closeup__back__*`, `full_body__back__*`). This query alone justifies the
+index: it is the "re-roll just these" guidance §7 promised, computed for free.
+
+**Named query 1 — "which curated refs used style X?" → ⚠ DEGRADED, and the reason is
+structural.** `style_id` is null on **all 79** curated refs. **This is NOT the M2.8 #7 gap
+regressing** — that remediation landed correctly (`keep_ref` takes `style_id`, Stage-B
+stamps it on each cell's meta). It is null because **`bible.resolve_l1` returns a null id
+when the L1 gate is OFF**, and post-**M2.10 route 1** the author runs flux2 expansion with
+the style coming from the **hero reference image**, not from L1 text. So null is *correct
+provenance* — no L1 style was applied. The consequence is the real finding: **style is a
+TRANSITIVE property of the hero, not an attribute of the ref**, so a direct
+`ref --used_style--> style` edge can never answer this for the dominant path. The query
+therefore reports its own blind spot (`unattributed`, plus a note) rather than returning a
+misleading empty list.
+
+**Finding 2 — derivation provenance is split across THREE mechanisms and none is complete.**
+Measured on the live project (661 jobs):
+
+| mechanism | edges | note |
+| --- | --- | --- |
+| `postproc_stacks.json` steps | **24** | the M0c stack surface — structured |
+| `[X postproc of Y]` prompt string | **11** (clean 9 · refine 1 · resize 1) | a *string*, not a field; 6 overlap the stacks file |
+| `job.chained_from` | **0 of 661** | the field designed for this, populated nowhere |
+
+The union is **29**. That this matters is not theoretical: walking the author's **starred
+hero** back to its origin takes **2 hops and needs BOTH sources** — hop 1 `postproc_stack`
+(resize), hop 2 `prompt_convention` (clean) — reaching
+`job_6c400fcf/sd35_20260704_150332…`. Either source alone loses the trail.
+
+**Finding 3 — no durable `generated_under_style` edge exists on an image.** `style_of_output`
+walks the chain to the origin and still resolves `null`: the style lived only in the *job
+request*, never on the artifact. Combined with finding 1, this is **the concrete thing P4's
+index must add** — one style edge stamped at generation time, on the image.
+
+### Verdict for P4 (the spike's actual deliverable)
+
+**Feasible and cheap** — a full rebuild over ~700 jobs is well under a second, so P4 needs no
+incremental index for a project this size; a rebuildable derived view is the right shape, and
+`project_facts.jsonl` is the right home. The graph spine (asset → version → ref → cell, plus
+job/produced/derived_from) is **already fully supported by what P2 writes**. Two edges must be
+added *at write time*, because no amount of indexing can recover them later:
+1. **`generated_under_style`** on the produced image (findings 1+3), and
+2. **one authoritative derivation edge** — populate `job.chained_from` and retire the prompt
+   convention (finding 2).
+
+Both are small additive writes at generation/postproc time. **Neither is P2 work** and neither
+is proposed here: R170 keeps M2.12 non-gating, and the author's second fine-tuning cycle is the
+natural home. Recorded so P4 inherits the finding rather than rediscovering it.
+
+**Tests +6 → 424 green** (rebuild + persist to the P4 path + idempotence · query 2 exact
+against the frozen 120-cell matrix · query 1 names its blind spot both ways · the derivation
+walk unions both mechanisms and still fails to resolve style · the report states which queries
+work · the embedding-free source contract), `tsc` + `vite build` clean.
+
+**✅ PUSHED `c9ab8ae`.**
+
+## ⭐⭐ M5 sd35 SPIKE = **GO** + sd35 inference LoRA / preview (2026-08-08 18:05–18:50 CEDT)
+
+### The last 🔴 R&D gate in P2 is passed
+
+**The author trained an sd35 LoRA on the rig: `job_a5edadc9` — sd35-medium, base_family
+`sd35`, 500 steps @ 512², `status: completed`, artifact real, `note: step 499/500 · loss
+0.469`.** So the M5 front-gate question — *does ai-toolkit train an SD3.5 LoRA on
+RX 9070 XT / ROCm / 16 GB at all?* — is answered **GO**.
+
+**Wall clock: 341.95 s — 1.8× FASTER than zimage's 612 s for the same 500 steps** (0.68 s/it
+vs 1.34), despite sd35-medium being the larger model. Worth noting for preset sizing.
+
+**Consequence: the diffusers-PEFT backend is OFF the critical path.** R115 kept it as sd35's
+fallback *if* ai-toolkit couldn't train SD3.5; it can, so PEFT stays `DECLARED` only
+(`{"backend":"peft"}` → 400/R115) and **the one branch that could still have enlarged P2 is
+closed.** `LOOM_TRAINER_SD35_GO=1` stays set; the sd35 preset values are validated by a real
+run (512², rank/alpha 16/16, qfloat8, low-vram, grad-checkpointing all held).
+
+### The wall the author hit: a trained sd35 LoRA could not be previewed
+
+**`preview_request` was hardwired to zimage** ("preview supports the zimage base for now —
+sd35 inference LoRA loading lands with the M5 spike"). The spike has now landed, so that
+sentence had to become code. It was not a one-line guard flip — **the sd35 worker had NO
+LoRA support whatsoever** (`grep lora pipelines/…/sd35/*.py` → nothing). Built, mirroring the
+zimage path exactly:
+
+- **Worker** `sd35/stage1_load_pipeline.py`: `lora_path`/`lora_name`/`lora_weight`; the
+  adapter is resolved **before** the slow pipeline load so a bad path fails fast, attached
+  via `load_lora_weights` + `set_adapters` **before** offload/placement so the hooks wrap the
+  merged modules, and reported in the manifest (`lora` block, the zimage convention).
+- **Worker** `sd35/run_pipeline.py`: the three args on `run()`, three CLI flags, the single-run
+  call site, and the **batch** loader — where they join `_BATCH_SHARED_ONLY`, because an
+  adapter is load-bound exactly like the model itself and must never be per-item.
+- **Catalog** `sd35.params`: the three flags (`--lora-path/-name/-weight`).
+- **Adapter** `sd35.WIRED_PARAMS`: the three params, so argv actually carries them.
+- **`PREVIEW_PIPELINES`** replaces the zimage special-case — `base_family → (pipeline,
+  default variant)`. A family belongs there **only once its worker can load a LoRA at
+  inference**; anything else refuses loudly rather than previewing through the wrong base.
+  That matters: rendering an sd35 adapter through the zimage worker would silently produce
+  zimage's prior — the 2026-07-15 resolution lesson wearing a different hat.
+
+**PEFT rides along unchanged:** sd35's `load_lora_weights` needs it just as zimage's does, so
+the preview job keeps carrying `runtime_overlay` (R103) and the runner keeps prepending it to
+the worker's PYTHONPATH.
+
+⚠ **Bug the test caught before it shipped:** the preview reused `settings["model_name"]`
+blindly, but that is the **TRAINER's** identifier — zimage's `zimage-base` happens to be a
+valid inference variant too, while sd35 trains as **`sd35-medium`** and the worker keys on
+**`sd3.5-medium`**. The preview would have handed the worker an unknown model. It now accepts
+the trained name only when the **catalog knows it for that pipeline**, else falls back to the
+family's default variant.
+
+⚠ **Vendor drift guard fired (R162), correctly:** `sd35/run_pipeline.py` is a byte-matched
+mirror of the monorepo source. Both touched files (`run_pipeline.py`,
+`stage1_load_pipeline.py`) were **re-vendored to `src/pipeline/sd35/`** so the guard is green
+— the monorepo stays the source of truth.
+
+**Tests +2 → 426 green** (the sd35 preview submits to the **sd35** pipeline with the right
+variant, the artifact, the overlay, stage D + version scope, and the pose/trained-res defaults
+working identically across families — plus source contracts asserting the worker, catalog and
+adapter all really carry the LoRA flags; and a family with no inference LoRA path refuses).
+`tsc` + `vite build` clean.
+
+**Rig-owed (small):** the sd35 preview eyeball itself — `🖼 preview ▸ ▶` on `job_a5edadc9`
+(restart the orchestrator first so the new worker code and the `LOOM_TRAINER_SD35_GO` flag are
+live). Then ⚖ A/B against the bare base, exactly as for zimage.
+
+### P2 ledger
+
+**M5 is now ✅ complete on its own terms** (preset registry · gate-as-code · generalized
+`/lora/stage` · R68 plumbing · **the spike itself GO** · sd35 inference LoRA + preview);
+what remains from the earlier list is the **R68 seed-semantics check** (prepped, one 60-step
+run) and the **M7 acceptance stamp** (author's call — see the ledger entry).
+
+**✅ PUSHED `17dd1c5`.**
+
+## ⭐ Styles pass 1 — durable provenance + the double-styling fix (author's UI facelift, obs. 1) (2026-08-08 19:00–19:55 CEDT)
+
+**Author's report:** *"styles in general are handled poorly during the whole process"* — three
+parts: (a) picking a style by NAME is guesswork without the L1 sample; (b) *"when a style
+prompt is merged with the original prompt, further processing will not result in a clean
+output, as it will contain two different style definitions"*; (c) i2i/postproc carry the input
+image's style baked in, *"but it would still be handy to track what style the original
+image(s) had"*.
+
+**(b) and (c) are the same two gaps the M2.12 spike had just measured independently** —
+findings 1 and 3. That convergence is why this landed first (author's sequencing choice).
+
+### (c) A generated image now RECORDS its style
+
+`runner.submit(..., style_id=...)` stamps the **resolved** L1 id on the job — one style per
+run, `None` when the gate was off (which is real provenance, not a gap). Wired at **all five**
+generation submit sites: `/generate` ×2 (multi lineup + count loop) and Stage-B ×3 (warm flux2
+cells, warm i2i/inpaint cells, cold batch). `keep_ref` now falls back to the job's stamp when
+per-output meta has none, so curated refs inherit provenance from every path — not just the
+Stage-B cells M2.8 #7 covered.
+
+The fact graph emits `job|image --generated_under_style--> sty_X`, so the spike's
+`style_of_output` **resolves directly instead of walking and failing**. The report's verdict
+is now computed, not hardcoded: it flips to `answerable` once the stamped edges exist (legacy
+artifacts predate the stamp and stay unresolvable — honest, not retrofitted).
+
+### (b) Postproc stops stacking two style definitions
+
+Root cause: a postproc step inherits the **source image's prompt**, which already ends in the
+fragment that generated it (R104 appends), and then StyleLock/any styled path appended the
+*current* style on top — so the prompt described two different looks at once. The style is
+baked into the source pixels; text cannot un-bake it.
+
+**New default: inherit, never restate** — the M2.10 route-1 rule generalised from flux2
+Stage-B to the whole postproc stack (author's chosen option). **Override:** `apply_style: true`
+(+ optional `style_id`) deliberately re-styles, and `bible.strip_style_fragment` removes the
+**inherited** fragment first so exactly one definition survives. The strip is deliberately
+conservative — exact case-insensitive match of a known fragment plus its joining comma, never
+a fuzzy chunk of the author's own wording — and it uses the source job's stamped `style_id` to
+know which fragment to remove, falling back to trying every defined style for legacy images.
+StyleLock keeps applying by default; that IS its job. `apply_style`/`style_id` are now allowed
+params on every i2i preset, not just StyleLock.
+
+### Finding 2 closed as a side-effect: ONE authoritative derivation edge
+
+`chained_from` existed in the schema but was populated on **0 of 661** real jobs, because only
+the auto-chained passes set it and the author uses the manual postproc surface. That surface
+now records it, and the fact graph reads it **first**, leaving `postproc_stacks.json` and the
+`[X postproc of Y]` prompt string as pure legacy fill-in (each derivation edge is labelled with
+its `via`, so the mix stays measurable). This is also the robustness the author asked for in
+observation 2 — *"our tracking of post-processed images should also be more robust, so we could
+easily track any post-proc image what was its generated based on"* — and it is the foundation
+the grouped tree needs to be accurate, which is why it came before the tree.
+
+### (a) The style picker shows its sample
+
+A 30 px chip in the L1 style bar renders the **current** style's `bible/styles/` sample and
+opens a grid popover of every style with its own sample (name + ★ default marker, fragment on
+hover). The `<select>` stays for keyboard/accessibility. Styles without a sample show a
+placeholder rather than an empty box.
+
+**Tests +4 → 430 green** (a generated image records its style and records `None` honestly when
+the gate is off · postproc inherits exactly ONE definition and stamps the inherited style ·
+a deliberate restyle REPLACES rather than stacks and keeps the author's own wording ·
+`chained_from` is emitted as the authoritative edge and the spike's degraded queries flip to
+answerable). `tsc` + `vite build` clean.
+
+**Next (author's pass 2):** the grouped/collapsible tree view — operation groups at top level
+(keyed on `batch_id`) with postproc derivations nested under their source, a toggle beside the
+existing flat grid, and group operations including group delete.
+
+**✅ PUSHED `7453195`.**
+
+### Style bar → picker-only (author, same day)
+
+*"there is really no need for the style description and the save button to be there, it just
+takes up space — also, styles should only be edited at L1/Visual Styles… would it be possible
+to select the style by only using the images?"*
+
+**Yes — the popover already selected visually, so the dropdown was redundant.** The L2 style
+bar is now **selection only**: the sample chip (opens the visual grid), the style's name (also
+opens it, and says which one is live + ★ if it is the project default), and the stage-aware
+**apply** tick. Removed: the fragment `<input>`, the **Save** button, and the name `<select>` —
+with `styleDraft`, `setStyleDraft` and `onSaveStyle` deleted rather than left dangling.
+
+⚠ **One thing Save was quietly doing:** it persisted `enabled_default` (the project-level
+"apply by default" gate) as well as the fragment — and that gate was settable from **nowhere
+else**, so deleting the button would have stranded it at whatever it already was. It moved to
+**L1 · World › Visual styles** with the rest of style authoring, as an *"apply by default"*
+tick beside `+ add style`; the L2 bar's tick still overrides it per generation. Styles are now
+authored in exactly one place, which is what the author asked for.
+
+**430 tests green** (unchanged — this pass is FE-only), `tsc` + `vite build` clean.
+
+**✅ PUSHED `4a8031e`.**
+
+
+## ⭐ Pass 2 — the grouped operation/derivation tree (author obs. 2) (2026-08-08 20:10–20:55 CEDT)
+
+**Author:** *"multi-candidate generations, batch generations, post-proc and expansions are
+increasing the image libraries significantly… it would be wise to introduce another view, where
+images could be grouped together based on the operation they have been created… The current
+view should still exist… but we should also have a toggle switch, that enables these grouped
+views, working in a collapsable tree structure. This should also enable group operations —
+like group delete."*
+
+### Shape: operation groups at the top level, derivation nested inside
+
+New **dedicated module** `app/src/GroupedGrid.tsx` (M2.8 monolith policy — new feature families
+stay out of `App.tsx`). Top level = the operation, keyed on **`batch_id`**; inside a group,
+postprocessed images nest under the job they were derived from via **`chained_from`**:
+
+```
+▾ ▦ Expansion sweep · flux2 · 24 jobs · 24 images · 12:04     🗑 group
+   [cell tile]
+      └ clean · zimage · job_5f6bc34e
+         [clean tile]
+            └ resize · job_63eb6a88
+               [resized tile]
+▸ 🎭 Cast · zimage · 6 jobs · 11:12
+```
+
+Group labels come from the submit-site batch prefixes (`prv_` preview · `trn_` training ·
+`rdn_` readiness · `poses_` icons · `bat_` + stage → Cast/Expansion/Batch); a **solo postproc
+job carries no batch id**, so it is keyed individually rather than collapsing every unrelated
+pass into one "no batch" bucket.
+
+**Nesting is by JOB, not by output — deliberately.** A derivation is not always 1→1: the manual
+postproc surface is (one image → one pass), but an **auto-chained pass is 1→N** — a single job
+over every output of its parent. Hanging that off one tile would be a lie, so children attach
+to the parent job and read correctly in both cases. A job whose parent is outside the current
+scope (deleted, or filtered out by the stage) becomes a root rather than vanishing.
+
+### The flat view is untouched — and cannot drift
+
+The classic grid stays exactly as it was; a `▦ flat / 🌳 grouped` toggle swaps the tree in over
+the **same scope**. Crucially the tile JSX was **extracted into one shared `renderTile`** that
+both views call, so selection, curation, star/keep/cull, delete, bulk-select and the lightbox
+behave identically — they are literally the same function, not two implementations. The toggle
+is hidden in **Stage C**, where curation is a flat triage pass and a tree would only get in the
+way.
+
+### Group delete
+
+`🗑 group` loops the **audited per-job `DELETE /jobs/{id}`** rather than inventing bulk
+semantics: each call is atomic and orchestrator-owned (out dir, manifest, log, queue entry,
+lineage edge — R80), and a running/queued job **409s instead of half-deleting**. The confirm
+states the job count, warns how many are still running, and says out loud that the group
+**includes anything postprocessed from it** (the tree collects descendants). The tally reports
+what could not be removed instead of failing silently.
+
+### Why this needed the styles pass first
+
+The tree is only as good as `chained_from`, which the M2.12 spike measured at **0 of 661 real
+jobs** — the manual postproc surface never set it. That was fixed in the styles pass, which is
+why the sequencing mattered: nesting now reads a real edge instead of reconstructing one from a
+`[X postproc of Y]` prompt string.
+
+**Tests +2 → 432 green** — no JS runner in this repo, so the established pattern: a
+**behavioural** check that one operation really shares one `batch_id` and a postproc job really
+points at its source (the two keys the tree nests by, asserted on live submissions), plus a
+**source contract** for the FE (dedicated module · groups by batch_id · nests by chained_from ·
+the flat view survives behind the toggle · ONE shared tile renderer · group delete loops the
+audited single delete and reports skips). `tsc` + `vite build` clean.
+
+**Owed:** the author's visual sign-off on the tree — and it wants a real library to be judged on
+(char02's 661-job project is the honest test, not a fixture).
+
+**✅ PUSHED `dc6ce45`.**
+
+### Pass 2 design revision — cards, covers, and the one-column bug (author feedback, same day)
+
+*"I like the grouping logic, but the design I'm not happy with"* — three complaints, three
+fixes. The grouping/nesting logic is unchanged; this is layout only.
+
+**#3 was a real BUG, not a preference.** *"when opening a collection, you can see a list of
+tiles in one column"* — each root job rendered **its own** `.tree-tiles` grid, and since a cell
+job produces one image, a 24-cell expansion sweep drew **24 stacked single-tile grids**. The
+`auto-fill` track sizing was right all along; it just never had more than one tile to work
+with. Now every **childless** root pools its tiles into **ONE grid** per group, and only a root
+that genuinely has derived children keeps its own nested block (which is what carries the
+`└ clean → └ resize` chain). Groups of independent images fill the width; chains still read as
+chains.
+
+**#1 — the bars ate vertical space.** Collapsed groups are now **cards in a multi-column grid**
+(`auto-fill, minmax(210px, 1fr)` — two-plus columns at any usable width). An **open** group
+takes `grid-column: 1 / -1`, so it spans every column and its tiles get the full width. One
+layout serves both jobs: scanning many operations, and studying one.
+
+**#2 — a bar told you nothing about its contents.** Each card now leads with a **cover image**
+— the first tile in the group that actually has one, walked depth-first through the derivation
+children so a postproc-only group still shows something — with the label and facts
+(pipeline · job count · image count · time) underneath, plus a `×N` badge when the group holds
+more than one root. Queued/failed/video tiles resolve to no cover and fall back to a
+placeholder rather than a broken image.
+
+The group `🗑` moved into the expanded header (it needs the deliberate act of opening a group
+first, which is the right friction for a destructive bulk action).
+
+**Tests +1 → 433 green** — a layout contract pinning all three fixes: the card grid + the
+full-width open group, the cover resolver, and specifically the childless-root pooling that was
+the one-column bug. `tsc` + `vite build` clean.
+
+**✅ PUSHED `fcd1eb7`.**
+
+### Pass 2 follow-ups — Stage C, horizontal chains, and BRANCHING postproc stacks (author, same day)
+
+Three questions, and the third turned out to be a real capability gap rather than a view issue.
+
+**1 — Stage C was omitted deliberately, and the reason was wrong.** Curation is a flat triage
+pass, so a tree looked like clutter. But the author asked, and the real objection was narrower
+than "no": Stage C shows **durable curated refs** — a version copied from a parent keeps its
+`refs/` files and has **no jobs behind them** — and a job-derived tree cannot hold those, so
+switching views would have silently dropped part of the set. Fixed properly instead of
+excluded: the toggle is available in Stage C, job-less tiles are surfaced as their own
+**📌 Curated refs** group, and the tree now reads the **same filtered `stageCells`** the flat
+grid does, so the coverage filters and hide-rejected apply identically in both views (they did
+not before — the tree was reading the unfiltered `cells`).
+
+**2a — chains now read LEFT→RIGHT.** *"stacking image tiles in a tree structure will result in
+a lot of space wasted"* — correct. A descent is a row (`source → clean → upscale`) that scrolls
+sideways rather than squeezing tiles; the **only** thing that costs vertical space is a real
+**fan-out**, which is exactly when the shape carries information.
+
+**2b — ⭐ postproc stacks BRANCH now.** *"we don't allow anything else, but the stack… if
+someone wants to test different strengths, or types of post processing, the same base image
+cannot be used for that."* Exactly right, and it was a one-line assumption in `add_step`:
+`source = steps[-1]["output"]`. The stored shape already carried a **per-step `source`**, so
+the data model was a tree all along — only the writer was a chain.
+
+- `add_step(..., source=...)` names the branch point: the base, or any **finished** step's
+  output. Omitted ⇒ the old continue-the-chain behaviour, so nothing existing changes.
+- Branching from an unfinished step is refused — a source must be a real image on disk.
+- `remove_step` was *"only the LAST step"*, which is the same rule while a stack is linear.
+  It is now **"any LEAF"**: what actually matters is never orphaning steps sourced from the
+  one being removed, and a branched-from step is refused with that reason.
+- `GET /postproc/sources?base=` lists the legal branch points, and the panel offers them
+  (`↳ continue the chain` · `⌂ from the base image` · `⑂ from #N <preset>`).
+
+⚠ **A decorator moved when it should not have.** Inserting `stack_sources` directly above
+`add_step` left `@_mutates_store` attached to the **new read-only function**, silently
+unlocking the mutator — caught immediately by the M2.8 #3 thread-safety test, which is exactly
+what it exists for. Restored onto `add_step`.
+
+**3 — how styles behave in postproc (the author's question), answered precisely.** The stored
+prompt of a generated image **already contains** the style fragment (R104 appends it at
+generation), so a postproc step inheriting that prompt carries the original style **as text,
+merged** — nothing re-applies it. That is the fix from the previous pass and it is correct.
+**But restyling was only reachable via the StyleLock preset**: `apply_style` existed in the API
+after that pass and had **no UI control**, so on a Clean/Refine/Upscale pass there was no way to
+ask for a different style. Now there is — a **`restyle`** tick on every i2i preset, which
+applies the chosen L1 style and **strips the inherited fragment first** (using the source job's
+stamped `style_id`) so the prompt never describes two looks. Off by default: the source's style
+is baked into its pixels, and text cannot un-bake it.
+
+**Tests +4 → 437 green** (branching: two first-level passes off one base, an unfinished source
+refused, the branch-point list · leaf-only removal with a named refusal · chains horizontal +
+Stage C included + orphan refs surfaced + both views on the same filtered cells · the branch
+picker and restyle tick reachable in the panel). `tsc` + `vite build` clean.
+
+**✅ PUSHED `b2e0d27`.**
+
+### Pass 2 follow-up — the branch picker's gate, and per-lineage cards (author, same day)
+
+**1 — the branch picker was gated on a FINISHED step, which blocked its own use case.** It
+rendered only when `stack.steps.some(st => st.output)`, so with one pass still queued there was
+no picker at all — and *"test different strengths"* is precisely the case where you configure
+the second variant while the first is still running. Worse, that is the one moment the old
+backend refused outright ("queue and finish the previous step before adding another"), so the
+combination left the feature unreachable exactly when wanted. It now appears as soon as the
+stack has **any** step: `↳ continue the chain` · `⌂ branch from the base image` · `⑂ branch
+from #N <preset>`, with only *finished* outputs listed as branch points (an unfinished step is
+not an image yet — the backend enforces this, and the tooltip says why).
+
+**2 — each lineage is now its own collapsible card inside the group.** An open operation
+holding several postproc lines got long, and folding one away should not cost the whole
+operation. Every chain root renders as a nested card with its own toggle, keyed
+`${group}::${job}` so two groups can never collide. Collapsed, it still carries meaning: the
+lineage **shape** (`clean → resize`, or `clean +2 branches` once it fans out), the **pass
+count**, and a **thumbnail** — so a folded lineage is still identifiable at a glance.
+
+**Tests +1 → 438 green** (the widened gate + the old condition asserted GONE; per-lineage cards
+with a namespaced collapse key and a collapsed state that still describes itself). `tsc` +
+`vite build` clean.
+
+**✅ PUSHED `4f166f0`.**
+
+### Pass 2 follow-up — control rows must WRAP (author, same day)
+
+*"there are multiple options to the right that don't fit the inspector panel — after the model
+picker there are 2 more pull-downs, that can only be seen when the panel is scrolled right"*.
+
+**Self-inflicted and exactly diagnosable.** `.pp-add-row` is a **non-wrapping** flex row. It was
+built for three controls (preset · backend · style); the branching work added two more (branch
+point · restyle), and in the narrow inspector the last two left the viewport entirely —
+reachable only by scrolling sideways, which nothing signposted. `flex: 1` on the selects made it
+worse: they shared the overflowing width instead of forcing a wrap.
+
+**Fixed:** the row wraps, and its selects carry `flex: 1 1 118px; min-width: 108px` — a readable
+floor is what turns "squeeze five selects into slivers" into "wrap onto a second line". Two side
+by side when there is room, stacked when there isn't.
+
+**Swept the rows added in this session for the same bug** rather than fixing only the reported
+one. `prev-opts`, `prev-pose-row` and `tree-head` already wrapped. Two did not and hold
+**variable-length text**, so they were the same bug waiting: **`.style-bar`** (a style NAME, up
+to 22ch) and **`.chain-card-head`** (a lineage description like `clean → resize → upscale
++2 branches`) — both now wrap, and the lineage toggle can break a long label instead of pushing
+the thumbnail off the edge. `view-toggle` and `tree-bar` hold fixed short content and were left
+alone.
+
+**Tests +1 → 439 green** — a layout contract asserting the wrap on all three at-risk rows plus
+the select floor, so the next control added to that row cannot silently reintroduce it.
+`tsc` + `vite build` clean.
+
+**✅ PUSHED `7725ac6`.**
+
+### Pass 2 follow-up — a folded lineage is a TILE, not a bar (author, same day)
+
+*"when we collapse a sub-card, can it not take a shape of a bar, rather the same image tile size
+as the rest of the images inside the card — the mechanics should work the same way as with the
+main card collapse"*.
+
+Right, and it makes the whole view consistent: **one visual language for "a collection folded
+away", applied at both levels.** A collapsed lineage now renders with the **same `.tree-card`
+shape a collapsed GROUP uses** — cover image, name, facts underneath — sitting in the grid as
+one more tile beside the group's plain images. Expanding it takes `grid-column: 1 / -1` and
+spans the row, exactly like opening a group card one level up. The old bar (a 34 px thumbnail
+shoved to the right) is gone.
+
+The structural change that makes it work: **`.tree-body` IS the tile grid now**, holding the
+plain tiles and the lineage cards as siblings. Previously it was a flex column wrapping a
+separate `.tree-tiles` grid, which is why a folded lineage could only ever be a full-width row.
+
+⚠ That reshuffle re-armed the **one-column bug** in a second place: the orphan (Stage-C curated
+refs) group still nested a `.tree-tiles` grid *inside* the now-grid body, which would have
+squeezed it into a single column — the exact failure fixed one level up an hour earlier. Caught
+and flattened; `.tree-tiles` is now unreferenced and its rule deleted, so the shape cannot come
+back. The badge on a folded lineage reads `⑂N` (branch count) rather than the group card's
+`×N`, so the two levels stay distinguishable at a glance.
+
+**439 tests green** (contract extended: the body is the grid, an open lineage spans the row, the
+collapsed card reuses `.tree-card`, and `tree-tiles` is asserted GONE from both the module and
+the stylesheet). `tsc` + `vite build` clean.
+
+**✅ PUSHED `db9fd6f`.**
+
+## ⭐ Rig finding — the i2i step budget: a "Clean" that did almost nothing (2026-08-09)
+
+**Author:** *"job_724798a6 is a flux clean job, but it is exactly the same as the input image.
+Did this job silently fail?"*
+
+**No — and that is the interesting part.** Exit 0, `manifest_status: completed`, all four
+stages completed, a real 930 KB output written, **93 % of pixels changed**. Nothing failed. It
+did exactly what it was told, and what it was told was almost nothing.
+
+**The denoise stage is the whole story:** `num_steps: 4`, **`num_timesteps: 2`**,
+**`timesteps: [0.6, 0.0]`**. Strength 0.6 WAS applied — denoising started at t=0.6 — but
+`num_steps` is the **FULL schedule** and an i2i run walks only the last `strength × num_steps`
+of it. `flux.2-klein-4b` defaults to **4 steps** (it is distilled for 4-step t2i), so
+0.6 × 4 = **2 timesteps**, and the schedule hops 0.6 → 0.0 in ONE move. Mean pixel delta
+4.4/255: the collar and cuffs got marginally crisper and nothing else moved. 38 s of load time
+to produce a wash.
+
+**Who else is affected** — the distilled/turbo variants, and Refine is worse than Clean:
+
+| model | preset steps | effective @0.5 | @0.25 |
+| --- | --- | --- | --- |
+| **flux.2-klein-4b / 9b** | 4 | **2** | **1** |
+| **sd3.5-large-turbo** | 4 | **2** | **1** |
+| zimage-turbo | 9 | 4 | 2 |
+| flux.2-dev | 8 | 4 | 2 |
+| sd3.5-medium | 40 | 20 | 10 |
+| zimage-base / klein-base | 50 | 25 | 12 |
+
+### Fix 1 — a FLOOR on effective steps, not a blanket rescale
+
+`model_catalog.i2i_step_budget()` returns `(num_steps_to_request, effective_steps)`. When the
+model's own preset already clears `MIN_EFFECTIVE_I2I_STEPS` (4) it returns `None` — send
+nothing, keep the worker's default. Only below the floor does it raise the request to
+`ceil(4 / strength)`, capped at `MAX_I2I_STEPS` (60) so a 0.05 strength cannot explode into a
+400-step run.
+
+⚠ **This deliberately differs from the "scale by 1/strength" I first proposed.** Rescaling
+*everything* to its full budget would take sd3.5-medium from 40 to **80** requested steps —
+doubling the cost to buy nothing, since 20 effective steps was already ample. The floor moves
+only the degenerate cases: klein 0.6 → request 7 (4 real), klein 0.25 → request 16 (4 real),
+sd35-large-turbo likewise; sd35-medium, zimage-base, zimage-turbo and dev are untouched.
+
+Wired into **both** i2i job builders — flux2 (single-run) and zimage/sd35 (batch_items) — at
+queue time, reading the step's stored params (the preset's strength is merged in at add time,
+so it is always present). An UNSET model resolves the pipeline's default variant, because that
+is what the worker will actually run.
+
+### Fix 2 — the panel says what will actually happen
+
+Beside the strength field: **"≈N effective steps"**, and **"(asking N)"** in amber when loom had
+to raise the request. Display == reality — the FE mirrors the same arithmetic, and a test
+asserts the two floor constants are literally equal, so the readout cannot quietly start lying.
+A degenerate strength/model pairing is now visible *before* queueing instead of after a
+forensic dig through the manifest.
+
+**Tests +3 → 442 green** (the budget rescues both distilled families at 0.6 and 0.25, leaves
+the four already-adequate models untouched, caps a pathological strength, and predicts from the
+default variant when the model is unset · the corrected `num_steps` reaches the job on both
+the flux2 single-run and the sd35 batch path · the readout exists and its floor matches the
+backend's). `tsc` + `vite build` clean.
+
+**✅ PUSHED `2a40d07`.**
 
 
 ## ⭐ flux2 i2i schedule (the PROPER fix) + stack/delete consistency via tombstones (2026-08-09)
@@ -154,7 +3641,7 @@ whether a 4-step distilled klein is a satisfying cleaner at all.
 
 **PUSHED `ef22ab6`.**
 
-### Removing a step deletes the image it produced (2026-08-09)
+## ⭐ Removing a step deletes the image it produced (2026-08-09)
 
 Author: *"I removed the last step on the stack, but the image is still there, it should have
 been deleted."* — the mirror of the delete that never reached the stack, and the other half of
@@ -180,3 +3667,86 @@ concurrency slot and stalls every later module's queue — 38 unrelated failures
 Always hand the slot back in a `finally`.
 
 **PUSHED `0afdabe`.**
+
+## ⭐ P2 close-out audit — source vs docs vs journal (2026-08-09)
+
+Author's request before signing off M7: *"go through the source code, the docs and the journal
+and check if there are no lose ends, or inconsistencies."* Six found, all fixed.
+
+### 1. 🔴 THE JOURNAL HAD BEEN TRUNCATED — 241 KB lost (my error)
+
+`kb-loom-p2-imp.md` was **241 640 bytes at `4e7c32f`** and **4 167 bytes at the next journal
+commit, `dc6ce45`** — I wrote the "grouped image browser" entry with a whole-file write instead
+of an append, destroying M0 through "Styles pass 1". It happened a second time at `f3ac8d9`
+(truncated to **0 bytes**), losing the six entries written since.
+
+Nothing was lost from git, so recovery was exact: `4e7c32f` (the last full version) + `33e93fd`
+(cumulative for the first stub era) + HEAD (cumulative for the second). The three eras are
+strictly chronological and share no heading, so the concatenation is the original file.
+**Restored: 272 024 bytes, 44 entries, M0 → today.** Verified by heading list.
+
+**Rule going forward, no exceptions:** this file is APPEND-ONLY. Write the entry to the
+scratchpad, then append in **binary** (`open(..., 'ab')`) — never `Write`, never `'w'`. The
+binary mode is what dodges the `UnicodeEncodeError: surrogates not allowed` that made a
+whole-file rewrite tempting in the first place.
+
+### 2. §12 stopped at M2.12 while the journal had eight more entries
+
+Everything built 2026-08-08/09 (styles, grouped view, branching stacks, tombstones, the flux2
+schedule) existed only in the journal, so the spec's milestone ledger read as if P2 ended at
+M2.11 + M7. Added **§12 "3i. M2.13"** covering all four threads. It also records that the
+style-provenance work **closes half of M2.12's standing requirement** that P4 add two edges at
+write time — `generated_under_style` now exists on the job record as it is written (46 edges
+live); the derivation edge stays P4's.
+
+### 3. Two stale code comments that would mislead the next reader
+
+- `postproc.py`'s module docstring still said *"A stack is a linear chain … steps append/remove
+  at the tail"*. It has been a **tree** since 2026-08-08 and removal is **leaf-based**. Rewritten
+  (including that removal now takes the step's image with it, and that `reconcile` is
+  authoritative on every read).
+- `main.py`'s i2i-budget comment still blamed the flux2 no-op on `strength × num_steps`. That was
+  the *diagnosis that turned out wrong*; the real cause was the flux2 schedule, fixed in the
+  worker. The budget's actual job is a floor for the **diffusers** backends. Rewritten, with the
+  correction stated rather than quietly dropped.
+
+*(The identical "linear chain" line in the journal's M0c entry was deliberately LEFT — a journal
+records what was true when written. Rewriting history there would be the real inconsistency.)*
+
+### 4. M5's rig-owed list contradicted its own GO stamp
+
+The 🟡 slice line still read *"RIG-OWED: the sd35 spike itself, the seed-semantics check, and the
+PEFT backend build"* directly under the ⭐ line recording the spike as **GO**. Struck through
+both settled items (PEFT is off the critical path — the spike passing left it declared-only per
+R115) so the one genuinely open item, **the R68 seed-semantics check**, stands alone.
+
+### 5. The README's P2 block cited P1's spec and journal
+
+The status blockquote runs P1 → P2, but its closing citation pointed only at `kb-loom-p1.md` /
+`kb-loom-p1-imp.md`. Now cites p2 first. Also brought the block up to date: it stopped at
+2026-08-08 / 418 tests, missing M5's GO, M2.12 and all of M2.13 (569 tests).
+
+### 6. ⚠ P3 did not carry P2's most load-bearing constraint
+
+`kb-loom-p3.md` §5 has the compositor generate the character layer **with its P2 LoRA** at the
+pinned `asset@version` — with nothing about resolution. But 2026-08-08 proved on char02 that
+**a LoRA holds identity only at the resolution it was trained at**: the same prompt/seed/adapter
+at 2× returns the bare base prior. A P3 that generates character layers straight at keyframe size
+would silently lose identity **while looking perfectly plausible** — the worst failure mode there
+is. Added the constraint as a ⚠ block on the character layer: generate at the adapter's trained
+resolution (it is in `lora.manifest.json`), then upscale into the keyframe (M0e `Upscale ✨`, or
+Lanczos for pure downscaling). Also refreshed the doc's stale `R1–R123` parent stamp to R170.
+
+### Clean
+
+No `TODO`/`FIXME` in orchestrator or app source (one pre-existing deferral in `components.py`,
+checksum verify, awaiting the companion repo). R162 vendor drift guard green. **569 tests**, tsc
+and vite clean.
+
+### What P2 still owes — all of it GPU, none of it code
+
+1. **M7 stamp** — one re-stage of char02 (the promoted run's captions predate M3, so `origin` is
+   null and the M3→M6 handshake isn't on disk) → queue (~11 min) → preview → promote.
+2. **R68 seed-semantics check** — one ~60-step run seeded from a parent checkpoint.
+3. **Eyeballs** — the flux2 schedule fix's visible result, the sd35 preview, the grouped view
+   against the full library.

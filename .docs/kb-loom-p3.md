@@ -2,7 +2,7 @@
 
 Created: 2026-06-02
 Status: spec (not yet implemented; depends on P0 + P1 + P2)
-Parent: [`kb-storyboard01.md`](kb-storyboard01.md) (overview + decision record R1–R123)
+Parent: [`kb-storyboard01.md`](kb-storyboard01.md) (overview + decision record R1–R170)
 Predecessors: [`kb-loom-p0.md`](kb-loom-p0.md) · [`kb-loom-p1.md`](kb-loom-p1.md) · [`kb-loom-p2.md`](kb-loom-p2.md)
 Engine: [`kb-pipelines01.md`](kb-pipelines01.md) (animation loop, the L3 backend) · video: [`kb-wan2.md`](kb-wan2.md), [`kb-hunyuan.md`](kb-hunyuan.md), [`kb-ltx09.md`](kb-ltx09.md) · 3D: [`kb-trellis2.md`](kb-trellis2.md) · postproc: [`kb-postproc-img.md`](kb-postproc-img.md)
 
@@ -170,6 +170,14 @@ Build the segment's **start keyframe** by compositing reusable layers (`kb-pipel
 
 - **Character** — generated **with its P2 LoRA** (+ optional anchor, R82) at the pinned
   `asset@version`; cut out via **BiRefNet matting** (P1 postproc) for an alpha layer.
+  > ⚠ **Carried from P2 (2026-08-08, proven on char02): a LoRA holds identity only at the
+  > resolution it was TRAINED at.** The same prompt/seed/adapter rendered at 2× returned the bare
+  > base prior — the character simply was not there. So the character layer must be generated at
+  > the adapter's trained resolution (recorded in `lora.manifest.json`) and then **upscaled** into
+  > the keyframe (M0e `Upscale ✨` tile-CN, or the model-free Lanczos resize for pure
+  > downscaling) — never generated straight at the keyframe's size. This is the single most
+  > load-bearing P2→P3 constraint: get it wrong and every character layer silently loses identity
+  > while looking perfectly plausible.
 - **Props** — isolated prop sheets (P1) composited in.
 - **Background plate** — a scene asset (P1).
 - **Compose → flatten → optional inpaint/polish** on seams → the segment's start keyframe.

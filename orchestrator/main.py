@@ -3044,11 +3044,14 @@ def create_app() -> FastAPI:
                     item_prompt = f"{item_prompt}, {frag}"
         w, h = _image_dims(src_abs)   # source dims (restore + flux2 i2i preserve these)
         is_flux2 = backend == "flux2"
-        # Rig finding 2026-08-09 (`job_724798a6`): an i2i run only walks the last
-        # `strength × num_steps` of the schedule, so a DISTILLED 4-step model collapsed to 2
-        # timesteps ([0.6, 0.0]) and returned the input with a faint wash — a clean exit that
-        # did nothing. Raise the request only when the model's own default falls under the
-        # floor; models that already clear it keep their preset untouched.
+        # A floor on effective steps, so a preset's own default can't make an i2i pass a
+        # no-op. The diffusers backends (zimage/sd35) walk only `strength × num_steps` of the
+        # schedule, so a distilled low-step default lands on 1–2 real steps; the budget raises
+        # the REQUEST for those and leaves models that already clear the floor untouched.
+        # (flux2 is `"exact"` — `img2img_schedule` builds num_steps intervals across
+        # [strength, 0] directly, so nothing needs raising there. The rig findings that
+        # started this — `job_724798a6`/`job_4064f0f9` — were a flux2 SCHEDULE bug, fixed in
+        # the worker; the budget was never the cure for those. See the journal, 2026-08-09.)
         i2i_steps = None
         if mode == "img2img":
             i2i_steps, _eff = model_catalog.i2i_step_budget(

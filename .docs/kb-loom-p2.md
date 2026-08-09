@@ -1421,6 +1421,41 @@ author's visual sign-off.
    exists on an image**. **P4 must add those two edges AT WRITE TIME** — no index can recover
    them later. Journal: "M2.12 — GraphRAG retrieval-index SPIKE".)*
 
+3i. **M2.13 — post-M2.11 library/stack consistency + the style facelift (author, 2026-08-08/09).**
+   Unplanned, author-driven, and gathered here so §12 accounts for everything P2 shipped. Three
+   threads, all from the author working the real 686-job project:
+   - **Styles (obs. 1).** Picking a style was text-only and postprocessing **stacked two style
+     definitions** into one prompt (the source's inherited fragment plus a freshly appended one).
+     Now: the L1 sample image IS the picker (description + Save gone — styles are edited only at
+     L1 · Visual Styles), postproc **inherits** the source's style by default and an explicit
+     `apply_style`/StyleLock **strips before applying** so exactly one style is ever present, and
+     every job records the `style_id` it ran under.
+   - **The grouped view (obs. 2).** Multi-candidate, batch, postproc and expansion runs had made
+     the flat grid unbrowsable. Added a **collapsible operation/derivation tree**
+     (`GroupedGrid.tsx`) behind a toggle — the flat view is untouched and reads the same filtered
+     cells, so the two cannot drift — with cover images, per-lineage sub-cards, horizontal chains
+     and **group delete**. A postproc stack also became a **tree**: `add_step(source=)` lets one
+     base carry several first-level passes (two strengths, a clean *and* a restore) instead of a
+     single forced line.
+   - **Consistency (the deletions).** An image and its stack step must agree **in both
+     directions**: deleting an image now reaches the stack (tombstones for anything others derive
+     from, `reconcile` authoritative on every read, a re-fetch on delete), and removing a step
+     deletes the image it produced. Deleting a parent no longer strands its children as
+     unparented top-level cards — the char01 anomaly, root-caused.
+   - **flux2 i2i (the schedule).** Chased across five rig jobs: a "Clean" pass kept returning its
+     input. Fixed twice — first the step **count** (a resolution-shifted tail held ONE interval
+     however many steps were asked for), then the step **shape** (scaling the full schedule kept
+     the bunching, leaving one Euler leap over ~77 % of the range — and a single step to t=0 is
+     `x_t - t·v`, which with the true velocity returns **exactly the source**). `img2img_schedule`
+     now places `num_steps` intervals across `[strength, 0]` with the model's own spacing, and
+     reduces byte-for-byte to `get_schedule` at strength 1.0. Re-vendored (R162).
+   *(✅ built + pushed 2026-08-08/09; **569 tests green**. Journal: the eight ⭐ entries from
+   "Styles pass 1" to "Removing a step deletes the image it produced". ⭐ **This also closes half
+   of M2.12's standing requirement** that P4 add two edges AT WRITE TIME: `generated_under_style`
+   now exists on the job record as it is written (46 edges on the live project). The derivation
+   edge is still three partial mechanisms — that half stays P4's. **Rig-owed:** the visible result
+   of the flux2 schedule fix, and a look at the grouped view against the full library.)*
+
 ### Phase B — Thicken (all VLM-free)
 
 4. **M3 — caption review/edit (the override layer).** *Re-scoped 2026-07-12: deterministic
@@ -1487,8 +1522,11 @@ author's visual sign-off.
    "M5 sd35 SPIKE = GO".)*
    *(🟡 no-GPU slice ✅ built 2026-07-13 — journal "M5": preset registry + `GET /training/presets`,
    the gate AS CODE (`LOOM_TRAINER_SD35_GO`), generalized `POST /assets/{id}/lora/stage`,
-   R68 seed-from-parent step-0-checkpoint plumbing. RIG-OWED: the sd35 spike itself, the
-   seed-semantics check, and the PEFT backend build — deliberately not built blind.)*
+   R68 seed-from-parent step-0-checkpoint plumbing. RIG-OWED: ~~the sd35 spike itself~~
+   **✅ GO 2026-08-08 (above)**, ~~the PEFT backend build~~ **— off the critical path, the spike
+   passing left it DECLARED-only (R115)**. **Still owed: the R68 seed-semantics check** — one
+   ~60-step run seeded from a parent checkpoint, confirming step 0 resumes from the parent's
+   weights rather than the base. Deliberately not built blind.)*
 7. **M6 — promote + manual cleanup + LoRA management.** Promote into the version; one-click temp
    cleanup; version selector shows LoRA presence. **(No style-LoRA path — declared only, 0 effort in
    P2 per R122; built in P5 with multi-LoRA stacking, R147.)**

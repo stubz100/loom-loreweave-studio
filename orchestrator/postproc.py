@@ -8,10 +8,16 @@ it is a project-wide image scratchpad, so a stack is **not** part of profile exp
 **not** frozen by a version finalize-lock; if you want a postprocessed image to belong to a
 character, keep it into the ref_set via Stage-C curation (which still enforces the lock).
 
-A stack is a linear chain: a step's `source` is the previous step's `output` (or the base);
-steps append/remove at the tail. This module only persists the record — `main.py` resolves
-presets, validates, builds + submits the job, and (via the completion observer) records the
-produced output by job id.
+A stack is a **tree** (author 2026-08-08): a step's `source` is the base image or the output of
+any FINISHED step in the same stack, so one base can carry several independent lines — two
+strengths, a clean *and* a restore. It was a linear chain until then, and `add_step` still
+continues the newest line when no `source` is given. Removal is leaf-based (nothing may be
+orphaned) and takes the step's image with it (author 2026-08-09: a step and its output are one
+thing, in both directions) — `main.py` owns that, since deleting the job is the runner's job.
+
+This module only persists the record — `main.py` resolves presets, validates, builds + submits
+the job, and (via the completion observer) records the produced output by job id. `reconcile`
+is authoritative on every read: it heals steps whose job failed, was canceled, or was deleted.
 """
 
 from __future__ import annotations

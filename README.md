@@ -132,11 +132,29 @@ invoked); GPU batch smoke verified.
 > silently degrading to centroid. char02 reads **ok · recommended: true**. The meter is
 > **explicitly non-blocking** — `blocking: false` and a test asserting a `warn` version still
 > stages and queues.
+> **⭐ 2026-08-08/09 — the last P2 gates + a library/stack consistency pass (569 tests).**
+> **M5's sd35 spike = GO** (`job_a5edadc9`: 500 steps @512² in 342 s, **1.8× faster than
+> zimage**), which takes the diffusers-PEFT backend off the critical path (R115 — it stays
+> declared-only) and closes P2's last 🔴 R&D gate; sd35 also gained real inference-LoRA +
+> preview support. **M2.12's GraphRAG spike is built** (`factgraph.py`, embedding-free by
+> construction, `GET /context/facts` + `/context/query`, ~1.8 k facts off the live project) —
+> feasible and cheap, with two edges it tells P4 to write *at source*. **M2.13** (unplanned,
+> author-driven on the real 686-job project): style handling reworked (the L1 sample image *is*
+> the picker; postproc inherits one style instead of stacking two; every job records its
+> `style_id` — which already closes half of M2.12's finding), a **collapsible grouped
+> operation/derivation view** with group delete alongside the untouched flat grid, **postproc
+> stacks that branch** (one base, several first-level passes), and an image and its stack step
+> now agree **in both directions** (tombstones, authoritative `reconcile`, and removing a step
+> deletes its image). **flux2 i2i was fixed twice** — the step *count*, then the step *shape*:
+> `img2img_schedule` places `num_steps` intervals across `[strength, 0]` with the model's own
+> spacing, so a "Clean" pass no longer reconstructs its input.
 > **The P2 stamp = the author's rig run** (journal "M7" / "Rig finding 5"): one re-stage
-> (the promoted run's captions predate M3) → preview → promote.
-> Spec:
+> (the promoted run's captions predate M3) → preview → promote. **Also rig-owed:** the R68
+> seed-semantics check, and an eyeball on the flux2 schedule fix.
+> Spec: [`kb-loom-p2.md`](.docs/kb-loom-p2.md) /
 > [`kb-loom-p1.md`](.docs/kb-loom-p1.md), decisions:
 > [`kb-storyboard01.md`](.docs/kb-storyboard01.md) §10.0, journal:
+> [`kb-loom-p2-imp.md`](.docs/kb-loom-p2-imp.md) /
 > [`kb-loom-p1-imp.md`](.docs/kb-loom-p1-imp.md) (P0 spine:
 > [`kb-loom-p0.md`](.docs/kb-loom-p0.md) / [`kb-loom-p0-imp.md`](.docs/kb-loom-p0-imp.md)).
 

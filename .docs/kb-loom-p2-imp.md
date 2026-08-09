@@ -162,3 +162,5 @@ is baked into its pixels, and text cannot un-bake it.
 refused, the branch-point list · leaf-only removal with a named refusal · chains horizontal +
 Stage C included + orphan refs surfaced + both views on the same filtered cells · the branch
 picker and restyle tick reachable in the panel). `tsc` + `vite build` clean.
+
+**✅ PUSHED `b2e0d27`.**

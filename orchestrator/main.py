@@ -573,6 +573,10 @@ class AddPostprocStepRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     base: str
+    # Author 2026-08-08 — a stack is a TREE: which image this step reads. The base itself, or
+    # any FINISHED step's output in the same stack. Omitted = continue from the newest
+    # finished output (the previous chain behaviour), so nothing existing changes.
+    source: str | None = None
     preset: Literal["clean", "refine", "restore", "upscale", "stylelock", "resize"] = "clean"
     backend: str | None = None
     params: dict = Field(default_factory=dict)
@@ -2858,6 +2862,13 @@ def create_app() -> FastAPI:
         Unauthenticated read (mirrors /jobs)."""
         return {"stacks": postproc.reconcile(_require_ws(), _job_state)}
 
+    @app.get("/postproc/sources")
+    def get_postproc_sources(base: str) -> dict:
+        """Author 2026-08-08 — every image a NEW step on `base`'s stack may branch from: the
+        base plus each finished step's output. The picker reads this so a branch point is
+        chosen explicitly rather than always being "whatever ran last"."""
+        return {"base": base, "sources": postproc.stack_sources(_require_ws(), base)}
+
     @app.post("/postproc/step")
     def add_postproc_step(req: AddPostprocStepRequest,
                           _auth: None = Depends(require_token)) -> dict:
@@ -2918,7 +2929,8 @@ def create_app() -> FastAPI:
         try:
             return postproc.add_step(_require_ws(), base=req.base, preset=req.preset,
                                      backend=backend, mode=spec["mode"], params=params,
-                                     mask=req.mask, requires_mask=req.requires_mask)
+                                     mask=req.mask, requires_mask=req.requires_mask,
+                                     source=req.source)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(409, str(e))
 

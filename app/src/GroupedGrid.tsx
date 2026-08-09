@@ -115,6 +115,7 @@ export function buildGroups(jobs: Job[], tilesOf: (job: Job) => TileRef[]): Grou
 
 export default function GroupedGrid({
   jobs, tilesOf, renderTile, tileImageUrl, onDeleteGroup, emptyHint,
+  orphanTiles = [], orphanLabel = "", orphanSub = "",
 }: {
   jobs: Job[];
   tilesOf: (job: Job) => TileRef[];
@@ -123,6 +124,12 @@ export default function GroupedGrid({
   tileImageUrl: (t: TileRef) => string | null;
   onDeleteGroup: (jobs: Job[], label: string) => void;
   emptyHint: string;
+  /** Tiles with NO generating job — Stage C's durable curated refs (a copied version keeps
+   *  its ref files but has no jobs behind them). A job-derived tree cannot hold them, so they
+   *  get their own group rather than silently vanishing when the view is switched. */
+  orphanTiles?: TileRef[];
+  orphanLabel?: string;
+  orphanSub?: string;
 }) {
   const groups = useMemo(() => buildGroups(jobs, tilesOf), [jobs, tilesOf]);
   // Collapsed by default would hide everything on open; expanded-by-default with an explicit
@@ -134,7 +141,11 @@ export default function GroupedGrid({
     return n;
   });
 
-  if (groups.length === 0) return <p className="muted center span">{emptyHint}</p>;
+  // Orphans alone are still content — a copied version can hold curated refs and no jobs at
+  // all, and hiding them behind "nothing here" would lose the whole Stage-C set.
+  if (groups.length === 0 && orphanTiles.length === 0) {
+    return <p className="muted center span">{emptyHint}</p>;
+  }
 
   /** A group's cover: the first tile that actually has an image. */
   const coverOf = (g: Group): string | null => {
@@ -159,16 +170,32 @@ export default function GroupedGrid({
   // A node with NO children contributes its tiles to the group's single flat grid — that is
   // what stops a 24-cell sweep rendering as 24 stacked one-tile rows (author 2026-08-08 #3).
   // Only a node that actually HAS derived children needs its own block, to carry the nesting.
-  const renderBranch = (n: Node, depth: number): React.ReactNode => (
-    <div key={n.job.id} className="tree-branch-block" style={{ marginLeft: depth ? 16 : 0 }}>
-      <div className="tree-branch">
-        {depth > 0 && <span className="tree-elbow">└</span>}
-        <span className="tree-pass">{n.job.pass || n.job.mode || n.job.pipeline}</span>
-        <span className="muted sm"> · {n.job.pipeline} · {n.job.id.slice(0, 10)}</span>
-        {n.job.status !== "done" && <span className="muted sm"> · {n.job.status}</span>}
+  //
+  // A chain reads HORIZONTALLY (author 2026-08-08 #2a: "stacking image tiles in a tree
+  // structure will result in a lot of space wasted") — source → pass → pass, left to right,
+  // one row per line of descent. When a node has SEVERAL children (the branching stacks now
+  // allow: two strengths off one base) each branch gets its own row, so the fan-out is the
+  // one thing that still costs vertical space, which is exactly when it carries meaning.
+  const renderChain = (n: Node): React.ReactNode => (
+    <div key={n.job.id} className="chain">
+      <div className="chain-step">
+        <div className="chain-cap">
+          <span className="tree-pass">{n.job.pass || n.job.mode || n.job.pipeline}</span>
+          <span className="muted sm"> · {n.job.pipeline}</span>
+          {n.job.status !== "done" && <span className="muted sm"> · {n.job.status}</span>}
+        </div>
+        <div className="chain-tiles">{n.tiles.map(renderTile)}</div>
       </div>
-      <div className="tree-tiles">{n.tiles.map(renderTile)}</div>
-      {n.children.map((c) => renderBranch(c, depth + 1))}
+      {n.children.length > 0 && (
+        <div className="chain-kids">
+          {n.children.map((c) => (
+            <div key={c.job.id} className="chain-kid">
+              <span className="chain-arrow" aria-hidden>→</span>
+              {renderChain(c)}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 
@@ -182,6 +209,40 @@ export default function GroupedGrid({
         <span className="muted sm">{groups.length} operation{groups.length === 1 ? "" : "s"}</span>
       </div>
       <div className="tree">
+        {orphanTiles.length > 0 && (() => {
+          const shut = collapsed.has("__orphans__");
+          const cover = orphanTiles.map(tileImageUrl).find(Boolean) ?? null;
+          const meta = `${orphanSub} · ${orphanTiles.length} image${orphanTiles.length === 1 ? "" : "s"}`;
+          return (
+            <div className={`tree-group ${shut ? "shut" : "open"}`}>
+              {shut ? (
+                <button className="tree-card" onClick={() => toggle("__orphans__")}
+                        title={`expand — ${meta}`}>
+                  <span className="tree-card-img">
+                    {cover ? <img src={cover} alt={orphanLabel} />
+                           : <span className="tree-card-ph">no image</span>}
+                    <span className="tree-card-count">×{orphanTiles.length}</span>
+                  </span>
+                  <span className="tree-card-foot">
+                    <span className="tree-card-name">{orphanLabel}</span>
+                    <span className="muted sm">{meta}</span>
+                  </span>
+                </button>
+              ) : (
+                <>
+                  <div className="tree-head">
+                    <button className="tree-toggle" onClick={() => toggle("__orphans__")}
+                            title="collapse">▾ {orphanLabel}</button>
+                    <span className="muted sm">{meta}</span>
+                  </div>
+                  <div className="tree-body">
+                    <div className="tree-tiles">{orphanTiles.map(renderTile)}</div>
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })()}
         {groups.map((g) => {
           const shut = collapsed.has(g.id);
           const imgs = g.jobs.reduce((n, j) => n + (j.result?.output_names?.length ?? 0), 0);
@@ -225,7 +286,7 @@ export default function GroupedGrid({
                         {plain.flatMap((r) => r.tiles).map(renderTile)}
                       </div>
                     )}
-                    {chains.map((r) => renderBranch(r, 0))}
+                    {chains.map((r) => renderChain(r))}
                   </div>
                 </>
               )}

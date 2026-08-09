@@ -107,3 +107,58 @@ full-width open group, the cover resolver, and specifically the childless-root p
 the one-column bug. `tsc` + `vite build` clean.
 
 **✅ PUSHED `fcd1eb7`.**
+
+### Pass 2 follow-ups — Stage C, horizontal chains, and BRANCHING postproc stacks (author, same day)
+
+Three questions, and the third turned out to be a real capability gap rather than a view issue.
+
+**1 — Stage C was omitted deliberately, and the reason was wrong.** Curation is a flat triage
+pass, so a tree looked like clutter. But the author asked, and the real objection was narrower
+than "no": Stage C shows **durable curated refs** — a version copied from a parent keeps its
+`refs/` files and has **no jobs behind them** — and a job-derived tree cannot hold those, so
+switching views would have silently dropped part of the set. Fixed properly instead of
+excluded: the toggle is available in Stage C, job-less tiles are surfaced as their own
+**📌 Curated refs** group, and the tree now reads the **same filtered `stageCells`** the flat
+grid does, so the coverage filters and hide-rejected apply identically in both views (they did
+not before — the tree was reading the unfiltered `cells`).
+
+**2a — chains now read LEFT→RIGHT.** *"stacking image tiles in a tree structure will result in
+a lot of space wasted"* — correct. A descent is a row (`source → clean → upscale`) that scrolls
+sideways rather than squeezing tiles; the **only** thing that costs vertical space is a real
+**fan-out**, which is exactly when the shape carries information.
+
+**2b — ⭐ postproc stacks BRANCH now.** *"we don't allow anything else, but the stack… if
+someone wants to test different strengths, or types of post processing, the same base image
+cannot be used for that."* Exactly right, and it was a one-line assumption in `add_step`:
+`source = steps[-1]["output"]`. The stored shape already carried a **per-step `source`**, so
+the data model was a tree all along — only the writer was a chain.
+
+- `add_step(..., source=...)` names the branch point: the base, or any **finished** step's
+  output. Omitted ⇒ the old continue-the-chain behaviour, so nothing existing changes.
+- Branching from an unfinished step is refused — a source must be a real image on disk.
+- `remove_step` was *"only the LAST step"*, which is the same rule while a stack is linear.
+  It is now **"any LEAF"**: what actually matters is never orphaning steps sourced from the
+  one being removed, and a branched-from step is refused with that reason.
+- `GET /postproc/sources?base=` lists the legal branch points, and the panel offers them
+  (`↳ continue the chain` · `⌂ from the base image` · `⑂ from #N <preset>`).
+
+⚠ **A decorator moved when it should not have.** Inserting `stack_sources` directly above
+`add_step` left `@_mutates_store` attached to the **new read-only function**, silently
+unlocking the mutator — caught immediately by the M2.8 #3 thread-safety test, which is exactly
+what it exists for. Restored onto `add_step`.
+
+**3 — how styles behave in postproc (the author's question), answered precisely.** The stored
+prompt of a generated image **already contains** the style fragment (R104 appends it at
+generation), so a postproc step inheriting that prompt carries the original style **as text,
+merged** — nothing re-applies it. That is the fix from the previous pass and it is correct.
+**But restyling was only reachable via the StyleLock preset**: `apply_style` existed in the API
+after that pass and had **no UI control**, so on a Clean/Refine/Upscale pass there was no way to
+ask for a different style. Now there is — a **`restyle`** tick on every i2i preset, which
+applies the chosen L1 style and **strips the inherited fragment first** (using the source job's
+stamped `style_id`) so the prompt never describes two looks. Off by default: the source's style
+is baked into its pixels, and text cannot un-bake it.
+
+**Tests +4 → 437 green** (branching: two first-level passes off one base, an unfinished source
+refused, the branch-point list · leaf-only removal with a named refusal · chains horizontal +
+Stage C included + orphan refs surfaced + both views on the same filtered cells · the branch
+picker and restyle tick reachable in the panel). `tsc` + `vite build` clean.

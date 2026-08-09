@@ -457,3 +457,65 @@ def test_stylelock_appends_the_l1_style_at_queue_time(client):
     assert p.startswith("a portrait") and p.endswith("stark ink-wash rendering")
     bi = job["params"]["batch_items"][0]
     assert bi.get("strength", job["params"].get("strength")) == 0.22   # variable strength rides
+
+
+def test_a_stack_branches_so_one_base_can_carry_several_first_level_passes(client):
+    """Author 2026-08-08: *"if someone wants to test different strengths, or types of post
+    processing, the same base image cannot be used for that"*. A stack used to append strictly
+    onto the previous step's output — one base, one line. It is now a TREE: `source` names the
+    branch point (the base, or any FINISHED step's output), and omitting it keeps the old
+    continue-the-chain behaviour so nothing existing changes."""
+    from orchestrator import postproc
+    from orchestrator.runner import RUNNER
+
+    ws = RUNNER.workspace
+    base = _base_image("job_br/base.png")
+
+    # two DIFFERENT first-level passes off the SAME base — the thing that was impossible
+    a = _last_step_id(client.post("/postproc/step", json={
+        "base": base, "preset": "clean", "params": {"strength": 0.35}}), base)
+    b = _last_step_id(client.post("/postproc/step", json={
+        "base": base, "preset": "clean", "source": base, "params": {"strength": 0.7}}), base)
+    stack = next(s for s in postproc.list_stacks(ws) if s["base"] == base)
+    steps = {s["id"]: s for s in stack["steps"]}
+    assert steps[a]["source"] == base and steps[b]["source"] == base
+    assert steps[a]["params"]["strength"] != steps[b]["params"]["strength"]
+
+    # branching from an UNFINISHED step is refused — a source must be a real image on disk
+    r = client.post("/postproc/step", json={"base": base, "preset": "clean",
+                                            "source": "job_br/nope.png", "params": {}})
+    assert r.status_code == 409 and "branch from" in r.text
+
+    # finish one, then stack ON it — and it becomes an offered branch point
+    postproc.record_result(ws, steps[a]["job_id"] or "j", output="job_br/a1.png", ok=True) \
+        if steps[a].get("job_id") else None
+    stack = next(s for s in postproc.list_stacks(ws) if s["base"] == base)
+    srcs = client.get("/postproc/sources", params={"base": base}).json()["sources"]
+    assert srcs[0]["output"] == base            # the base is always offered
+    assert all(s["output"] for s in srcs)       # …and only real images are
+
+
+def test_removing_a_step_that_others_branch_from_is_refused(client):
+    """`remove_step` was "only the LAST step", which is the same rule while a stack is a
+    straight chain. Now that it branches, what matters is that a removal never orphans the
+    steps sourced from it — so a leaf goes, a branched-from step does not."""
+    from orchestrator import postproc
+    from orchestrator.runner import RUNNER
+
+    ws = RUNNER.workspace
+    base = _base_image("job_br2/base.png")
+    first = _last_step_id(client.post("/postproc/step",
+                                      json={"base": base, "preset": "clean", "params": {}}), base)
+    # finish it the way the runner's observer does, so the output is really persisted
+    postproc.mark_queued(ws, step_id=first, job_id="job_fake01")
+    postproc.record_result(ws, "job_fake01", output="job_br2/out1.png", ok=True)
+
+    child = _last_step_id(client.post("/postproc/step", json={
+        "base": base, "preset": "restore", "source": "job_br2/out1.png", "params": {}}), base)
+
+    # the parent now has a dependant → refused, named clearly
+    r = client.delete(f"/postproc/step/{first}")
+    assert r.status_code == 409 and "branches from this one" in r.text
+    # the leaf goes fine, and then the parent can too
+    assert client.delete(f"/postproc/step/{child}").status_code == 200
+    assert client.delete(f"/postproc/step/{first}").status_code == 200

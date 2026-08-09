@@ -791,11 +791,12 @@ export default function App() {
   // project-level — no asset required, works in the Sandbox too).
   const onAddPostprocStep = async (base: string, preset: PostprocStep["preset"],
                                    backend: string | undefined,
-                                   params: Record<string, unknown>) => {
+                                   params: Record<string, unknown>,
+                                   source?: string) => {
     if (!project?.open) return;
     setBusy(true); setError(null);
     try {
-      setPostprocStacks(await addPostprocStep({ base, preset, backend, params }));
+      setPostprocStacks(await addPostprocStep({ base, preset, backend, params, source }));
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
   const onQueuePostprocStep = async (stepId: string) => {
@@ -2314,7 +2315,7 @@ export default function App() {
           {/* Author 2026-08-08 obs. 2: the flat grid is still the easy way to browse every
               individual image; the toggle swaps in the grouped operation/derivation tree over
               the SAME scope. Hidden in Stage C, where curation is a flat triage pass. */}
-          {stage !== "C" && stageCells.length > 0 && (
+          {stageCells.length > 0 && (
             <div className="view-toggle">
               <button className={`ghost ${!grouped ? "sel" : ""}`} onClick={() => setGrouped(false)}
                       title="every image individually (the classic grid)">▦ flat</button>
@@ -2324,10 +2325,11 @@ export default function App() {
               </button>
             </div>
           )}
-          {grouped && stage !== "C" ? (
+          {grouped ? (
             <GroupedGrid
-              jobs={gridIds.map((id) => jobs[id]).filter(Boolean)}
-              tilesOf={(j) => cells.filter((c) => c.job?.id === j.id)}
+              jobs={gridIds.map((id) => jobs[id]).filter(Boolean)
+                .filter((j) => stageCells.some((c) => c.job?.id === j.id))}
+              tilesOf={(j) => stageCells.filter((c) => c.job?.id === j.id)}
               renderTile={renderTile}
               tileImageUrl={(c) => {
                 if (c.refItem && activeAsset) return refUrl(activeAsset.id, c.refItem.file);
@@ -2338,6 +2340,9 @@ export default function App() {
               }}
               onDeleteGroup={(js, label) => void onDeleteGroup(js, label)}
               emptyHint="Nothing here yet — fire a generation and its operation appears as a group."
+              orphanTiles={stageCells.filter((c) => !c.job)}
+              orphanLabel="📌 Curated refs"
+              orphanSub="durable copies — no generating job"
             />
           ) : (
           <div className="grid" tabIndex={0} onKeyDown={onGridKey}>
@@ -2404,8 +2409,8 @@ export default function App() {
               l1Styles={styles?.styles ?? []}
               modelsFor={(b) => (catalog?.[b]?.variants ?? []).map((v) => v.id)}
               angleDirectives={catalog?.flux2?.angle_directives ?? {}}
-              onAdd={(preset, backend, params) =>
-                void onAddPostprocStep(selBase, preset, backend, params)}
+              onAdd={(preset, backend, params, source) =>
+                void onAddPostprocStep(selBase, preset, backend, params, source)}
               onQueue={onQueuePostprocStep}
               onRemove={onRemovePostprocStep}
               onView={(o) => setViewer(outputUrl(o))}
@@ -3218,7 +3223,7 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives
   modelsFor: (backend: string) => string[];   // variant ids for an i2i backend (catalog)
   angleDirectives: Record<string, string>;    // M0d Part C — flux.2-dev JSON tree pose presets
   onAdd: (preset: PostprocStep["preset"], backend: string | undefined,
-          params: Record<string, unknown>) => void;
+          params: Record<string, unknown>, source?: string) => void;
   onQueue: (stepId: string) => void;
   onRemove: (stepId: string) => void;
   onView: (output: string) => void;     // open a step's result in the full-res lightbox
@@ -3226,6 +3231,12 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives
   const [preset, setPreset] = useState<PostprocStep["preset"]>("clean");
   const [backend, setBackend] = useState("zimage");
   const [styleId, setStyleId] = useState("");    // StyleLock: pinned L1 style ("" = active)
+  // Author 2026-08-08: a stack is a TREE — which image this step reads ("" = continue from
+  // the newest finished output, the old chain behaviour).
+  const [srcSel, setSrcSel] = useState("");
+  // …and the explicit RESTYLE on an ordinary i2i pass. Default off: the source already
+  // carries its style baked in, so restating it would describe two looks at once.
+  const [restyle, setRestyle] = useState(false);
   const [model, setModel] = useState("");        // "" = the backend's default model
   const [strength, setStrength] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -3277,6 +3288,10 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives
       }
       if (!isFlux2 && neg.trim()) params.negative_prompt = neg.trim();   // flux2 = no negatives
       if (preset === "stylelock" && styleId) params.style_id = styleId;  // pin the target style
+      if (restyle) {                       // explicit re-style on an ordinary i2i pass
+        params.apply_style = true;
+        if (styleId) params.style_id = styleId;
+      }
     } else if (isUpscale) {
       // tile-CN upscale (sd35-fixed): optional prompt (defaults to the source's) + CN scale.
       if (cnScale.trim()) params.cn_scale = cnScale.trim();
@@ -3293,9 +3308,10 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives
         params.scale = Number(scale);
       }
     }
-    onAdd(preset, isI2i ? backend : undefined, params);   // upscale/restore = preset-fixed backend
+    onAdd(preset, isI2i ? backend : undefined, params, srcSel || undefined);
     setModel(""); setStrength(""); setPrompt(""); setNeg(""); setBlend("");
     setScale(""); setOutW(""); setOutH(""); setCnScale(""); setStyleId("");
+    setSrcSel(""); setRestyle(false);
     setJsonTree(emptyFlux2PromptTree());
   };
 
@@ -3400,12 +3416,33 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, angleDirectives
                 {preset !== "stylelock" && <option value="flux2">flux2 ✨</option>}
               </select>
             )}
-            {preset === "stylelock" && (
+            {(preset === "stylelock" || restyle) && (
               <select value={styleId} onChange={(e) => setStyleId(e.target.value)}
                       title="which L1 style this pass pushes toward — pinned on the step; (active style) resolves the current default fresh at queue time">
                 <option value="">(active style)</option>
                 {l1Styles.map((s) => <option key={s.id} value={s.id}>🎨 {s.name}</option>)}
               </select>
+            )}
+            {/* Branch point (author 2026-08-08): a base image can carry SEVERAL first-level
+                passes — try two strengths, or a clean AND a restore — each stacking on its
+                own. Blank keeps the old "continue the chain" behaviour. */}
+            {(stack?.steps.some((st) => st.output) ?? false) && (
+              <select value={srcSel} onChange={(e) => setSrcSel(e.target.value)}
+                      title="which image this pass reads — branch a NEW line off the base or any finished step, instead of continuing the last one">
+                <option value="">↳ continue the chain</option>
+                <option value={stack!.base}>⌂ from the base image</option>
+                {stack!.steps.filter((st) => st.output).map((st, i) => (
+                  <option key={st.id} value={st.output!}>⑂ from #{i + 1} {st.preset}</option>
+                ))}
+              </select>
+            )}
+            {isI2i && preset !== "stylelock" && (
+              <label className="apply-style"
+                     title="RE-STYLE this pass: apply an L1 style and strip the one the source was generated under, so the prompt never carries two style definitions. Off = inherit the source's style (it is baked into the pixels).">
+                <input type="checkbox" checked={restyle}
+                       onChange={(e) => setRestyle(e.target.checked)} />
+                restyle
+              </label>
             )}
           </div>
           {isI2i ? (

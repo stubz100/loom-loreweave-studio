@@ -807,6 +807,9 @@ export async function getPostprocStacks(): Promise<PostprocStack[]> {
 export async function addPostprocStep(body: {
   base: string; preset?: PostprocStep["preset"]; backend?: string;
   params?: Record<string, unknown>; mask?: string | null; requires_mask?: boolean;
+  // A stack is a TREE (2026-08-08): which image this step reads. Omitted = continue from the
+  // newest finished output, the old chain behaviour.
+  source?: string;
 }): Promise<PostprocStack[]> {
   const res = await fetch(`${orchestratorUrl()}/postproc/step`, {
     method: "POST",

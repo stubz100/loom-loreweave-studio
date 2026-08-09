@@ -125,3 +125,43 @@ def test_grouped_view_layout_contract():
     assert "plain.flatMap((r) => r.tiles).map(renderTile)" in tree
     # …and only a root that really has children keeps its own nested block
     assert "const chains = g.roots.filter((r) => r.children.length > 0);" in tree
+
+
+def test_chains_read_horizontally_and_stage_c_is_included():
+    """Author's second design pass 2026-08-08:
+
+    - a derivation chain stacked VERTICALLY wasted the width, so it now reads left→right and
+      only a real fan-out (which branching stacks make possible) costs vertical space;
+    - the grouped toggle was hidden in Stage C. It is not any more — but a job-derived tree
+      cannot hold Stage C's DURABLE curated refs (a copied version keeps its ref files and has
+      no jobs behind them), so those get their own group instead of silently vanishing.
+    """
+    tree = (APP / "GroupedGrid.tsx").read_text(encoding="utf-8")
+    app = (APP / "App.tsx").read_text(encoding="utf-8")
+    css = (APP / "styles.css").read_text(encoding="utf-8")
+
+    # horizontal descent; a fan-out is the only thing that goes down the page
+    assert "const renderChain" in tree and "chain-kids" in tree
+    assert ".chain { display: flex; align-items: flex-start;" in css
+    assert "grid-auto-flow: column" in css          # tiles run across, not down
+
+    # Stage C included, with the orphan (job-less) refs surfaced rather than dropped
+    assert 'stage !== "C" && stageCells.length > 0' not in app
+    assert 'grouped && stage !== "C"' not in app
+    assert "orphanTiles" in app and "orphanTiles" in tree
+    assert "orphanTiles.length === 0" in tree      # …and they alone still count as content
+
+    # both views read the SAME filtered cells, so Stage C's coverage filters agree
+    assert "tilesOf={(j) => stageCells.filter((c) => c.job?.id === j.id)}" in app
+
+
+def test_postproc_branch_and_restyle_are_reachable_from_the_ui():
+    """The two backend abilities are useless if the panel cannot reach them: a branch point
+    picker (so a base can carry several first-level passes) and an explicit restyle on an
+    ordinary i2i pass (previously only StyleLock could apply a style at all)."""
+    app = (APP / "App.tsx").read_text(encoding="utf-8")
+    assert "const [srcSel, setSrcSel]" in app and "continue the chain" in app
+    assert "from the base image" in app
+    assert "source={srcSel}" in app or "srcSel || undefined" in app
+    assert "const [restyle, setRestyle]" in app
+    assert "params.apply_style = true;" in app

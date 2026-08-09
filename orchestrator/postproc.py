@@ -96,23 +96,53 @@ def list_stacks(ws: Workspace) -> list[dict]:
     return _load(ws)["stacks"]
 
 
+def stack_sources(ws: Workspace, base: str) -> list[dict]:
+    """Every image in `base`'s stack that a NEW step may branch from: the base itself plus
+    each finished step's output. Author 2026-08-08 — the picker reads this so a branch point
+    is chosen, not guessed."""
+    stack = _find_stack(_load(ws), base)
+    out = [{"output": base, "from": None, "preset": None, "step_id": None}]
+    for st in (stack or {}).get("steps", []):
+        if st.get("output"):
+            out.append({"output": st["output"], "from": st.get("source"),
+                        "preset": st.get("preset"), "step_id": st["id"]})
+    return out
+
+
 @_mutates_store
 def add_step(ws: Workspace, *, base: str, preset: str, backend: str, mode: str,
-             params: dict, mask: str | None = None, requires_mask: bool = False) -> dict:
-    """Append a CONFIGURED step to `base`'s stack (source = the prior step's output, or
-    `base` when empty). Persisted, NOT queued. Refuses to stack onto a step that hasn't
-    produced an output yet, so a step's source is always a real image. Returns the store."""
+             params: dict, mask: str | None = None, requires_mask: bool = False,
+             source: str | None = None) -> dict:
+    """Add a CONFIGURED step to `base`'s stack. Persisted, NOT queued.
+
+    **A stack is a TREE, not a chain (author 2026-08-08).** It used to append strictly onto
+    the previous step's output, so one base image could only ever have ONE line of
+    postprocessing — you could not try two strengths, or a clean *and* a restore, from the
+    same source without destroying the first. `source` now names the branch point: the base
+    image, or the output of any FINISHED step in this stack. Omitted, it keeps the old
+    behaviour (continue from the newest finished output, else the base), so existing callers
+    and the "stack another pass on what I'm looking at" flow are unchanged.
+
+    A step's source is always a real image on disk — an unfinished step has no output, so it
+    cannot be branched from yet."""
     store = _load(ws)
     stack = _find_stack(store, base)
     if stack is None:
         stack = {"base": base, "steps": []}
         store["stacks"].append(stack)
     steps = stack["steps"]
-    if steps:
-        if not steps[-1].get("output"):
+    if source:
+        allowed = {base} | {s["output"] for s in steps if s.get("output")}
+        if source not in allowed:
+            raise ws_mod.WorkspaceError(
+                f"cannot branch from {source!r} — it is not this stack's base or a finished "
+                "step's output")
+    elif steps:
+        finished = [s for s in steps if s.get("output")]
+        if not finished:
             raise ws_mod.WorkspaceError(
                 "queue and finish the previous step before adding another")
-        source = steps[-1]["output"]
+        source = finished[-1]["output"]
     else:
         source = base
     steps.append({
@@ -126,15 +156,20 @@ def add_step(ws: Workspace, *, base: str, preset: str, backend: str, mode: str,
 
 @_mutates_store
 def remove_step(ws: Workspace, *, step_id: str) -> dict:
-    """Remove the LAST step of its stack (a chain — removing a middle step would orphan the
-    sources below it) and prune an emptied stack. Returns the store."""
+    """Remove a LEAF step — one nothing else branches from — and prune an emptied stack.
+
+    Was "only the last step", which is the same rule while a stack is a straight chain. Now
+    that it branches (see `add_step`), "last" is meaningless: what matters is that removing a
+    step must never orphan the ones sourced from it. Returns the store."""
     store = _load(ws)
     stack, step = _find_step(store, step_id)
     if step is None:
         raise ws_mod.WorkspaceError(f"unknown postproc step {step_id!r}")
-    if stack["steps"][-1]["id"] != step_id:
-        raise ws_mod.WorkspaceError("only the last step of a stack can be removed")
-    stack["steps"].pop()
+    out = step.get("output")
+    if out and any(s.get("source") == out for s in stack["steps"]):
+        raise ws_mod.WorkspaceError(
+            "another step branches from this one — remove those first")
+    stack["steps"] = [s for s in stack["steps"] if s["id"] != step_id]
     if not stack["steps"]:
         store["stacks"].remove(stack)
     return _save(ws, store)

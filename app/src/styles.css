@@ -304,10 +304,21 @@ body {
 }
 .tree-del { margin-left: auto; }
 .tree-body { padding: 8px; display: flex; flex-direction: column; gap: 10px; }
-.tree-branch-block { display: flex; flex-direction: column; gap: 4px; }
-.tree-branch { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
-.tree-elbow { color: var(--line); font-size: 13px; }
 .tree-pass { color: var(--text); }
+/* A derivation chain reads LEFT→RIGHT (author 2026-08-08 #2a — stacking it vertically wasted
+   the width). Only a real FAN-OUT (several passes off one source, which branching stacks now
+   allow) costs vertical space, which is exactly when it means something. */
+.chain { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.chain-step { display: flex; flex-direction: column; gap: 3px; flex: 0 0 auto; }
+.chain-cap { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.chain-tiles {
+  display: grid; grid-auto-flow: column; grid-auto-columns: 150px; gap: 6px;
+}
+.chain-kids { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.chain-kid { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.chain-arrow { color: var(--line); font-size: 15px; align-self: center; flex: 0 0 auto; }
+/* the chain scrolls sideways rather than squeezing tiles or wrapping mid-descent */
+.tree-body > .chain { overflow-x: auto; padding-bottom: 2px; }
 /* Tiles inside an open group reuse .cell, so they take the same track sizing as .grid */
 .tree-tiles {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px;

@@ -189,3 +189,30 @@ with a namespaced collapse key and a collapsed state that still describes itself
 `vite build` clean.
 
 **✅ PUSHED `4f166f0`.**
+
+### Pass 2 follow-up — control rows must WRAP (author, same day)
+
+*"there are multiple options to the right that don't fit the inspector panel — after the model
+picker there are 2 more pull-downs, that can only be seen when the panel is scrolled right"*.
+
+**Self-inflicted and exactly diagnosable.** `.pp-add-row` is a **non-wrapping** flex row. It was
+built for three controls (preset · backend · style); the branching work added two more (branch
+point · restyle), and in the narrow inspector the last two left the viewport entirely —
+reachable only by scrolling sideways, which nothing signposted. `flex: 1` on the selects made it
+worse: they shared the overflowing width instead of forcing a wrap.
+
+**Fixed:** the row wraps, and its selects carry `flex: 1 1 118px; min-width: 108px` — a readable
+floor is what turns "squeeze five selects into slivers" into "wrap onto a second line". Two side
+by side when there is room, stacked when there isn't.
+
+**Swept the rows added in this session for the same bug** rather than fixing only the reported
+one. `prev-opts`, `prev-pose-row` and `tree-head` already wrapped. Two did not and hold
+**variable-length text**, so they were the same bug waiting: **`.style-bar`** (a style NAME, up
+to 22ch) and **`.chain-card-head`** (a lineage description like `clean → resize → upscale
++2 branches`) — both now wrap, and the lineage toggle can break a long label instead of pushing
+the thumbnail off the edge. `view-toggle` and `tree-bar` hold fixed short content and were left
+alone.
+
+**Tests +1 → 439 green** — a layout contract asserting the wrap on all three at-risk rows plus
+the select floor, so the next control added to that row cannot silently reintroduce it.
+`tsc` + `vite build` clean.

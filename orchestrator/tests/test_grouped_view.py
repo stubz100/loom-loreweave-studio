@@ -187,3 +187,27 @@ def test_each_lineage_is_its_own_collapsible_card_inside_the_group():
     # collapsed state still carries meaning: the lineage shape, a count, and a thumbnail
     assert "function describeChain" in tree and "function countChain" in tree
     assert "chain-card-thumb" in tree
+
+
+def test_control_rows_wrap_so_nothing_falls_off_the_inspector():
+    """Author 2026-08-08: *"there are multiple options to the right that don't fit the
+    inspector panel… can only be seen when the panel is scrolled right"*.
+
+    The postproc config row grew from three controls to five (preset · backend · style ·
+    branch point · restyle) while still being a NON-wrapping flex row, so in the narrow
+    inspector the last two left the viewport entirely. Any row holding a variable number of
+    controls, or variable-length text, must wrap rather than overflow."""
+    css = (APP / "styles.css").read_text(encoding="utf-8")
+
+    def row(sel: str) -> str:
+        i = css.index(sel)
+        return css[i:i + 400]
+
+    # the row that actually broke — wraps, and its selects keep a readable floor so they
+    # wrap instead of squeezing into slivers
+    assert "flex-wrap: wrap" in row(".pp-add-row {")
+    assert "min-width: 108px" in css and "flex: 1 1 118px" in css
+
+    # the two other rows carrying variable-length text (a style NAME, a lineage description)
+    assert "flex-wrap: wrap" in row(".style-bar {")
+    assert "flex-wrap: wrap" in row(".chain-card-head {")

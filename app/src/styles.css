@@ -222,7 +222,7 @@ body {
   border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2);
 }
 .train-row-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.style-bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.style-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
 .style-label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 /* Visual style picker — the L1 · World sample is what tells you what a style looks like */
 .style-pick-wrap { position: relative; flex: 0 0 auto; }
@@ -322,8 +322,10 @@ body {
 /* Each lineage is its own collapsible card INSIDE the group card (author 2026-08-08) */
 .chain-card { border: 1px solid var(--line); border-radius: 5px; background: var(--panel-2); }
 .chain-card-head {
-  display: flex; align-items: center; gap: 8px; padding: 4px 7px; min-height: 26px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 7px;
+  min-height: 26px;
 }
+.chain-card-head .tree-toggle { min-width: 0; overflow-wrap: anywhere; text-align: left; }
 .chain-card.open .chain-card-head { border-bottom: 1px solid var(--line); }
 .chain-card-head .tree-toggle { font-size: 12px; font-weight: 500; }
 .chain-card-thumb {
@@ -727,11 +729,18 @@ a.ghost { text-decoration: none; display: inline-block; }
 .pp-status.pp-done { color: var(--ok); }
 .pp-status.pp-failed { color: var(--err); }
 .pp-add { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.pp-add-row { display: flex; gap: 6px; }
+/* WRAPS (author 2026-08-08): the row grew to five controls — preset, backend, style, branch
+   point, restyle — and in the narrow inspector the last two fell off the right edge, reachable
+   only by scrolling. Wrapping keeps every control visible at any panel width; the basis lets
+   two sit side by side when there is room and stack when there isn't. */
+.pp-add-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .pp-add select, .pp-add .prompt { background: var(--panel-2); color: var(--text);
   border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; font-size: 12px;
   box-sizing: border-box; }
-.pp-add-row select { flex: 1; }
+/* grow to share a row, but never below a readable width — that is what forces the wrap
+   instead of squeezing five selects into illegible slivers */
+.pp-add-row select { flex: 1 1 118px; min-width: 108px; }
+.pp-add-row .apply-style { flex: 0 0 auto; white-space: nowrap; }
 .pp-add .prompt { width: 100%; }
 .pp-add .proj-btn { align-self: flex-start; }
 .pp-gate { margin-top: 6px; }

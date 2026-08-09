@@ -153,3 +153,28 @@ clean.
 whether a 4-step distilled klein is a satisfying cleaner at all.
 
 **PUSHED `ef22ab6`.**
+
+### Removing a step deletes the image it produced (2026-08-09)
+
+Author: *"I removed the last step on the stack, but the image is still there, it should have
+been deleted."* — the mirror of the delete that never reached the stack, and the other half of
+"a step and its image must agree".
+
+`DELETE /postproc/step/{id}` dropped the step record only, so its output lived on as a library
+image no stack accounted for — and with the step gone, nothing could ever account for it again.
+The endpoint now deletes the producing job too.
+
+- **Order matters.** `remove_step` refuses a step others branch from (409); the image must
+  survive that refusal, so the job is deleted only *after* the removal is accepted.
+- **The tombstone rule still applies** — `RUNNER.delete` keeps the record (artifacts freed,
+  chain intact) when something else derives from that image, rather than stranding descendants.
+- **A live job is refused** ("cancel the job first"), matching the queue endpoint; deleting a
+  running job's files mid-write is what R80 exists to prevent.
+- FE: the ✕ on a finished step now confirms (it destroys an image, and every other destructive
+  path asks) and refreshes the jobs so the tile actually leaves the grid.
+
+**Tests +4 → 569 green** (removal deletes the job · a refused removal keeps the image · a live
+job is refused · the FE confirm/refresh contract). One of them exposed a latent trap worth
+recording: `RUNNER` is a process-wide singleton, so a job left `running` by a test holds the
+concurrency slot and stalls every later module's queue — 38 unrelated failures from one line.
+Always hand the slot back in a `finally`.

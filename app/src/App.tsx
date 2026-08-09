@@ -829,6 +829,7 @@ export default function App() {
     setBusy(true); setError(null);
     try {
       setPostprocStacks(await removePostprocStep(stepId));
+      void refreshJobs();   // the step's image goes with it — drop its tile from the grid
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
   // The persisted step status only catches up via the server-side completion observer, which
@@ -3413,8 +3414,18 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, i2iBudget, angl
                   </button>
                 )}
                 {i === steps.length - 1 && status !== "queued" && status !== "running" && (
-                  <button className="ghost" disabled={busy} onClick={() => onRemove(st.id)}
-                          title="remove this (tail) step">✕</button>
+                  // Removing a step now deletes the image it produced (they are one thing),
+                  // so a finished step asks first — every other destructive path does.
+                  <button className="ghost" disabled={busy}
+                          onClick={() => {
+                            if (st.output && !window.confirm(
+                                  "Remove this step and delete the image it produced?"
+                                  + "\n\nAnything built from that image is kept."
+                                  + " This cannot be undone.")) return;
+                            onRemove(st.id);
+                          }}
+                          title={st.output ? "remove this step and delete its image"
+                                           : "remove this (tail) step"}>✕</button>
                 )}
               </div>
               {attrs && <div className="pp-step-attrs">{attrs}</div>}

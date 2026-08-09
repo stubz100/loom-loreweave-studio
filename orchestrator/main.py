@@ -3143,12 +3143,37 @@ def create_app() -> FastAPI:
 
     @app.delete("/postproc/step/{step_id}")
     def remove_postproc_step(step_id: str, _auth: None = Depends(require_token)) -> dict:
-        """M0c — remove the LAST step of its stack (the chain tail; prunes an empty stack).
-        Token-gated."""
+        """M0c — remove a LEAF step of its stack (one nothing branches from; prunes an emptied
+        stack) **and delete the image it produced**. Token-gated.
+
+        Author 2026-08-09: *"I removed the last step on the stack, but the image is still
+        there, it should have been deleted."* Removing the step used to drop the record only,
+        leaving its output behind as a library image no stack accounted for — the mirror image
+        of the delete that never reached the stack, and the other half of "an image and its
+        step must agree". A step and its output are one thing in both directions now.
+
+        The job goes through `RUNNER.delete`, so its own rule still applies: if something else
+        derives from that image the record survives as a tombstone (artifacts freed, chain
+        intact) rather than stranding the descendants. A step whose job is still live is
+        refused — cancel it first, exactly as the queue endpoint does."""
+        ws = _require_ws()
         try:
-            return postproc.remove_step(_require_ws(), step_id=step_id)
+            step = postproc.resolve_step(ws, step_id)
+        except ws_mod.WorkspaceError as e:
+            raise HTTPException(404, str(e))
+        jid = step.get("job_id")
+        live = RUNNER.get(jid) if jid else None
+        if live and live.get("status") in ("queued", "running"):
+            raise HTTPException(409, f"step is {live['status']} — cancel the job first")
+        try:
+            # Order matters: `remove_step` refuses a step others branch from (409), and the
+            # image must survive that refusal.
+            stacks = postproc.remove_step(ws, step_id=step_id)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(409, str(e))
+        if live:
+            RUNNER.delete(jid)
+        return stacks
 
     @app.post("/project")
     def create_project(req: CreateProjectRequest, _auth: None = Depends(require_token)) -> dict:

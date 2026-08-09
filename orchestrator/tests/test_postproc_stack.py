@@ -722,3 +722,66 @@ def test_a_tombstoned_job_reads_as_gone_so_its_step_reconciles(client):
     first = next(s for s in stack2["steps"] if s["id"] == a)
     assert first.get("deleted") is True
     assert len(stack2["steps"]) == 2, "the branched step keeps its parent link"
+
+
+def test_removing_a_step_deletes_the_image_it_produced(client):
+    """Author, 2026-08-09: *"I removed the last step on the stack, but the image is still
+    there, it should have been deleted."*
+
+    The mirror of the delete that never reached the stack. Removing a step dropped the record
+    only, so its output lived on as a library image no stack accounted for — and since the
+    step was gone, nothing could ever clean it up. A step and the image it produced are one
+    thing, in both directions."""
+    from orchestrator.runner import RUNNER
+
+    base = _base_image("job_rm/base.png")
+    sid = _last_step_id(client.post("/postproc/step",
+                                    json={"base": base, "preset": "clean"}), base)
+    jid = _queue_id(client, sid, base)
+    _complete(jid, "job_rm/out1.png")
+
+    r = client.delete(f"/postproc/step/{sid}")
+    assert r.status_code == 200, r.text
+    assert RUNNER.get(jid) is None, "the step's job (and its image) must go with the step"
+    stack = next((s for s in _stacks(client) if s["base"] == base), None)
+    assert stack is None or stack["steps"] == []
+
+
+def test_a_refused_step_removal_keeps_its_image(client):
+    """Ordering guard. `remove_step` refuses a step others branch from — the image must
+    survive that refusal, so the job may only be deleted AFTER the removal is accepted."""
+    from orchestrator.runner import RUNNER
+
+    base = _base_image("job_rm2/base.png")
+    a = _last_step_id(client.post("/postproc/step",
+                                  json={"base": base, "preset": "clean"}), base)
+    ja = _queue_id(client, a, base)
+    _complete(ja, "job_rm2/a.png")
+    client.post("/postproc/step", json={"base": base, "preset": "restore",
+                                        "source": "job_rm2/a.png"})
+
+    r = client.delete(f"/postproc/step/{a}")
+    assert r.status_code == 409
+    assert RUNNER.get(ja) is not None, "a refused removal must not have deleted the image"
+    assert (RUNNER.get(ja).get("result") or {}).get("output_name") == "job_rm2/a.png"
+
+
+def test_removing_a_step_whose_job_is_live_is_refused(client):
+    """Deleting a running job's files mid-write is exactly what R80 exists to prevent, so the
+    removal is refused rather than half-applied (the queue endpoint refuses the same way)."""
+    from orchestrator.runner import RUNNER
+
+    base = _base_image("job_rm3/base.png")
+    sid = _last_step_id(client.post("/postproc/step",
+                                    json={"base": base, "preset": "clean"}), base)
+    jid = _queue_id(client, sid, base)
+    RUNNER.jobs[jid]["status"] = "running"
+    try:
+        r = client.delete(f"/postproc/step/{sid}")
+        assert r.status_code == 409 and "cancel the job first" in r.text
+        assert RUNNER.get(jid) is not None
+        assert any(s["id"] == sid for st in _stacks(client) for s in st["steps"])
+    finally:
+        # RUNNER is a process-wide singleton: a job left 'running' holds the concurrency slot
+        # and every later module's queue stalls behind it. Always hand it back.
+        RUNNER.jobs[jid]["status"] = "canceled"

@@ -271,3 +271,14 @@ def test_deleting_an_image_refetches_the_stacks():
     # group delete no longer promises a cascade the tombstone rule removed
     assert "Images postprocessed from them are kept." in app
     assert "This includes anything postprocessed from them" not in app
+
+
+def test_removing_a_step_warns_that_it_deletes_the_image():
+    """Removing a step now deletes the image it produced, so the panel asks first — every
+    other destructive path does — and refreshes the jobs so the tile actually leaves the grid.
+    The prompt says what survives, since the no-cascade tombstone rule keeps descendants."""
+    app = (APP / "App.tsx").read_text(encoding="utf-8")
+    assert "Remove this step and delete the image it produced?" in app
+    assert "Anything built from that image is kept." in app
+    assert "st.output && !window.confirm(" in app          # only a FINISHED step asks
+    assert "void refreshJobs();   // the step's image goes with it" in app

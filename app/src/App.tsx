@@ -2329,6 +2329,13 @@ export default function App() {
               jobs={gridIds.map((id) => jobs[id]).filter(Boolean)}
               tilesOf={(j) => cells.filter((c) => c.job?.id === j.id)}
               renderTile={renderTile}
+              tileImageUrl={(c) => {
+                if (c.refItem && activeAsset) return refUrl(activeAsset.id, c.refItem.file);
+                const name = c.output ?? c.job?.result?.output_name;
+                // videos have no still to show as a cover
+                if (!name || /\.(mp4|webm|mov)$/i.test(name)) return null;
+                return c.job?.status === "done" || c.interim ? outputUrl(name) : null;
+              }}
               onDeleteGroup={(js, label) => void onDeleteGroup(js, label)}
               emptyHint="Nothing here yet — fire a generation and its operation appears as a group."
             />

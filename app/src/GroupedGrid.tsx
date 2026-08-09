@@ -114,11 +114,13 @@ export function buildGroups(jobs: Job[], tilesOf: (job: Job) => TileRef[]): Grou
 }
 
 export default function GroupedGrid({
-  jobs, tilesOf, renderTile, onDeleteGroup, emptyHint,
+  jobs, tilesOf, renderTile, tileImageUrl, onDeleteGroup, emptyHint,
 }: {
   jobs: Job[];
   tilesOf: (job: Job) => TileRef[];
   renderTile: (t: TileRef) => React.ReactNode;
+  /** Cover thumbnail for a tile, or null when it has no image yet (queued/failed). */
+  tileImageUrl: (t: TileRef) => string | null;
   onDeleteGroup: (jobs: Job[], label: string) => void;
   emptyHint: string;
 }) {
@@ -134,23 +136,44 @@ export default function GroupedGrid({
 
   if (groups.length === 0) return <p className="muted center span">{emptyHint}</p>;
 
-  const renderNode = (n: Node, depth: number): React.ReactNode => (
-    <div key={n.job.id} className="tree-node" style={{ marginLeft: depth ? 18 : 0 }}>
-      {depth > 0 && (
-        <div className="tree-branch">
-          <span className="tree-elbow">└</span>
-          <span className="tree-pass">{n.job.pass || n.job.mode || n.job.pipeline}</span>
-          <span className="muted sm"> · {n.job.pipeline} · {n.job.id.slice(0, 10)}</span>
-          {n.job.status !== "done" && <span className="muted sm"> · {n.job.status}</span>}
-        </div>
-      )}
+  /** A group's cover: the first tile that actually has an image. */
+  const coverOf = (g: Group): string | null => {
+    const walk = (n: Node): string | null => {
+      for (const t of n.tiles) {
+        const u = tileImageUrl(t);
+        if (u) return u;
+      }
+      for (const c of n.children) {
+        const u = walk(c);
+        if (u) return u;
+      }
+      return null;
+    };
+    for (const r of g.roots) {
+      const u = walk(r);
+      if (u) return u;
+    }
+    return null;
+  };
+
+  // A node with NO children contributes its tiles to the group's single flat grid — that is
+  // what stops a 24-cell sweep rendering as 24 stacked one-tile rows (author 2026-08-08 #3).
+  // Only a node that actually HAS derived children needs its own block, to carry the nesting.
+  const renderBranch = (n: Node, depth: number): React.ReactNode => (
+    <div key={n.job.id} className="tree-branch-block" style={{ marginLeft: depth ? 16 : 0 }}>
+      <div className="tree-branch">
+        {depth > 0 && <span className="tree-elbow">└</span>}
+        <span className="tree-pass">{n.job.pass || n.job.mode || n.job.pipeline}</span>
+        <span className="muted sm"> · {n.job.pipeline} · {n.job.id.slice(0, 10)}</span>
+        {n.job.status !== "done" && <span className="muted sm"> · {n.job.status}</span>}
+      </div>
       <div className="tree-tiles">{n.tiles.map(renderTile)}</div>
-      {n.children.map((c) => renderNode(c, depth + 1))}
+      {n.children.map((c) => renderBranch(c, depth + 1))}
     </div>
   );
 
   return (
-    <div className="tree">
+    <div className="tree-wrap">
       <div className="tree-bar">
         <button className="ghost" onClick={() => setCollapsed(new Set(groups.map((g) => g.id)))}>
           collapse all
@@ -158,29 +181,58 @@ export default function GroupedGrid({
         <button className="ghost" onClick={() => setCollapsed(new Set())}>expand all</button>
         <span className="muted sm">{groups.length} operation{groups.length === 1 ? "" : "s"}</span>
       </div>
-      {groups.map((g) => {
-        const shut = collapsed.has(g.id);
-        const imgs = g.jobs.reduce((n, j) => n + (j.result?.output_names?.length ?? 0), 0);
-        return (
-          <div key={g.id} className="tree-group">
-            <div className="tree-head">
-              <button className="tree-toggle" onClick={() => toggle(g.id)}
-                      title={shut ? "expand" : "collapse"}>
-                {shut ? "▸" : "▾"} {g.label}
-              </button>
-              <span className="muted sm">
-                {g.sub}{imgs ? ` · ${imgs} image${imgs === 1 ? "" : "s"}` : ""} · {when(g.at)}
-              </span>
-              <button className="ghost tree-del"
-                      onClick={() => onDeleteGroup(g.jobs, `${g.label} (${g.sub})`)}
-                      title="delete every job in this operation — including anything postprocessed from it — with all their artifacts">
-                🗑 group
-              </button>
+      <div className="tree">
+        {groups.map((g) => {
+          const shut = collapsed.has(g.id);
+          const imgs = g.jobs.reduce((n, j) => n + (j.result?.output_names?.length ?? 0), 0);
+          const plain = g.roots.filter((r) => r.children.length === 0);
+          const chains = g.roots.filter((r) => r.children.length > 0);
+          const cover = coverOf(g);
+          const meta = `${g.sub}${imgs ? ` · ${imgs} image${imgs === 1 ? "" : "s"}` : ""} · ${when(g.at)}`;
+          return (
+            <div key={g.id} className={`tree-group ${shut ? "shut" : "open"}`}>
+              {/* Collapsed: a TILE with a cover image and its facts underneath — a bare bar
+                  told the author nothing about what was inside (2026-08-08 #2). */}
+              {shut ? (
+                <button className="tree-card" onClick={() => toggle(g.id)} title={`expand — ${meta}`}>
+                  <span className="tree-card-img">
+                    {cover ? <img src={cover} alt={g.label} />
+                           : <span className="tree-card-ph">no image</span>}
+                    {g.roots.length > 1 && <span className="tree-card-count">×{g.roots.length}</span>}
+                  </span>
+                  <span className="tree-card-foot">
+                    <span className="tree-card-name">{g.label}</span>
+                    <span className="muted sm">{meta}</span>
+                  </span>
+                </button>
+              ) : (
+                <>
+                  <div className="tree-head">
+                    <button className="tree-toggle" onClick={() => toggle(g.id)} title="collapse">
+                      ▾ {g.label}
+                    </button>
+                    <span className="muted sm">{meta}</span>
+                    <button className="ghost tree-del"
+                            onClick={() => onDeleteGroup(g.jobs, `${g.label} (${g.sub})`)}
+                            title="delete every job in this operation — including anything postprocessed from it — with all their artifacts">
+                      🗑 group
+                    </button>
+                  </div>
+                  <div className="tree-body">
+                    {/* every childless root in ONE grid, so it fills the width */}
+                    {plain.length > 0 && (
+                      <div className="tree-tiles">
+                        {plain.flatMap((r) => r.tiles).map(renderTile)}
+                      </div>
+                    )}
+                    {chains.map((r) => renderBranch(r, 0))}
+                  </div>
+                </>
+              )}
             </div>
-            {!shut && <div className="tree-body">{g.roots.map((r) => renderNode(r, 0))}</div>}
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }

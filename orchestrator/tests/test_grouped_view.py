@@ -96,3 +96,32 @@ def test_grouped_view_source_contract():
     # group delete = N audited single deletes, and it reports what it could not remove
     assert "const onDeleteGroup" in app and "await deleteJob(j.id)" in app
     assert "cancel running jobs first" in app
+
+
+def test_grouped_view_layout_contract():
+    """Author's design pass 2026-08-08 — three specific complaints, three specific fixes:
+
+    1. full-width bars wasted vertical space  → collapsed groups are CARDS in a multi-column
+       grid, and an OPEN group spans every column so studying one still gets full width;
+    2. a bare bar said nothing about its contents → each card carries a COVER image (the first
+       tile in the group that actually has one) with the facts underneath;
+    3. opening a group listed tiles one per row → every childless root now contributes to ONE
+       grid, instead of each job rendering its own single-tile grid (that was the actual bug:
+       a 24-cell sweep drew 24 stacked rows).
+    """
+    tree = (APP / "GroupedGrid.tsx").read_text(encoding="utf-8")
+    css = (APP / "styles.css").read_text(encoding="utf-8")
+
+    # 1 — cards tile; the open one spans the row
+    assert ".tree {" in css and "repeat(auto-fill, minmax(210px, 1fr))" in css
+    assert ".tree-group.open { grid-column: 1 / -1; }" in css
+
+    # 2 — a cover image resolved from the group's own tiles
+    assert "const coverOf" in tree and "tileImageUrl" in tree
+    assert "tree-card-img" in tree and "tree-card-foot" in tree
+
+    # 3 — childless roots pooled into a single grid (the one-column bug)
+    assert "const plain = g.roots.filter((r) => r.children.length === 0);" in tree
+    assert "plain.flatMap((r) => r.tiles).map(renderTile)" in tree
+    # …and only a root that really has children keeps its own nested block
+    assert "const chains = g.roots.filter((r) => r.children.length > 0);" in tree

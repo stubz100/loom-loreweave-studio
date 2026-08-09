@@ -72,3 +72,36 @@ audited single delete and reports skips). `tsc` + `vite build` clean.
 (char02's 661-job project is the honest test, not a fixture).
 
 **✅ PUSHED `dc6ce45`.**
+
+### Pass 2 design revision — cards, covers, and the one-column bug (author feedback, same day)
+
+*"I like the grouping logic, but the design I'm not happy with"* — three complaints, three
+fixes. The grouping/nesting logic is unchanged; this is layout only.
+
+**#3 was a real BUG, not a preference.** *"when opening a collection, you can see a list of
+tiles in one column"* — each root job rendered **its own** `.tree-tiles` grid, and since a cell
+job produces one image, a 24-cell expansion sweep drew **24 stacked single-tile grids**. The
+`auto-fill` track sizing was right all along; it just never had more than one tile to work
+with. Now every **childless** root pools its tiles into **ONE grid** per group, and only a root
+that genuinely has derived children keeps its own nested block (which is what carries the
+`└ clean → └ resize` chain). Groups of independent images fill the width; chains still read as
+chains.
+
+**#1 — the bars ate vertical space.** Collapsed groups are now **cards in a multi-column grid**
+(`auto-fill, minmax(210px, 1fr)` — two-plus columns at any usable width). An **open** group
+takes `grid-column: 1 / -1`, so it spans every column and its tiles get the full width. One
+layout serves both jobs: scanning many operations, and studying one.
+
+**#2 — a bar told you nothing about its contents.** Each card now leads with a **cover image**
+— the first tile in the group that actually has one, walked depth-first through the derivation
+children so a postproc-only group still shows something — with the label and facts
+(pipeline · job count · image count · time) underneath, plus a `×N` badge when the group holds
+more than one root. Queued/failed/video tiles resolve to no cover and fall back to a
+placeholder rather than a broken image.
+
+The group `🗑` moved into the expanded header (it needs the deliberate act of opening a group
+first, which is the right friction for a destructive bulk action).
+
+**Tests +1 → 433 green** — a layout contract pinning all three fixes: the card grid + the
+full-width open group, the cover resolver, and specifically the childless-root pooling that was
+the one-column bug. `tsc` + `vite build` clean.

@@ -216,3 +216,5 @@ alone.
 **Tests +1 → 439 green** — a layout contract asserting the wrap on all three at-risk rows plus
 the select floor, so the next control added to that row cannot silently reintroduce it.
 `tsc` + `vite build` clean.
+
+**✅ PUSHED `7725ac6`.**

@@ -71,3 +71,83 @@ resolving, leaf deleted outright · reconcile prunes a dead step and tombstones 
 one · the budget's flux2 "exact" vs sd35 "fraction" semantics). `tsc` + `vite build` clean.
 
 **✅ PUSHED `f3ac8d9`.**
+
+## ⭐ flux2 i2i schedule — the SHAPE was wrong too + the tombstone/reconcile blind spot (2026-08-09)
+
+### Why "clean" still returned its input after the last fix
+
+The author re-ran the pass with **restyle on** (`job_7efb40c7` style `sty_b9512f` "Dim Glow" →
+`job_b5f67d87` style `sty_8b1312` ink-blot — a genuinely different prompt) at **strength 0.85**,
+and it still came back nearly unchanged. That killed the "the model is being faithful to the
+source's own prompt" reading and pointed at the schedule again.
+
+The previous fix (`f3ac8d9`) delivered the right *count* — `num_timesteps: 5` on the rig,
+confirmed — but kept the wrong *shape*:
+
+```
+job_b5f67d87  [0.85, 0.8223, 0.7719, 0.6521, 0.0]
+        dt      0.0277  0.0504  0.1198  0.6521   ← one leap = 77% of the range
+```
+
+`get_schedule` runs a linear ramp through `generalized_time_snr_shift`, whose resolution-driven
+`mu` bunches timesteps near t=1. Slicing inherited the bunching (1 interval); **scaling
+inherited it too** — three slivers, then a cliff.
+
+**That cliff is the bug.** A single Euler step to t=0 is `x_t - t·v`, and with the model's
+velocity ≈ the true `noise - z0` it evaluates to **exactly z0** — the source image. The pass
+reconstructed its input by construction, whatever the prompt said. Re-interpretation lives in
+curvature accumulated over several moderate steps; one big step short-circuits it.
+
+**Fix — `img2img_schedule`.** The shift is invertible at sigma=1
+(`s = e^mu/(e^mu + 1/t - 1)` → `t = s/(s + e^mu·(1-s))`), so map `strength` back to LINEAR time,
+ramp linearly from there to 0, and shift each point. `num_steps` intervals across
+`[strength, 0]` **with the model's own spacing**:
+
+| strength 0.5, 4 steps | schedule | max:min interval |
+| --- | --- | --- |
+| scaled (was) | `[0.5, 0.4837, 0.4541, 0.3836, 0.0]` | 23.5 |
+| native (now) | `[0.5, 0.4225, 0.3225, 0.1886, 0.0]` | **2.4** |
+
+At `strength=1.0` it reduces byte-for-byte to `get_schedule`, so it generalises the stock
+schedule rather than replacing it (t2i untouched). Re-vendored to the monorepo (R162).
+
+⚠ Correction to the last entry: `fixed_params: ["guidance", "num_steps"]` is **manifest
+metadata, not enforcement** — `run_pipeline` honours an explicitly requested `num_steps` on
+klein. The budget leaves klein at its default 4 because 4 already meets the floor; now that
+steps genuinely buy intervals, raising that floor is the next quality knob (rig-owed, not
+guessed here). klein remains distilled at guidance 1.0 — for a *re-interpreting* clean,
+`flux.2-dev` (8 steps, adjustable guidance 3.0) or the preset's own zimage default is the
+better backend.
+
+### The deletion that didn't reach the stack
+
+Author: *"when I deleted the 2nd level image on the stack (zimage/str:0.6), the stack didn't
+reflect this change and I can still see the image in the stack, but it doesn't exist as a tile
+on the stack card."*
+
+Both halves of yesterday's work were individually correct and did not compose. In the live
+project, `pps_7f9d3d` **was** tombstoned properly, while `pps_087ecd` (the author's zimage/0.6)
+sat untouched — which localised it to two gaps:
+
+1. **`_job_state` reported a job gone only when its RECORD was gone** — and a tombstone keeps
+   the record. So reconcile was blind to exactly the deletes the tombstone rule handles: the
+   step held `done` + an `output` naming a file removed with the job. A tombstoned job's images
+   are as deleted as any other's → it now reads as gone and goes back through reconcile's own
+   tombstone path (kept only while something branches from it).
+2. **Nothing re-read the stacks after a delete.** Reconcile is authoritative but only runs on a
+   READ; the staleness effect watched queued/running steps only (a delete leaves the step
+   `done`), and neither delete handler refreshed postproc. Both handlers now refetch, and the
+   effect also treats a done step whose job vanished as stale — self-terminating, since the
+   server either drops the step or flags it `deleted`.
+
+Also: the group-delete confirm still promised *"this includes anything postprocessed from
+them"*, which the no-cascade tombstone rule had already made untrue.
+
+**Tests +123 → 565 green** (a parametrised `img2img_schedule` matrix over seq-len × strength ×
+steps: exact interval count, exact endpoints, monotonic, no step swallowing the range, and
+`strength=1.0` ≡ `get_schedule`; a source guard pinning the scaled version's removal; the
+tombstoned-job reconcile in both directions; the FE refetch contract). `tsc` + `vite build`
+clean.
+
+**Rig-owed:** the visible result. The schedule is provably right now, but only a render says
+whether a 4-step distilled klein is a satisfying cleaner at all.

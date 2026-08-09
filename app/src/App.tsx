@@ -353,7 +353,9 @@ export default function App() {
     const busy = jobs.filter((j) => j.status === "queued" || j.status === "running").length;
     const msg = `Delete ${jobs.length} job(s) in ${label}, with all their images and files?`
       + (busy ? `\n\n${busy} still running/queued — cancel those first; they will be skipped.` : "")
-      + "\n\nThis includes anything postprocessed from them. It cannot be undone.";
+      // No cascade (author 2026-08-09): anything postprocessed FROM these is kept, and what
+      // is deleted stays in the chain as a tombstone so its descendants remain attached.
+      + "\n\nImages postprocessed from them are kept. It cannot be undone.";
     if (!window.confirm(msg)) return;
     let ok = 0;
     const failed: string[] = [];
@@ -373,6 +375,7 @@ export default function App() {
     }
     setSelected(null);
     void refreshJobs();
+    void refreshPostproc();   // a deleted image may be a stack's base or a step's output
   };
 
   const onDeleteCell = async (job?: Job, output?: string, cellKey?: string) => {
@@ -398,6 +401,7 @@ export default function App() {
       setError(String(e));
     }
     void refreshJobs();
+    void refreshPostproc();   // a deleted image may be a stack's base or a step's output
   };
 
   // ↻ re-run one terminal cell (user 2026-07-04): clone the job — same prompt/coverage
@@ -833,11 +837,22 @@ export default function App() {
   // project stacks; GET /postproc/stacks reconciles the step with the live queue (server-side)
   // so it never stays stuck 'queued'. Self-terminating: once reconciled, status leaves
   // queued/running so this stops firing.
+  //
+  // A **done** step counts too (author 2026-08-09): deleting its image removes the job, and
+  // this only ever watched queued/running steps — so nothing re-fetched, and the stack went on
+  // listing an image the card could no longer show a tile for. `deleted` (the server's
+  // tombstone) is excluded so a step the server deliberately keeps does not re-trigger this
+  // forever; a step the server drops disappears, which is equally self-terminating. Skipped
+  // while `jobs` is empty — at boot that is "not loaded yet", not "everything was deleted".
   useEffect(() => {
+    if (!Object.keys(jobs).length) return;
     const stale = postprocStacks.some((s) => s.steps.some((st) => {
-      if (!st.job_id || (st.status !== "queued" && st.status !== "running")) return false;
-      const js = jobs[st.job_id]?.status;
-      return js === undefined || ["done", "failed", "canceled"].includes(js);
+      if (!st.job_id) return false;
+      if (st.status === "queued" || st.status === "running") {
+        const js = jobs[st.job_id]?.status;
+        return js === undefined || ["done", "failed", "canceled"].includes(js);
+      }
+      return st.status === "done" && !st.deleted && !jobs[st.job_id];
     }));
     if (stale) void refreshPostproc();
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -5,20 +5,63 @@ Two entry points:
   * `run_img2img(...)`   -- img2img: AE-encode an init image, mix with noise
                             via flow-matching linear interpolation
                             `x = (1 - t_start) * z0 + t_start * noise` where
-                            `t_start = strength`, then denoise the schedule
-                            tail from t_start down. Used by HandRefiner's
-                            polish pass.
+                            `t_start = strength`, then denoise across
+                            `[t_start, 0]` on a schedule built natively for
+                            that sub-range (`img2img_schedule`). Used by the
+                            postprocess stack and HandRefiner's polish pass.
 """
 
 import argparse
+import math
 
 import torch
 from PIL import Image
 
 from flux2.model import Flux2
 from flux2.sampling import (
-    batched_prc_img, default_prep, denoise, denoise_cfg, encode_image_refs, get_schedule,
+    batched_prc_img, compute_empirical_mu, default_prep, denoise, denoise_cfg,
+    encode_image_refs, generalized_time_snr_shift, get_schedule,
 )
+
+
+def img2img_schedule(num_steps: int, image_seq_len: int, strength: float) -> list[float]:
+    """The timestep schedule for an img2img run: `num_steps` intervals across
+    `[strength, 0]`, spaced the way the model would traverse THAT PART of the trajectory.
+
+    `get_schedule` maps a LINEAR ramp through `generalized_time_snr_shift`, whose
+    resolution-dependent `mu` bunches timesteps up near t=1. Two earlier attempts both
+    failed on that:
+
+    * *slice the full 1→0 schedule below `strength`* — at 1024² (4096 tokens) almost every
+      timestep sits above 0.6, so the tail held ONE interval no matter how many steps were
+      asked for (`num_timesteps: 2`).
+    * *scale the full schedule by `strength`* — keeps num_steps intervals, but also keeps the
+      bunching, so the last interval swallowed most of the range: at strength 0.85/4 steps the
+      schedule was `[0.85, 0.822, 0.772, 0.652, 0.0]` — three ~0.03-0.12 steps, then a single
+      0.652 leap. That leap is why a "clean" pass returned its input: one Euler step to t=0 is
+      `x_t - t·v`, and with the model's velocity ≈ the true `noise - z0` that evaluates to
+      **exactly z0** — the source image. Re-interpretation lives in the accumulated curvature
+      of several moderate steps; one big step short-circuits straight back to the source.
+      (Author 2026-08-09: `job_4064f0f9` at 0.5 and `job_b5f67d87` at 0.85 both came back
+      near-identical to their input even with a deliberately re-styled prompt.)
+
+    The shift is invertible at sigma=1 — `s = e^mu / (e^mu + 1/t - 1)` gives
+    `t = s / (s + e^mu·(1 - s))` — so map `strength` back to LINEAR time, ramp linearly from
+    there to 0, and shift each point. `num_steps` means num_steps, the head is exactly
+    `strength` (where the interpolation put the latent), the tail is exactly 0.0, and the
+    spacing is the model's own. At strength 0.5/4 steps the largest:smallest interval ratio
+    drops from 23.5 to 2.4.
+    """
+    if num_steps < 1:
+        return [strength, 0.0]
+    mu = compute_empirical_mu(image_seq_len, num_steps)
+    u_start = strength / (strength + math.exp(mu) * (1.0 - strength))
+    u = torch.linspace(u_start, 0.0, num_steps + 1)
+    timesteps = generalized_time_snr_shift(u, mu, 1.0).tolist()
+    # Pin the endpoints against float drift: the head must equal `strength` exactly (the
+    # latent is mixed at that t) and the tail must reach a clean 0.0.
+    timesteps[0], timesteps[-1] = float(strength), 0.0
+    return timesteps
 
 
 def _latent_stats(x: torch.Tensor) -> dict:
@@ -155,8 +198,8 @@ def run_img2img(
     strength: float = 0.25,
 ) -> dict:
     """Img2img variant of `run`. AE-encodes the init image, mixes with noise
-    via flow-matching linear interpolation, slices the timestep schedule to
-    start at t=strength, and runs the denoise loop from there.
+    via flow-matching linear interpolation at t=strength, then runs the denoise
+    loop across `[strength, 0]` on a schedule built for that sub-range.
 
     `strength` in (0, 1] controls how much of the original is preserved:
         0.20-0.25 = "polish" (small global re-roll, preserves composition)
@@ -206,25 +249,8 @@ def run_img2img(
         # 4. Patch + ids.
         x, x_ids = batched_prc_img(x_init)
 
-        # 5. Build the schedule ACROSS [strength, 0] with `num_steps` intervals.
-        #
-        # This used to build the FULL 1.0→0.0 schedule and slice its tail below `strength`,
-        # which made `num_steps` almost inert at useful resolutions. `get_schedule` applies a
-        # resolution-dependent shift (`compute_empirical_mu`), and at 1024² (4096 tokens) that
-        # pushes nearly every timestep ABOVE 0.6 — so the tail held one interval whether you
-        # asked for 4 steps or 7, and a "Clean" pass returned its input with a faint wash
-        # (author, 2026-08-09: `job_724798a6`, `job_57634713`, `job_7efb40c7` — all
-        # `num_timesteps: 2`, `[strength, 0.0]`, regardless of the steps requested).
-        #
-        # Scaling the shifted schedule into the sub-range keeps the model's own step
-        # DISTRIBUTION (where it wants to spend denoising effort) while guaranteeing that
-        # `num_steps` means num_steps — at any strength, at any resolution.
-        full_timesteps = get_schedule(num_steps, x.shape[1])
-        timesteps = [t * strength for t in full_timesteps]
-        # `get_schedule` ends at 0.0, so the scaled tail already lands on 0.0; the head is
-        # exactly `strength`, which is where the interpolation above put the latent.
-        if len(timesteps) < 2:
-            timesteps = [strength, 0.0]
+        # 5. Build the schedule natively across [strength, 0] — see `img2img_schedule`.
+        timesteps = img2img_schedule(num_steps, x.shape[1], strength)
 
         if guidance_distilled:
             x = denoise(

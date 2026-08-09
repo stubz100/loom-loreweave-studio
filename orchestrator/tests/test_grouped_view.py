@@ -243,3 +243,31 @@ def test_effective_step_readout_is_surfaced_and_stays_in_lockstep():
 
     # and it flags the lifted case rather than silently reporting a number
     assert "lifted" in app
+
+
+def test_deleting_an_image_refetches_the_stacks():
+    """Author, 2026-08-09: deleting a stacked image left the stack showing it.
+
+    Server-side reconcile heals the store, but only when someone READS it — and nothing did.
+    The staleness effect watched queued/running steps only (a delete leaves the step `done`),
+    and neither delete handler refreshed postproc. So the fix is both: the handlers refetch
+    directly for immediacy, and the effect also treats a `done` step whose job has vanished as
+    stale, which covers deletes from anywhere else.
+
+    The effect must be self-terminating — `deleted` (the server's tombstone, a step it
+    deliberately keeps) is excluded, and an empty `jobs` map means "not loaded yet", not
+    "everything was deleted"."""
+    app = (APP / "App.tsx").read_text(encoding="utf-8")
+    # both delete paths refresh the stacks, not just the job list
+    assert app.count("void refreshPostproc();   // a deleted image may be a stack's base") == 2
+    # …and the catch-all effect covers a done step whose job is gone
+    assert 'return st.status === "done" && !st.deleted && !jobs[st.job_id];' in app
+    assert "if (!Object.keys(jobs).length) return;" in app
+
+    # the step type carries the tombstone flag the effect keys on
+    api = (APP / "lib" / "orchestrator.ts").read_text(encoding="utf-8")
+    assert "deleted?: boolean;" in api
+
+    # group delete no longer promises a cascade the tombstone rule removed
+    assert "Images postprocessed from them are kept." in app
+    assert "This includes anything postprocessed from them" not in app

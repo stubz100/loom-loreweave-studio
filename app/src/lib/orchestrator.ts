@@ -563,7 +563,11 @@ export interface PostprocStep {
   source: string;                 // out/-relative input image (base, or prior step's output)
   output?: string | null;         // produced image once the step's job completes
   job_id?: string | null;
-  status: "configured" | "queued" | "running" | "done" | "failed";
+  status: "configured" | "queued" | "running" | "done" | "failed" | "canceled";
+  /** Server tombstone: the step's image was deleted but something branches from it, so the
+   *  record is kept to hold the chain together (`postproc.reconcile`). Render a placeholder,
+   *  never a tile — `output` still names the file, which no longer exists. */
+  deleted?: boolean;
   added_at?: string;
 }
 

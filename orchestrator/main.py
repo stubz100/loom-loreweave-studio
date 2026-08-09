@@ -2847,9 +2847,17 @@ def create_app() -> FastAPI:
 
     def _job_state(jid: str):
         """`(status, ok-output)` for a job, or None if it's gone from the queue (deleted/
-        pruned). Feeds postproc.reconcile so a step tracks its job's real state."""
+        pruned). Feeds postproc.reconcile so a step tracks its job's real state.
+
+        A **tombstoned** job counts as gone (author 2026-08-09). `RUNNER.delete` keeps the
+        record of a job that others derive from, flagged `deleted`, so the chain still
+        resolves — but its images are as deleted as any other's. Reporting it as live left
+        reconcile blind to the delete, so the step kept a `done` status and an `output`
+        naming a file that no longer existed: the stack still listed the image while the
+        card had no tile for it. Returning None puts it back through reconcile's own
+        tombstone path, which keeps the step only while something branches from it."""
         j = RUNNER.get(jid)
-        if j is None:
+        if j is None or j.get("deleted"):
             return None
         res = j.get("result") or {}
         out = res.get("output_name") or (res.get("output_names") or [None])[0]

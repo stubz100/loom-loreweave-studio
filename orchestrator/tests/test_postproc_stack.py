@@ -678,3 +678,47 @@ def test_reconcile_prunes_stack_records_whose_job_is_gone(client):
     first = next(s for s in stack2["steps"] if s["id"] == a)
     assert first.get("deleted") is True, "a branched-from step is kept as a tombstone"
     assert len(stack2["steps"]) == 2
+
+
+def test_a_tombstoned_job_reads_as_gone_so_its_step_reconciles(client):
+    """Author, 2026-08-09: *"when I deleted the 2nd level image on the stack (zimage/str:0.6),
+    the stack didn't reflect this change and I can still see the image in the stack, but it
+    doesn't exist as a tile on the stack card."*
+
+    The tombstone rule (above) and the reconcile prune (above) each worked, but not together:
+    `_job_state` reported a job GONE only when its record was gone, and a tombstone keeps the
+    record. So reconcile stayed blind to exactly the deletes the tombstone rule handles — the
+    step held its `done` status and an `output` naming a file that had been removed with the
+    job. A tombstoned job's images are as deleted as any other's, so it must read as gone and
+    go back through reconcile's own tombstone path."""
+    from orchestrator import postproc
+    from orchestrator.runner import RUNNER
+
+    base = _base_image("job_tomb2/base.png")
+    sid = _last_step_id(client.post("/postproc/step",
+                                    json={"base": base, "preset": "clean"}), base)
+    jid = _queue_id(client, sid, base)
+    _complete(jid, "job_tomb2/out1.png")
+
+    RUNNER.delete(jid, tombstone=True)          # record kept + flagged, artifacts cleared
+    assert RUNNER.get(jid)["deleted"] is True, "precondition: the record survives"
+
+    stack = next((s for s in _stacks(client) if s["base"] == base), None)
+    assert stack is not None and stack["steps"] == [], \
+        "a step whose job was tombstoned must not keep pointing at the deleted image"
+
+    # …and when something DOES branch from it, the step is kept as a tombstone so the chain
+    # stays linked (the FE renders a placeholder in its place rather than a dead tile).
+    base2 = _base_image("job_tomb3/base.png")
+    a = _last_step_id(client.post("/postproc/step",
+                                  json={"base": base2, "preset": "clean"}), base2)
+    ja = _queue_id(client, a, base2)
+    _complete(ja, "job_tomb3/a.png")
+    _last_step_id(client.post("/postproc/step", json={
+        "base": base2, "preset": "restore", "source": "job_tomb3/a.png"}), base2)
+
+    RUNNER.delete(ja, tombstone=True)
+    stack2 = next(s for s in _stacks(client) if s["base"] == base2)
+    first = next(s for s in stack2["steps"] if s["id"] == a)
+    assert first.get("deleted") is True
+    assert len(stack2["steps"]) == 2, "the branched step keeps its parent link"

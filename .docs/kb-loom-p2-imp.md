@@ -3833,3 +3833,87 @@ Diagnosis ladder handed to the author, cheapest first: reseat every power connec
 (never daisy-chain a single PCIe cable to two GPU inputs) → HWiNFO64 +12 V logging to CSV during a
 sweep → GPU power cap −20 % as a *transient measurement* (explicitly not the scrubbed thermal
 remedy — different question, temporary) → BIOS F33a → current → PSU swap, the only decisive test.
+
+## ✅ ROOT CAUSE FOUND — the GPU's thermal interface, not power (2026-08-16)
+
+HWiNFO logged the crash. **It was never the PSU** (two units were swapped for nothing) and never
+the CPU, RAM or storage. The card's die-to-coldplate thermal path has failed.
+
+### The measurement
+
+`system_log_202608161653.CSV` — crash at 17:04:36, boot 17:06:40, again no BugCheck/WHEA/TDR.
+
+| at the moment of the cut | |
+| --- | --- |
+| GPU **Hot Spot** (junction) | **110 °C** — at the hardware limit |
+| GPU **edge** temperature | **51 °C** |
+| **delta** | **59 °C** (healthy is 10–25) |
+| GPU fan | **25 % PWM, ~1 100 RPM** |
+| `GPU Hotspot Thermal Limit` | **100.4 %** — exceeded |
+| **+12 V rail** | **11.88–11.95 V, never sagged** |
+
+```
+17:04:32.198   242 W   hotspot 110 C   <- at limit
+17:04:33.697   181 W   hotspot 110 C
+17:04:34.202   105 W   <- collapse
+17:04:35.711     4 W   GPU stopped
+17:04:36.215     -     VRAM released 14970 -> 2435 MB
+                       [power lost]
+```
+
+**Mechanism.** Heat cannot cross from die to coldplate (paste pump-out / mount / vapour chamber).
+The die reaches 110 °C in ~1.5 s of load, but the **edge sensor — which drives the fan curve —
+reads 51 °C**, so the card holds the fan at 25 % while its own junction is at the limit. At 243 W
+throttling can no longer contain it and the card's hardware failsafe cuts out: instant power-off,
+no OS involvement, which is precisely why five months of crashes left no bugcheck, no WHEA record,
+no TDR and no dump.
+
+**It explains every observation:** two PSUs changed nothing · Prime95 passed (GPU idle) · sustained
+training completes (only 8 of 1 365 samples exceed 150 W — training never enters the danger band) ·
+1024² flux2 is the killer (the only thing pulling 240 W) · July's fan curves helped because
+airflow buys margin, but the bottleneck is contact, so it only postponed it · the author was right
+that it "wasn't temperature", because every tool shows the **edge** temp and that read 51 °C ·
+worsening since March = paste pump-out is progressive.
+
+### After an aggressive fan curve (`system_log_202608161800.CSV`) — the multi-generation PASSED
+
+| | crash run | new run |
+| --- | --- | --- |
+| GPU fan | 440 avg / 1 383 max RPM (29 % PWM) | **3 396 avg / 4 353 max RPM (100 % PWM)** |
+| GPU edge | 46 avg / 52 max | 37 avg / 42 max |
+| GPU hotspot | 56 avg / **110 max** | 46 avg / **99 max** |
+| hotspot ≥100 °C | 7 samples | **0** |
+| `Hotspot Thermal Limit` | 100.4 % | 89.3 % |
+| GPU core power | 243.5 max | **246.0 max** (identical workload) |
+| **delta at ≥150 W** | **avg 56 / max 59 °C** | **avg 47 / max 58 °C** |
+
+**The defect is UNCHANGED.** At ~240 W the delta is still 56–58 °C. The curve lowered the
+*baseline* (edge 51 → 39–41 °C) and the hotspot fell by the same ~11 °C. The relation is simply
+`hotspot ≈ edge + 57`.
+
+⚠ **Two reasons the 11 °C margin is thinner than it looks:**
+1. **The fan is out of headroom** — 98–100 % PWM at the peaks. Nothing left to give.
+2. **The hotspot was still CLIMBING when the load ended.** Both bursts lasted ~1.5 s
+   (96 → 98 → 99 °C, i.e. +2 then +1 per 0.5 s) and never reached equilibrium. The
+   multi-generation survived because its power profile is **bursty** — short denoise bursts with
+   model-swap gaps — not because the card can hold 240 W. Extrapolating the ramp, a *sustained*
+   240 W load reaches 110 °C in roughly 3–5 more seconds.
+
+⚠ Note for the warm-worker idea: back-to-back generation on a warm worker **sustains** GPU power
+where cold loads break it up. Thermally that is the *worse* profile on this card until it is fixed.
+
+Everything else is healthy: CPU 79.9 °C max (down from 86.1), VRM 46 °C, memory junction 45 °C,
+drives 29–49 °C. (The "83 °C" drive channel is a stuck sensor — max == avg == 83 with zero
+variance over 1 224 samples; that drive's real sensor reads 43–49 °C.) Incidentally the CPU pulled
+**184 W** here, so the earlier Prime95 run that peaked at 52 °C was not a full-power test — the
+CPU elimination held anyway.
+
+### Status
+
+**Blocker root-caused, workaround in place, hardware repair still owed.** The fix is the card's
+thermal interface: repaste — preferably **PTM7950** phase-change pad, which does not pump out —
+and remount, or **RMA it** (a 59 °C junction-to-edge delta is a defect, and the log proves it).
+Until then: keep the aggressive fan curve, prefer **512²**, avoid long sustained 1024² batches,
+and **watch Hot Spot, never GPU temperature**.
+
+The P2 M7 stamp is unblocked — training never enters the danger band.

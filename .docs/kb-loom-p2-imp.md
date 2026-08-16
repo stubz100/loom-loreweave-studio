@@ -3750,3 +3750,86 @@ and vite clean.
 2. **R68 seed-semantics check** — one ~60-step run seeded from a parent checkpoint.
 3. **Eyeballs** — the flux2 schedule fix's visible result, the sd35 preview, the grouped view
    against the full library.
+
+## 🔴 CORRECTION — the hardware blocker was never closed (2026-08-16)
+
+The crashes returned, so I read the Windows event log instead of reasoning from job outcomes.
+**Two things we recorded are wrong, and one of them we recorded during the close-out audit.**
+
+### What the event log actually says
+
+| Check | Result |
+| --- | --- |
+| BugCheck (1001) | **none, ever** |
+| Minidump / `MEMORY.DMP` / LiveKernelReports | **none** |
+| Kernel-Power 41 detail | `BugcheckCode=0`, `PowerButtonTimestamp=0` — all 9 |
+| WHEA-Logger (PCIe / MCE / memory) | **none** |
+| GPU TDR (4101) | **none** |
+| Thermal / throttle events | **none** (the 1 376 Kernel-Processor-Power events are benign per-core boot reports) |
+| Events in the minutes before each cut | **none — the log simply stops** |
+
+The machine is **not crashing. It is losing power.** Nothing gets a chance to be written: the
+worker logs for both crashed flux2 jobs **do not exist on disk at all**, and a third is 0 bytes —
+files created, never flushed.
+
+### Correction 1 — "✅ hardware blocker CLOSED 2026-08-08" is FALSE
+
+**There were three unexpected shutdowns on 2026-08-08** (17:24, 18:33, 20:07). The blocker was
+declared closed that day because a 500-step training run completed. One run completing is not
+evidence of a fixed machine — and the fan-curve change is not what let it complete.
+
+### Correction 2 — this is not new, and not the heatwave
+
+The System log reaches back to 2026-03-01. The first unexpected shutdown is **2026-03-06**, and
+there have been **42 in the last 120 days alone**:
+
+```
+2026-04  x3     2026-05  x9     2026-06  x15     2026-07  x5     2026-08  x10 (to the 16th)
+```
+
+March, April and May are not heatwave months. The rig has **never** been stable; the July
+"blocker" was simply the first time the pattern was noticed. Every temperature-based explanation
+we entertained — including the one the fan curves appeared to validate — was fitted to a
+coincidence.
+
+### What the data does support
+
+Correlating session boundaries against the job history (the 6008 "previous shutdown" timestamps
+are useless — they echo each session's own boot time, because the last-alive stamp is not being
+updated), two sessions on 2026-08-16 are near-identical reproductions:
+
+```
+07:23:02 BOOT → sd35, sd35, zimage, zimage, flux2 @07:31:16 → DIED
+07:32:53 BOOT → flux2, sd35, sd35, zimage, zimage, flux2 @07:41:34 → DIED
+```
+
+Both died on the **flux2 leg at the end of a multi-pipeline sweep**, both at `progress = 0.0` —
+during **model load**, before the first denoise step. That is the single largest transient in the
+whole workload: the GPU falls to idle and slams back to full while 32 CPU threads burst reading
+and dequantising a multi-GB model.
+
+**The discriminator that kills the thermal theory:** a sustained 500-step training run completes.
+Heat punishes sustained load hardest. What kills this machine is the **load step**, not the heat
+soak — so the author's instinct ("I doubt it is the temperature") is correct.
+
+### Hardware context
+
+`Ryzen 9 9950X` (~230 W peak) + `RX 9070 XT` (~304 W, large transients) + 4 × 32 GB DDR5 running
+at a conservative **3600** MT/s (the AM5 2DPC penalty — EXPO is evidently not in play) on a
+`B650M AORUS ELITE AX ICE`, BIOS **F33a dated 2025-02-07** (old for Zen 5). PSU:
+**GIGABYTE UD1000GM PG5, 1000 W ATX 3.0**.
+
+**1000 W against a ~600 W system is not a capacity problem.** A supply with 40 % headroom dropping
+its load is a *fault*, which makes this an RMA question rather than an upgrade question.
+
+### Status
+
+**The hardware blocker is RE-OPENED.** It never left the P2 critical path; we only stopped seeing
+it. It does not block the M7 stamp on its own — a training run demonstrably can complete — but
+**multi-pipeline sweeps are unsafe to run** until the power path is settled, and repeated
+uncontrolled power loss is already destroying files.
+
+Diagnosis ladder handed to the author, cheapest first: reseat every power connector at BOTH ends
+(never daisy-chain a single PCIe cable to two GPU inputs) → HWiNFO64 +12 V logging to CSV during a
+sweep → GPU power cap −20 % as a *transient measurement* (explicitly not the scrubbed thermal
+remedy — different question, temporary) → BIOS F33a → current → PSU swap, the only decisive test.

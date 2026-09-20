@@ -21,6 +21,7 @@ export function Shortcuts() {
     const onKey = (e: KeyboardEvent) => {
       const s = useApp.getState();
       if (e.key === "Escape") {
+        if (s.dialog) { s.setDialog(null); e.preventDefault(); return; }
         if (s.helpOpen) { s.setHelpOpen(false); e.preventDefault(); return; }
         if (s.menuOpen) { s.setMenuOpen(false); e.preventDefault(); return; }
         if (s.selection) { s.select(null); e.preventDefault(); return; }
@@ -43,7 +44,7 @@ export function Shortcuts() {
         <dl>
           <dt>Tab</dt><dd>hide or show both side panels</dd>
           <dt>1 2 3 4</dt><dd>Cast, Expand, Curate, Train</dd>
-          <dt>Esc</dt><dd>close this, the File menu, or clear the selection</dd>
+          <dt>Esc</dt><dd>close a dialog, this list or the File menu, or clear the selection</dd>
           <dt>?</dt><dd>this list</dd>
         </dl>
         <p className="faint">Grid keys (arrows, keep, reject) arrive with migration step 5.</p>

@@ -17,6 +17,7 @@ export type NoticeKind = "info" | "ok" | "warn" | "err";
 
 export interface Notice { id: number; kind: NoticeKind; text: string; at: number }
 export interface Selection { jobId: string; output?: string }
+export type Dialog = "new" | "open" | null;
 
 /** The stage letters the backend records on jobs (A/B/C/D) ↔ the verbs the strip shows. */
 export const STAGE_LETTER: Record<Stage, "A" | "B" | "C" | "D"> = {
@@ -53,6 +54,7 @@ interface LiveSlice {
   selection: Selection | null;
   helpOpen: boolean;
   menuOpen: boolean;
+  dialog: Dialog;
 }
 
 interface Actions {
@@ -77,6 +79,7 @@ interface Actions {
   select: (s: Selection | null) => void;
   setHelpOpen: (open: boolean) => void;
   setMenuOpen: (open: boolean) => void;
+  setDialog: (d: Dialog) => void;
 }
 
 export type AppState = LayoutSlice & LiveSlice & Actions;
@@ -115,6 +118,7 @@ export const useApp = create<AppState>()(
       selection: null,
       helpOpen: false,
       menuOpen: false,
+      dialog: null,
 
       setWorkspace: (workspace) => set({ workspace, selection: null }),
       setStage: (stage) => set({ stage, selection: null, view: get().view === "captions" && stage !== "train" ? "flat" : get().view }),
@@ -158,6 +162,7 @@ export const useApp = create<AppState>()(
       select: (selection) => set({ selection }),
       setHelpOpen: (helpOpen) => set({ helpOpen }),
       setMenuOpen: (menuOpen) => set({ menuOpen }),
+      setDialog: (dialog) => set({ dialog, menuOpen: false }),
     }),
     {
       name: "loom.v2.layout",

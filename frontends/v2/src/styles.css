@@ -37,7 +37,7 @@ button:focus-visible, [tabindex]:focus-visible, input:focus-visible, select:focu
 button:disabled { opacity: .45; cursor: default; background: none; }
 .primary { background: var(--amber); color: var(--amber-ink); font-weight: 600; padding: 6px 12px; }
 .primary:hover { background: var(--amber); filter: brightness(1.08); }
-input[type="text"], select { background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 6px; }
+input[type="text"], input[type="number"], select { background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 6px; }
 code, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
 .muted { color: var(--muted); }
 .faint { color: var(--faint); }
@@ -146,3 +146,25 @@ code, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px
 .help dd { margin: 0; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* ---- dialogs + start screen (migration step 2) ------------------------------------------ */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .55); display: grid; place-items: center; z-index: 60; }
+.modal { background: var(--panel); padding: 18px 22px; width: min(560px, 92vw); box-shadow: 0 12px 32px rgba(0, 0, 0, .5); }
+.modal h2 { margin: 0 0 12px; font-size: 15px; }
+.field { display: grid; grid-template-columns: 96px 1fr; gap: 10px 12px; align-items: center; }
+.field label { color: var(--muted); }
+.field input[type="text"] { width: 100%; }
+.field .row { display: flex; gap: 6px; align-items: center; }
+.field .row input { flex: 1; min-width: 0; }
+.field .hint { grid-column: 2; font-size: 12px; color: var(--muted); margin-top: -4px; }
+.form-error { grid-column: 1 / -1; color: var(--err); font-size: 12px; }
+.modal-actions { grid-column: 1 / -1; display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+.start { max-width: 760px; margin: 8vh auto 0; }
+.start h2 { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
+.start .actions { display: flex; gap: 8px; margin: 12px 0 20px; }
+.start-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.start-card { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px 14px; background: var(--panel); text-align: left; min-height: 84px; }
+.start-card:hover { background: var(--raised); }
+.start-card .name { font-weight: 600; }
+.start-card .path { font-size: 11px; color: var(--faint); overflow-wrap: anywhere; }
+.start-card .meta { font-size: 11px; color: var(--muted); }

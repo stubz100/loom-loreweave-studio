@@ -4396,3 +4396,35 @@ origin, later layers disabled). Not run: a click-through — the author's next l
 
 **Next (plan §6):** step 2 project dialogs (native folder picker via `tauri-plugin-dialog`,
 new-project form, Start screen), then step 3 the Composer.
+
+
+## 🗂 M2.14 step 2 — project dialogs + the Start screen (2026-09-20, ~21:10–21:45 CEDT)
+
+Author: *"Have we journaled, committed and pushed? Let's do that if it wasn't done, then step 2"*
+— step 1 was already in (`7cc2982`, clean, in sync), so straight on.
+
+**Shell:** `tauri-plugin-dialog = "2"` in Cargo.toml, `.plugin(tauri_plugin_dialog::init())` on
+the builder, `dialog:default` in the window capability — all three are needed or Browse… would
+silently do nothing (pinned by a test). `cargo check` clean.
+
+**v2:** `lib/tauri.ts` is the one door to anything Tauri-only (`isTauri()` = `__TAURI_INTERNALS__`
+present; `pickFolder()` → the plugin's `open({ directory: true })`, or `null` outside the shell),
+so `npm run dev` in a plain browser keeps working: every caller falls back to a typed-path
+dialog. `lib/project.ts` = the one outcome path for open/create (store updated at once, one
+notice, the server's `detail` surfaced as the error text). `shell/Dialogs.tsx`: **New project**
+(folder with Browse…, name auto-derived from the folder until edited, size cap with the
+footprint estimate beside it — "a 30-minute 720p master is about X GB; Y GB suggested, 50 GB
+minimum" — server errors inline, e.g. a non-empty folder) and **Open folder** (the browser
+fallback). `shell/Start.tsx`: the Start screen in the canvas while no project is open — recent
+projects as cards (name, path, cap, "folder missing"), New project… and Open folder… — so the
+frame is never an empty shell. File menu: New project… now real, Open folder… native in the
+shell; the last `window.prompt` is gone. Esc closes a dialog first.
+
+**Not in this step:** thumbnails on the recent cards — `/projects` carries no cover image; a
+backend `cover` field (e.g. the hero of the first character) is the small addition that would
+enable it. **Gates:** v2 `tsc` + `vite build` (token absent from `dist/`), cargo check,
+**+3 tests** (plugin granted+registered, every native call has a fallback, the Start screen).
+Not click-tested — the author's next launch (default = v2 in the desktop window) is it: File →
+New project… should open the native folder picker on Browse….
+
+**Next (plan §6):** step 3, the Composer — generation moves into v2.

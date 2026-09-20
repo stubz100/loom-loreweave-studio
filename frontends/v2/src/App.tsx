@@ -13,6 +13,7 @@ import { log } from "@loom/shared/api/log";
 
 import { usePolling } from "./poll";
 import { Banners } from "./shell/Banners";
+import { Dialogs } from "./shell/Dialogs";
 import { Dock } from "./shell/Dock";
 import { Inspector } from "./shell/Inspector";
 import { Panel } from "./shell/Panel";
@@ -51,6 +52,7 @@ export default function App() {
       </div>
       <Dock />
       <Toasts />
+      <Dialogs />
       <Shortcuts />
     </div>
   );

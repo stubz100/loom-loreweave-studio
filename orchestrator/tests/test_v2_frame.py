@@ -71,3 +71,42 @@ def test_later_layers_are_present_but_disabled():
     for ws, phase in (("shots", "P3"), ("flow", "P4"), ("episode", "P5")):
         assert f'id: "{ws}"' in top and phase in top
     assert "disabled={!!w.phase}" in top
+
+
+# --- migration step 2: project dialogs ------------------------------------------------------
+
+SHELL = ROOT / "frontends" / "shell" / "src-tauri"
+
+
+def test_native_folder_picker_is_granted_and_registered():
+    """The dialog plugin is a Cargo dependency, registered on the builder, and allowed by the
+    window's capability — all three, or the Browse button silently does nothing."""
+    assert 'tauri-plugin-dialog = "2"' in _read(SHELL / "Cargo.toml")
+    assert "tauri_plugin_dialog::init()" in _read(SHELL / "src" / "lib.rs")
+    import json
+    cap = json.loads(_read(SHELL / "capabilities" / "default.json"))
+    assert "dialog:default" in cap["permissions"]
+    pkg = json.loads(_read(ROOT / "frontends" / "v2" / "package.json"))
+    assert "@tauri-apps/plugin-dialog" in pkg["dependencies"]
+
+
+def test_every_native_call_has_a_browser_fallback():
+    """v2 still runs from `npm run dev` in a plain browser: the picker is behind one door that
+    reports 'not in Tauri', and each caller then shows a typed-path dialog instead."""
+    door = _read(V2 / "lib" / "tauri.ts")
+    assert "__TAURI_INTERNALS__" in door and "if (!isTauri()) return null;" in door
+    for f in ("shell/TopBar.tsx", "shell/Start.tsx"):
+        src = _read(V2 / f)
+        assert "isTauri()" in src and 'setDialog("open")' in src, f
+    dialogs = _read(V2 / "shell" / "Dialogs.tsx")
+    assert "NewProjectDialog" in dialogs and "OpenFolderDialog" in dialogs
+    assert "estimateFootprint(" in dialogs and "MIN_CAP_GB = 50" in dialogs   # the cap is an informed choice (R164)
+    assert "window.prompt" not in _read(V2 / "shell" / "TopBar.tsx")          # the v1 prompts are gone
+
+
+def test_start_screen_replaces_the_empty_canvas():
+    stage = _read(V2 / "shell" / "Stage.tsx")
+    assert "<Start />" in stage
+    start = _read(V2 / "shell" / "Start.tsx")
+    assert "listProjects()" in start and "start-card" in start
+    assert "Escape" in _read(V2 / "shell" / "Shortcuts.tsx") and "s.dialog" in _read(V2 / "shell" / "Shortcuts.tsx")

@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability set for the main window (M0).",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "Default capability set for the main window (M0) + the dialog plugin (M2.14 step 2).",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "dialog:default"
+  ]
 }

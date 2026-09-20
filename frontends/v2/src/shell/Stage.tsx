@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { getAsset, outputUrl, type AssetDetail, type Job } from "@loom/shared/api/orchestrator";
 
 import { STAGE_LETTER, useApp, type Stage as StageId, type View } from "../store";
+import { Start } from "./Start";
 
 const VERBS: { id: StageId; label: string }[] = [
   { id: "cast", label: "Cast" }, { id: "expand", label: "Expand" }, { id: "curate", label: "Curate" }, { id: "train", label: "Train" },
@@ -107,10 +108,7 @@ function AssetsStage() {
       </div>
       <div className="canvas" style={{ ["--tile" as string]: `${zoom}px` }}>
         {!project ? (
-          <div className="empty">
-            <h2>No project open</h2>
-            <p>Open a project from the File menu, or pick one of the recent ones there.</p>
-          </div>
+          <Start />
         ) : tiles.length === 0 ? (
           <div className="empty">
             <h2>{selectedAsset ? `Nothing in ${VERBS.find((v) => v.id === stage)?.label} yet` : "The Sandbox is empty"}</h2>

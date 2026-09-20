@@ -2,7 +2,10 @@
 // status cluster — orchestrator, queue, disk. Global things only (kb-loom-ui.md §3.1).
 import { useEffect, useState } from "react";
 
-import { closeProject, forgetProject, listProjects, openProject, type ProjectListEntry } from "@loom/shared/api/orchestrator";
+import { closeProject, forgetProject, listProjects, type ProjectListEntry } from "@loom/shared/api/orchestrator";
+
+import { openProjectAt, reasonOf } from "../lib/project";
+import { isTauri, pickFolder } from "../lib/tauri";
 
 import { useApp, type Workspace } from "../store";
 
@@ -66,6 +69,7 @@ export function TopBar() {
 function FileMenu({ onClose }: { onClose: () => void }) {
   const project = useApp((s) => s.project);
   const notify = useApp((s) => s.notify);
+  const setDialog = useApp((s) => s.setDialog);
   const [recent, setRecent] = useState<ProjectListEntry[] | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -81,22 +85,26 @@ function FileMenu({ onClose }: { onClose: () => void }) {
       await fn();
       onClose();
     } catch (e) {
-      notify("err", `${label} failed: ${String(e)}`);
+      notify("err", `${label} failed: ${reasonOf(e)}`);
     } finally {
       setBusy(false);
     }
   };
 
-  // Interim (migration step 2 brings the native folder dialog): a typed path, like v1.
-  const onOpenFolder = () => {
-    const path = window.prompt("Project folder to open (full path):");
-    if (path?.trim()) void run("Open", () => openProject(path.trim()));
+  // In the shell: the native folder picker. In a browser: the typed-path dialog.
+  const onOpenFolder = async () => {
+    if (isTauri()) {
+      const p = await pickFolder("Open a project folder");
+      if (p) await run("Open", () => openProjectAt(p));
+    } else {
+      setDialog("open");
+    }
   };
 
   return (
     <div className="menu" role="menu" onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}>
-      <button className="menu-item" disabled title="Arrives with migration step 2 (native folder dialog + the new-project form)">New project…</button>
-      <button className="menu-item" onClick={onOpenFolder} disabled={busy}>Open folder…</button>
+      <button className="menu-item" onClick={() => setDialog("new")} disabled={busy}>New project…</button>
+      <button className="menu-item" onClick={() => void onOpenFolder()} disabled={busy}>Open folder…</button>
       <button className="menu-item" onClick={() => void run("Close", closeProject)} disabled={!project || busy}>Close project</button>
       <div className="menu-sep" />
       <div className="section-title">Recent</div>
@@ -105,7 +113,7 @@ function FileMenu({ onClose }: { onClose: () => void }) {
       {recent?.map((p) => (
         <div className="recent" key={p.path}>
           <button className="open-btn" disabled={busy || !p.exists || p.active}
-                  onClick={() => void run("Open", () => openProject(p.path))}
+                  onClick={() => void run("Open", () => openProjectAt(p.path))}
                   title={p.exists ? (p.active ? "This project is open" : "Open this project") : "This folder no longer exists"}>
             {p.name ?? "(unnamed)"}{p.active ? " — open" : ""}{!p.exists ? " — missing" : ""}
             <span className="path">{p.path}</span>

@@ -168,6 +168,8 @@ pub fn run() {
                 let _ = win.set_focus();
             }
         }))
+        // Native file/folder dialogs for the UI (migration step 2: Open folder / New project).
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState { orchestrator: endpoint.clone() })
         .invoke_handler(tauri::generate_handler![orchestrator_endpoint])
         // Re-inject on EVERY page load (review 2026-09-20): the READY-time eval only reached

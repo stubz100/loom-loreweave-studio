@@ -214,3 +214,20 @@ textarea { width: 100%; resize: vertical; line-height: 1.4; }
 .cell-text { display: block; font-size: 9px; line-height: 1.1; padding: 3px; color: var(--muted); text-align: left; }
 .staged-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; font-size: 12px; border-top: 1px solid var(--line); }
 .staged-row:first-of-type { border-top: 0; }
+
+/* ---- inspector tabs (migration step 4) --------------------------------------------------- */
+.pp-tree { list-style: none; margin: 4px 0 8px; padding: 0; font-size: 12px; }
+.pp-node { display: grid; grid-template-columns: auto auto 1fr; gap: 4px 8px; align-items: center; padding: 4px 6px 4px calc(6px + var(--depth, 0) * 14px); border-left: 2px solid transparent; border-radius: var(--radius); }
+.pp-node.selected { background: var(--raised); border-left-color: var(--amber); }
+.pp-node.tomb .pp-name, .pp-node.tomb .pp-attrs { text-decoration: line-through; color: var(--faint); }
+.pp-name { font-weight: 600; }
+.pp-status { color: var(--muted); font-size: 11px; }
+.pp-status.s-done { color: var(--ok); }
+.pp-status.s-failed, .pp-status.s-canceled { color: var(--err); }
+.pp-status.s-running, .pp-status.s-queued { color: var(--amber); }
+.pp-attrs { color: var(--muted); overflow-wrap: anywhere; grid-column: 1 / -1; font-size: 11px; }
+.pp-attrs:empty { display: none; }
+.pp-actions { grid-column: 1 / -1; display: flex; gap: 4px; flex-wrap: wrap; }
+.pp-actions:empty { display: none; }
+.pp-actions button { font-size: 11px; padding: 2px 8px; }
+.inspector .p-field textarea { width: 100%; color: var(--fg); }

@@ -5,8 +5,9 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 import {
-  getAsset, type AssetDetail, type DiskStatus, type Health, type Job, type JobStatus, type JobsResponse,
-  type PauseReason, type ProjectInfo,
+  addPostprocStep, getAsset, getPostprocStacks, queuePostprocStep, removePostprocStep, type AssetDetail,
+  type DiskStatus, type Health, type Job, type JobStatus, type JobsResponse, type PauseReason,
+  type PostprocStack, type PostprocStep, type ProjectInfo,
 } from "@loom/shared/api/orchestrator";
 
 export type Workspace = "world" | "assets" | "shots" | "flow" | "episode";
@@ -53,6 +54,7 @@ interface LiveSlice {
   notices: Notice[];
   selectedAsset: string | null;
   assetDetail: AssetDetail | null;
+  stacks: PostprocStack[];               // project-level postprocess stacks (any image)
   selection: Selection | null;
   helpOpen: boolean;
   menuOpen: boolean;
@@ -79,6 +81,10 @@ interface Actions {
   dismiss: (id: number) => void;
   selectAsset: (id: string | null) => void;
   refreshAsset: () => Promise<void>;
+  refreshStacks: () => Promise<void>;
+  addStep: (body: { base: string; preset?: PostprocStep["preset"]; backend?: string; params?: Record<string, unknown>; source?: string }) => Promise<void>;
+  queueStep: (stepId: string, requesterId?: string, stage?: string) => Promise<void>;
+  removeStep: (stepId: string) => Promise<void>;
   select: (s: Selection | null) => void;
   setHelpOpen: (open: boolean) => void;
   setMenuOpen: (open: boolean) => void;
@@ -119,6 +125,7 @@ export const useApp = create<AppState>()(
       notices: [],
       selectedAsset: null,
       assetDetail: null,
+      stacks: [],
       selection: null,
       helpOpen: false,
       menuOpen: false,
@@ -152,7 +159,7 @@ export const useApp = create<AppState>()(
       setProject: (project) => set((s) => {
         // a project change resets what depends on it
         const changed = (project?.id ?? null) !== (s.project?.id ?? null);
-        return changed ? { project, selectedAsset: null, assetDetail: null, selection: null } : { project };
+        return changed ? { project, selectedAsset: null, assetDetail: null, stacks: [], selection: null } : { project };
       }),
       applyJobs: (r) => set({
         jobs: r.jobs, counts: r.counts, paused: r.paused,
@@ -172,6 +179,16 @@ export const useApp = create<AppState>()(
           if (JSON.stringify(d) !== JSON.stringify(get().assetDetail)) set({ assetDetail: d });
         } catch { /* the poller retries on its next tick */ }
       },
+      refreshStacks: async () => {
+        if (!get().project) { if (get().stacks.length) set({ stacks: [] }); return; }
+        try {
+          const stacks = await getPostprocStacks();
+          if (JSON.stringify(stacks) !== JSON.stringify(get().stacks)) set({ stacks });
+        } catch { /* the poller retries on its next tick */ }
+      },
+      addStep: async (body) => set({ stacks: await addPostprocStep(body) }),
+      queueStep: async (stepId, requesterId, stage) => set({ stacks: await queuePostprocStep(stepId, requesterId, stage) }),
+      removeStep: async (stepId) => set({ stacks: await removePostprocStep(stepId) }),
       select: (selection) => set({ selection }),
       setHelpOpen: (helpOpen) => set({ helpOpen }),
       setMenuOpen: (menuOpen) => set({ menuOpen }),

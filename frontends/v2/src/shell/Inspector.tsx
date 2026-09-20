@@ -1,19 +1,18 @@
-// The right Inspector: tabs, resizable, collapsible. Info is real (the selected tile's job, and
-// the hero star for a cast candidate until the canvas actions land with step 5); Post,
-// Readiness, Version and Muse land with migration steps 4, 6 and P4.
-import { useState } from "react";
-
-import { outputUrl, starCandidate } from "@loom/shared/api/orchestrator";
-
-import { reasonOf } from "../lib/project";
+// The right Inspector: tabs, resizable, collapsible (kb-loom-ui.md §3.5, migration step 4).
+// Info = the selected tile and its actions; Post = its postprocess stack as a tree; Version =
+// the active version (what the selection is when no tile is); Readiness lands with step 6,
+// Muse with P4.
 import { useApp, type InspectorTab } from "../store";
+import { InfoTab } from "../inspect/InfoTab";
+import { PostTab } from "../inspect/PostTab";
+import { VersionTab } from "../inspect/VersionTab";
 import { Resizer } from "./Resizer";
 
 const TABS: { id: InspectorTab; label: string; later?: string }[] = [
   { id: "info", label: "Info" },
-  { id: "post", label: "Post", later: "step 4" },
+  { id: "post", label: "Post" },
   { id: "readiness", label: "Readiness", later: "step 6" },
-  { id: "version", label: "Version", later: "step 4" },
+  { id: "version", label: "Version" },
   { id: "muse", label: "Muse", later: "P4" },
 ];
 
@@ -23,34 +22,11 @@ export function Inspector() {
   const toggleInspector = useApp((s) => s.toggleInspector);
   const setInspectorWidth = useApp((s) => s.setInspectorWidth);
   const selection = useApp((s) => s.selection);
+  const project = useApp((s) => s.project);
   const job = useApp((s) => (selection ? s.jobs[selection.jobId] : undefined));
-  const selectedAsset = useApp((s) => s.selectedAsset);
-  const detail = useApp((s) => s.assetDetail);
-  const refreshAsset = useApp((s) => s.refreshAsset);
-  const notify = useApp((s) => s.notify);
-  const [starring, setStarring] = useState(false);
   const current = TABS.find((t) => t.id === tab)!;
-
-  // A done stage-A output of the selected character can be starred as the hero (the Expand
-  // recipe grows from it). Toggles like v1's onStar; the shared detail refreshes after.
-  const version = detail?.versions.find((v) => v.id === detail.profile.active_version);
-  const candidate = selection && job && selectedAsset && job.stage === "A" && job.status === "done" && job.requester_id === selectedAsset
-    ? { current: version?.casting.find((c) => c.job_id === job.id && (selection.output ? c.source_output === selection.output : true)) ?? null }
-    : null;
-  const onStar = async () => {
-    if (!selection || !selectedAsset) return;
-    setStarring(true);
-    try {
-      const makeHero = !(candidate?.current?.starred ?? false);
-      await starCandidate(selectedAsset, selection.jobId, makeHero, selection.output);
-      await refreshAsset();
-      notify("ok", makeHero ? "Starred as the hero. Expand grows the dataset from it." : "Hero star removed.");
-    } catch (e) {
-      notify("err", "Could not star: " + reasonOf(e));
-    } finally {
-      setStarring(false);
-    }
-  };
+  const image = selection && job ? selection.output ?? job.result?.output_name ?? null : null;
+  const postable = !!image && job?.status === "done" && !/\.(mp4|webm|mov)$/i.test(image);
 
   return (
     <aside className="inspector" aria-label="Inspector">
@@ -62,60 +38,24 @@ export function Inspector() {
         ))}
       </div>
       <div className="panel-body">
-        {tab !== "info" && (
+        {current.later && (
           <>
             <div className="section-title">{current.label}</div>
             <p className="muted">
-              {tab === "post" && "The postprocess stack: the step tree, tombstones in place, and the add form with room for the JSON tree and the size row."}
               {tab === "readiness" && "The four readiness tiers with their details inline: missing cells as chips, duplicate groups as tile pairs."}
-              {tab === "version" && "What the active version is: prompt template, trigger token, promoted adapter, caption state."}
               {tab === "muse" && "The chat dock that sees the current selection, and the agent plans awaiting approval."}
             </p>
             <p className="faint">Arrives with {current.later}.</p>
           </>
         )}
-        {tab === "info" && !selection && (
-          <>
-            <div className="section-title">Nothing selected</div>
-            <p className="muted">Select a tile on the canvas to see how it was made: model, seed, size, the resolved prompt and its log.</p>
-          </>
+        {tab === "info" && (!selection ? <VersionTab /> : job ? <InfoTab selection={selection} job={job} /> : <p className="muted">That job is no longer in the queue.</p>)}
+        {tab === "post" && (
+          !project ? <p className="muted">Open a project first.</p>
+          : !selection ? <><div className="section-title">Post</div><p className="muted">Select a finished image on the canvas. Its stack of passes shows here as a tree, with the add form under it.</p></>
+          : !postable ? <p className="muted">Postprocess works on a finished image, not a video or a running job.</p>
+          : <PostTab image={image!} />
         )}
-        {tab === "info" && selection && job && (
-          <>
-            {selection.output && <img className="preview" src={outputUrl(selection.output)} alt="" />}
-            <dl className="facts">
-              <dt>job</dt><dd className="mono">{job.id}</dd>
-              <dt>status</dt><dd>{job.status}{job.status === "running" ? ` ${Math.round(job.progress * 100)}%` : ""}</dd>
-              <dt>pipeline</dt><dd>{job.pipeline} / {job.mode}{job.pass ? ` (${job.pass})` : ""}{job.stage ? `, stage ${job.stage}` : ""}</dd>
-              {job.params.model_name ? <><dt>model</dt><dd>{String(job.params.model_name)}</dd></> : null}
-              {job.params.width || job.params.height ? <><dt>size</dt><dd>{String(job.params.width)} × {String(job.params.height)}</dd></> : null}
-              {job.result?.seed != null && <><dt>seed</dt><dd>{String(job.result.seed)}</dd></>}
-              {job.wall_s != null && <><dt>wall</dt><dd>{Math.round(job.wall_s)} s</dd></>}
-              {selection.output && <><dt>file</dt><dd className="mono">{selection.output}</dd></>}
-              {job.chained_from && <><dt>from</dt><dd className="mono">{job.chained_from}</dd></>}
-              {job.style_id && <><dt>style</dt><dd className="mono">{job.style_id}</dd></>}
-              {candidate && <><dt>hero</dt><dd>
-                {candidate.current?.starred ? "★ this is the hero " : "not the hero "}
-                <button onClick={() => void onStar()} disabled={starring}>{candidate.current?.starred ? "Unstar" : "Star as hero"}</button>
-              </dd></>}
-            </dl>
-            {typeof job.params.prompt === "string" && (
-              <>
-                <div className="section-title">Prompt</div>
-                <p className="muted" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{job.params.prompt}</p>
-              </>
-            )}
-            {job.status === "failed" && job.result?.error && (
-              <>
-                <div className="section-title">Error</div>
-                <p className="mono" style={{ color: "var(--err)", overflowWrap: "anywhere" }}>{job.result.error}</p>
-              </>
-            )}
-          </>
-        )}
-        {tab === "info" && selection && !job && (
-          <p className="muted">That job is no longer in the queue.</p>
-        )}
+        {tab === "version" && <VersionTab />}
       </div>
     </aside>
   );

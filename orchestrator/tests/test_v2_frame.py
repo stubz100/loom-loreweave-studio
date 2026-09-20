@@ -231,4 +231,81 @@ def test_asset_detail_is_shared_through_the_store():
     assert "assetDetail: AssetDetail | null" in store and "refreshAsset: async" in store
     assert "getAsset(" not in _read(V2 / "shell" / "Stage.tsx")
     assert "refreshAsset()" in _read(V2 / "poll.ts")
-    assert "starCandidate(" in _read(V2 / "shell" / "Inspector.tsx")   # the hero star, until step 5's canvas actions
+    assert "starCandidate(" in _read(V2 / "inspect" / "InfoTab.tsx")   # the hero star, until step 5's canvas actions
+
+
+# --- migration step 4: the Inspector tabs -----------------------------------------------------
+
+INSPECT = V2 / "inspect"
+
+
+def test_inspector_tabs_are_their_own_modules():
+    """Info, Post and Version are real; the Inspector only routes. With nothing selected the
+    Info tab shows the version (the version is the selection when no tile is, plan §3.5)."""
+    for name in ("InfoTab", "PostTab", "VersionTab"):
+        assert (INSPECT / f"{name}.tsx").is_file(), name
+    insp = _read(V2 / "shell" / "Inspector.tsx")
+    for mount in ("<InfoTab", "<PostTab", "<VersionTab"):
+        assert mount in insp, mount
+    assert "!selection ? <VersionTab />" in insp
+    assert 'later: "step 6"' in insp                     # Readiness still waits for step 6
+
+
+def test_post_tab_sends_only_fields_the_server_accepts_and_mirrors_v1():
+    post = _read(INSPECT / "PostTab.tsx")
+    v1 = _read(V1 / "App.tsx")
+    add = _server_fields("AddPostprocStepRequest(BaseModel)")
+    for key in ("base", "preset", "backend", "params", "source"):
+        assert key in add, key
+    assert "addStep({ base, preset, backend: isI2i ? backend : undefined, params, source: effectiveSource || undefined })" in post
+    queue = _server_fields("QueuePostprocStepRequest(BaseModel)")
+    assert {"requester_id", "stage"} <= queue
+    # the preset list is the server's Literal, no more and no less
+    main = _read(ROOT / "orchestrator" / "main.py")
+    lit = re.search(r'preset: Literal\[(.*?)\]', main[main.index("class AddPostprocStepRequest"):]).group(1)
+    server_presets = set(re.findall(r'"(\w+)"', lit))
+    v2_presets = set(re.findall(r'\{ id: "(\w+)", label:', post))
+    assert v2_presets == server_presets, (v2_presets, server_presets)
+    # the effective-steps readout uses v1's constants (which a v1 test pins to model_catalog.py)
+    assert "const MIN_EFFECTIVE_I2I_STEPS = 4;" in post and "const MIN_EFFECTIVE_I2I_STEPS = 4;" in v1
+    assert 'const I2I_EXACT_BACKENDS = new Set(["flux2"]);' in post and 'const I2I_EXACT_BACKENDS = new Set(["flux2"]);' in v1
+    # a queued pass lands in the grid the author is looking at: A stays A, D stays D, else B
+    assert 'stage === "cast" ? "A" : stage === "train" ? "D" : "B"' in post
+    assert 'stage === "A" ? "A" : stage === "D" ? "D" : "B"' in v1
+    # StyleLock never runs on flux2 (the drift source; 422 server-side)
+    assert 'if (p === "stylelock" && backend === "flux2") setBackend("sd35");' in post
+
+
+def test_post_tab_draws_a_tree_with_tombstones():
+    post = _read(INSPECT / "PostTab.tsx")
+    assert "function treeOrder(" in post and "st.source !== parentImage" in post   # a step hangs under the image it reads
+    assert '" tomb"' in post and "text-decoration: line-through" in _read(V2 / "styles.css")
+    assert "function liveStatus(" in post and 'return "deleted"' in post
+    assert '"Delete image?"' in post and "window.confirm" not in post           # two-click remove, no native dialog
+    assert "tailIds" in post                                                      # any leaf of the tree can be removed, not only the last
+
+
+def test_stacks_are_shared_through_the_store():
+    store = _read(V2 / "store.ts")
+    for name in ("stacks: PostprocStack[]", "refreshStacks: async", "addStep: async", "queueStep: async", "removeStep: async"):
+        assert name in store, name
+    assert "refreshStacks()" in _read(V2 / "poll.ts")
+    for f in INSPECT.glob("*.tsx"):
+        assert "getPostprocStacks(" not in _read(f), f.name                      # one reader: the poller
+
+
+def test_version_and_info_tabs_reach_every_call():
+    version = _read(INSPECT / "VersionTab.tsx")
+    for call in ("activateVersion(", "createVersion(", "finalizeVersion(", "unfinalizeVersion(", "saveProfile(",
+                 "clearAnchor(", "getCaptions("):
+        assert call in version, call
+    info = _read(INSPECT / "InfoTab.tsx")
+    for call in ("starCandidate(", "setAnchor(", "deriveFacePortrait(", "rerunJob("):
+        assert call in info, call
+    # the re-run knob aliases are v1's (different pipelines name their knobs differently)
+    v1 = _read(V1 / "RerunPanel.tsx")
+    for consts in ('const STEP_KEYS = ["num_steps", "num_inference_steps", "steps"];',
+                   'const GUIDANCE_KEYS = ["guidance", "guidance_scale", "cfg"];'):
+        assert consts in info and consts in v1, consts
+    for f in (version, info):
+        assert "window.confirm" not in f and "window.prompt" not in f

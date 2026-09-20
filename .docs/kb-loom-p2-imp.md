@@ -4546,3 +4546,56 @@ headings were estimated, not read from the clock, and the commit times prove the
 `7a11979`) → **step 3b ≈ 21:05–21:20** (`280c772`). The heading text above stays as written
 (append-only journal); read these as the times of record. Rule re-learned: run `date` before
 writing a stamp, never extrapolate from the previous entry.
+
+
+## 🔎 M2.14 step 4 — the Inspector tabs: Info, Post as a tree, Version (2026-09-20, 21:21–21:33 CEDT)
+
+Author: *"Let's continue"* → step 4 of the plan's migration table.
+
+**Built in `frontends/v2/src/`:**
+- `inspect/InfoTab.tsx` — the selected tile: preview, facts (job · status · pipeline/mode/pass/stage
+  · model · size from the loaded image · seed, with the multi-pool candidate's own pipeline+seed
+  parsed from its path as v1 did · wall · batch/image durations · file · from · style · pose ·
+  identity/restore/faces), the note; **Actions** for a character's cast candidate (Star as hero /
+  Unstar, Set as face anchor with "Anchor ✓" when it already is, Face portrait); **Re-run**
+  folded (seed · steps · guidance with v1's alias keys, blank keeps); prompt-as-run open,
+  params-as-run and the log folded, the error shown for a failed job.
+- `inspect/PostTab.tsx` — the postprocess stack as a **tree**: the base at the root, every step
+  under the image it reads (`treeOrder`, depth = indent), the selected image's node lit,
+  **tombstones struck through**, live status reconciled against the queue (`liveStatus`, as v1),
+  View (selects the result) / Queue / Retry / **Remove on any leaf** (v1 only allowed the last
+  step; the tree has several tails) with the two-click "Delete image?" instead of a native
+  confirm. The add form as a column: preset (with its hint as text) · backend · **Reads** (the
+  branch point; defaults to the selected image when it is a finished step output, else the
+  chain's newest) · model · strength with the **effective-steps readout** (v1's formula and
+  constants, pinned) · prompt or the **flux.2-dev JSON tree** (the same `Flux2JsonTree`
+  component as the composer) · negative · Restyle + style · the size row (factor or W×H).
+  The body goes to the store's `addStep`; a queued pass is routed to the grid the author is
+  looking at (A → A, D → D, else B; Sandbox unrouted) exactly as v1 routed it. Loads the model
+  catalog and styles itself when the Composer has not yet.
+- `inspect/VersionTab.tsx` — the active version: the switch select, **New** (inline name, Enter
+  / Create), state with **Finalize / Unlock**, trigger, casting count + hero, refs + rejected,
+  captions (count + edited, read lazily), adapter (family · promoted date · default weight);
+  the **prompt template** with Revert / Save (disabled when finalized); hero + anchor thumbs
+  with a two-click **Clear anchor**. Shown on the Info tab too when nothing is selected — the
+  version is the selection when no tile is (plan §3.5).
+- `shell/Inspector.tsx` now only routes: Info · Post (needs a finished image, not a video) ·
+  Version; Readiness (step 6) and Muse (P4) keep their placeholders.
+- `store.ts` — `stacks` + `refreshStacks` / `addStep` / `queueStep` / `removeStep` (the server
+  returns the whole set on every mutation, so the store just takes it); `poll.ts` refreshes the
+  stacks on its tick (GET /postproc/stacks reconciles step status server-side, so a canceled or
+  deleted job never leaves a step stuck "queued" — the v1 effect that watched for this is not
+  needed). Styles: `.pp-tree` / `.pp-node` (depth via a CSS variable) / `.tomb`.
+
+**Verified:** v2 `tsc` + `vite build`; **+5 tests → 32** in `test_v2_frame.py` (with the grouped
+view): the tab modules + the no-selection rule; the add body keys and the queue routing keys
+against `AddPostprocStepRequest` / `QueuePostprocStepRequest` (extra=forbid), the preset list
+equal to the server's Literal, the i2i constants and the stage-letter routing identical to
+v1's, StyleLock never on flux2; the tree + tombstones + two-click remove; stacks read by the
+poller only; every version/info call reached and the re-run alias keys identical to v1's
+`RerunPanel`. Not click-tested. The tree is exercised only against the type: no live stack
+was built (the temporary orchestrator has no finished image to postprocess).
+
+**Next:** step 5 — the canvas: responsive grid + zoom (there), uniform tiles with fit/fill,
+affordances on the tile (star · anchor · keep/reject · delete), keyboard by visual row, `?`
+overlay, **Loupe with prev/next + Compare**.

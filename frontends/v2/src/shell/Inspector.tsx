@@ -3,7 +3,7 @@
 // the active version (what the selection is when no tile is); Readiness lands with step 6,
 // Muse with P4.
 import { useApp, type InspectorTab } from "../store";
-import { InfoTab } from "../inspect/InfoTab";
+import { InfoTab, RefInfo } from "../inspect/InfoTab";
 import { PostTab } from "../inspect/PostTab";
 import { VersionTab } from "../inspect/VersionTab";
 import { Resizer } from "./Resizer";
@@ -23,7 +23,7 @@ export function Inspector() {
   const setInspectorWidth = useApp((s) => s.setInspectorWidth);
   const selection = useApp((s) => s.selection);
   const project = useApp((s) => s.project);
-  const job = useApp((s) => (selection ? s.jobs[selection.jobId] : undefined));
+  const job = useApp((s) => (selection?.jobId ? s.jobs[selection.jobId] : undefined));
   const current = TABS.find((t) => t.id === tab)!;
   const image = selection && job ? selection.output ?? job.result?.output_name ?? null : null;
   const postable = !!image && job?.status === "done" && !/\.(mp4|webm|mov)$/i.test(image);
@@ -48,11 +48,11 @@ export function Inspector() {
             <p className="faint">Arrives with {current.later}.</p>
           </>
         )}
-        {tab === "info" && (!selection ? <VersionTab /> : job ? <InfoTab selection={selection} job={job} /> : <p className="muted">That job is no longer in the queue.</p>)}
+        {tab === "info" && (!selection ? <VersionTab /> : job ? <InfoTab selection={selection} job={job} /> : selection.refId ? <RefInfo refId={selection.refId} /> : <p className="muted">That job is no longer in the queue.</p>)}
         {tab === "post" && (
           !project ? <p className="muted">Open a project first.</p>
           : !selection ? <><div className="section-title">Post</div><p className="muted">Select a finished image on the canvas. Its stack of passes shows here as a tree, with the add form under it.</p></>
-          : !postable ? <p className="muted">Postprocess works on a finished image, not a video or a running job.</p>
+          : !postable ? <p className="muted">{selection.refId ? "A curated copy has no generation behind it; postprocess its source tile instead." : "Postprocess works on a finished image, not a video or a running job."}</p>
           : <PostTab image={image!} />
         )}
         {tab === "version" && <VersionTab />}

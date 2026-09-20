@@ -4,13 +4,46 @@
 import { useEffect, useState } from "react";
 
 import {
-  deriveFacePortrait, outputUrl, rerunJob, setAnchor, starCandidate, type Job,
+  cullRef, deriveFacePortrait, outputUrl, refUrl, rerunJob, setAnchor, starCandidate, type Job,
 } from "@loom/shared/api/orchestrator";
 
 import { reasonOf } from "../lib/project";
 import { useApp, type Selection } from "../store";
 
 const humanize = (s?: string) => (s ?? "").replace(/_/g, " ").trim();
+
+/** A durable curated ref (no job behind it: a copied version keeps its files). */
+export function RefInfo({ refId }: { refId: string }) {
+  const assetId = useApp((s) => s.selectedAsset);
+  const detail = useApp((s) => s.assetDetail);
+  const offline = useApp((s) => s.offline);
+  const refreshAsset = useApp((s) => s.refreshAsset);
+  const select = useApp((s) => s.select);
+  const notify = useApp((s) => s.notify);
+  const [confirm, setConfirm] = useState(false);
+  const version = detail?.versions.find((v) => v.id === detail.profile.active_version);
+  const ref = version?.ref_set.find((r) => r.id === refId);
+  if (!assetId || !version || !ref) return <p className="muted">That curated ref is gone.</p>;
+  const onCull = async () => {
+    if (!confirm) { setConfirm(true); return; }
+    try { await cullRef(assetId, ref.id, version.id); await refreshAsset(); select(null); notify("ok", "Removed from the curated set."); }
+    catch (e) { notify("err", reasonOf(e)); }
+  };
+  return (
+    <>
+      <img className="preview" src={refUrl(assetId, ref.file, version.id)} alt="" />
+      <dl className="facts">
+        <dt>ref</dt><dd className="mono">{ref.id}</dd>
+        <dt>file</dt><dd className="mono">{ref.file}</dd>
+        <dt>pose</dt><dd>{humanize(ref.coverage_cell.angle)}, {humanize(ref.coverage_cell.shot_size)}, {humanize(ref.coverage_cell.expression)}</dd>
+        {ref.pipeline && <><dt>made by</dt><dd>{ref.pipeline}{ref.method ? ` (${ref.method})` : ""}{ref.seed != null ? `, seed ${ref.seed}` : ""}</dd></>}
+        {ref.style_id && <><dt>style</dt><dd className="mono">{ref.style_id}</dd></>}
+      </dl>
+      <p className="faint">A curated copy in the version's refs folder. Its source generation is not on this grid.</p>
+      {!version.finalized && <button onClick={() => void onCull()} onBlur={() => setConfirm(false)} disabled={offline}>{confirm ? "Remove from the curated set?" : "Remove from the set"}</button>}
+    </>
+  );
+}
 const STEP_KEYS = ["num_steps", "num_inference_steps", "steps"];
 const GUIDANCE_KEYS = ["guidance", "guidance_scale", "cfg"];
 const presentKey = (params: Record<string, unknown>, keys: string[]) => keys.find((k) => params[k] != null) ?? keys[0];

@@ -4602,3 +4602,75 @@ overlay, **Loupe with prev/next + Compare**.
 
 
 **Pushed:** step 4 = `3dbd5ba` (code + tests + plan §6 row 4 + this entry).
+
+
+## 🖼 M2.14 step 5 — the canvas: tiles, keys, grouped, loupe (2026-09-20, 21:34–21:48 CEDT)
+
+Author: *"Let's continue"* → step 5 of the plan's migration table.
+
+**Built in `frontends/v2/src/`:**
+- `canvas/tiles.ts` — the tile model. `scopedJobs`: a character's active version at the stage
+  letter (Curate reviews B; D admits only image makers, as v1's `makesAnImage`), or the
+  **Sandbox = every job the project itself requested** — step 1 had filtered for a literal
+  `"sandbox"` requester and would have shown an empty Sandbox (the server stamps the project
+  id; never click-tested, caught while porting). `tilesOfJob` flattens exactly as v1's `cells`:
+  a multi pool → one tile per output, a running cast → its landed candidates as interim tiles
+  plus one placeholder, a tombstone → nothing. `deriveCanvas` adds, in Curate, the version's
+  **durable refs** with no generation on the grid (`ref:<id>` tiles served from refs/) and
+  applies the shot / angle / expression / show-rejected filters; it also hands the views the
+  kept map, the rejected set, the starred set and the lock.
+- `canvas/actions.ts` — `tileActions`: star · keep · cull · reject · cancel · remove (per-image
+  `deleteOutput` when the job has several outputs, else `deleteJob` — v1's rule) · removeGroup ·
+  bulk keep/reject (per-item isolation, one refresh) · bulkDelete. One place, used by the tile
+  overlays, the selection bar and the keys, so a key and a click can never disagree. Never asks:
+  the confirmation is the caller's second click.
+- `canvas/Tile.tsx` — the uniform box (**Fit / Fill** in the strip), the image or its status
+  (queued · generating n% with a progress bar · failed · canceled · video sketch), the badges
+  (★ hero · ✓ kept · ✕ rejected), the caption (pass or pipeline + pose, and "then clean, …" for a
+  pre-pass image), and the **affordances visible on hover AND on the selected tile**: ☆/★ in
+  Cast, +/✓ and ✕/↩ and □/■ in Curate (unlocked), ⤢ loupe, Cancel while active, 🗑 → **Delete?**
+  on the second click. Double-click opens the loupe.
+- `canvas/Grid.tsx` — the responsive grid; a ResizeObserver measures the **column count** from
+  the element and the zoom, and registers the visible order + columns (`canvas/registry.ts`)
+  for the keyboard. `useTileFlags` computes each tile's flags from the model + store.
+- `canvas/Grouped.tsx` — v1's GroupedGrid ported: operation groups newest first (Cast ·
+  Expansion sweep · LoRA preview · Training run · Readiness scan · Pose icons · Postprocess ·
+  Batch), derivation nested by `chained_from`, chains drawn **left to right**, a fan-out one row
+  per branch, folded groups and lineages as cover cards, the durable refs as their own group,
+  Collapse / Expand all, **Delete group** on a second click. The keyboard order is the render
+  order.
+- `canvas/Loupe.tsx` — replaces the canvas (D7): ← Grid, ‹ n of m ›, **Compare** (pins the
+  current image on the left; prev / next walk the right one; `c`), **1:1** (click toggles), the
+  facts strip (pass/pipeline · model · seed · pose · file). Leaving restores the view the author
+  came from (`viewBeforeLoupe`).
+- `shell/Stage.tsx` — the Strip now carries: the verbs (with the letter + key in the tooltip),
+  the view switch (Flat · Grouped · Captions [step 6] · Loupe), the **Curate filters** (shot ·
+  angle · expression · rejected + "n kept, n rejected, x of y shown"), the **selection bar**
+  when tiles are marked (n marked · Keep · Reject · Delete? · Clear), the tile count, Fit / Fill,
+  the zoom slider. Empty states name the next action per stage.
+- `shell/Shortcuts.tsx` — the one dispatcher grew the canvas keys: **arrows by visual row**
+  (`idx ± cols`, Home / End; the tile scrolls into view), Enter ↔ loupe, `c` compare, `k` keep
+  or remove, `x` reject or un-reject, space mark, **Del twice** deletes, Escape closes in order
+  (dialog → help → menu → pending delete → loupe → marks → selection). The `?` overlay lists
+  everything.
+- `store.ts` — `Selection` admits a durable ref (`refId`); new: `compare`, `bulk`, `filters`,
+  `pendingDelete`, `fit` (persisted), `viewBeforeLoupe`, `openLoupe` / `closeLoupe`; a stage or
+  asset change clears marks, compare and a pending delete. `inspect/InfoTab.tsx` gained
+  `RefInfo` (a durable ref: preview, pose, provenance, Remove from the set); the Inspector routes
+  it. The coverage vocabulary moved to `lib/coverage.ts` (Expand and the Strip share it).
+
+**Verified:** v2 `tsc` + `vite build`; **+7 tests → 39** in `test_v2_frame.py` (with the grouped
+view): the canvas modules + the Stage routing; the scope and flattening rules against v1 (and the
+Sandbox = project id fix); the **coverage vocabulary equal to `coverage.py`'s** and held in one
+module; the keyboard by measured columns with every review key listed in `?`; no
+`window.confirm` in the canvas and every destructive path a second click; affordances on hover
+and selection; the loupe's prev/next/compare and the grouped view's nesting rules. Not
+click-tested; the author's next launch: open a character, Curate, arrows + k / x / space, Enter
+for the loupe, c to compare, Grouped to see the chains.
+
+**Not in this step (owed):** the selection bar's "Compare two marked tiles" (compare pins from
+the loupe instead), virtualisation past ~300 tiles (plan §3.4 row 1), `Ctrl+P` go-to-asset.
+
+**Next:** step 6 — Train: the Captions view on the canvas, the dock's Jobs pane with training
+rows (step / loss / ETA from `job.note`, Preview / Promote on the row), the Readiness tab with
+inline details, the LoRA-preview pose picker in the composer.

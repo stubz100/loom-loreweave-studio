@@ -309,3 +309,103 @@ def test_version_and_info_tabs_reach_every_call():
         assert consts in info and consts in v1, consts
     for f in (version, info):
         assert "window.confirm" not in f and "window.prompt" not in f
+
+
+# --- migration step 5: the canvas ----------------------------------------------------------------
+
+CANVAS = V2 / "canvas"
+
+
+def test_canvas_is_its_own_modules_and_the_stage_routes_the_views():
+    for name in ("tiles.ts", "actions.ts", "registry.ts", "Tile.tsx", "Grid.tsx", "Grouped.tsx", "Loupe.tsx"):
+        assert (CANVAS / name).is_file(), name
+    stage = _read(V2 / "shell" / "Stage.tsx")
+    for mount in ("<Grid ", "<Grouped ", "<Loupe "):
+        assert mount in stage, mount
+    assert "deriveCanvas(" in stage and "scopedJobs(" in stage
+
+
+def test_tiles_scope_and_derivation_mirror_v1():
+    """The Sandbox is what the project itself requested (requester = project id — step 1 had
+    filtered for a literal "sandbox" and showed nothing); a character's grid is its active
+    version at the stage letter (Curate reviews B; D admits only image makers). Tiles come
+    from jobs exactly as v1 flattened them."""
+    tiles = _read(CANVAS / "tiles.ts")
+    assert "j.requester_id === projectId" in tiles and '"sandbox"' not in tiles
+    assert 'letter === "C" ? "B" : letter' in tiles
+    assert 'j.pipeline !== "zimage_trainer" && j.mode !== "score"' in tiles      # v1's makesAnImage
+    assert "if (job.deleted) return [];" in tiles                                  # a tombstone draws nothing
+    assert "names.length > 1" in tiles and "partial_outputs" in tiles             # multi pool + interim tiles
+    assert "`ref:${r.id}`" in tiles and "!onGrid.has(r.source_output)" in tiles   # durable refs in Curate
+    for f in ("filters.shot", "filters.angle", "filters.expression", "filters.showRejected"):
+        assert f in tiles, f
+    v1 = _read(V1 / "App.tsx")
+    assert 'j.pipeline !== "zimage_trainer" && j.mode !== "score"' in v1
+
+
+def test_coverage_vocabulary_is_the_servers():
+    """One UI module holds the frozen coverage keys, and they equal coverage.py's."""
+    cov = _read(ROOT / "orchestrator" / "coverage.py")
+    def server(name: str) -> list[str]:
+        block = cov[cov.index(f"{name}: dict[str, str] = {{"):]
+        block = block[:block.index("}")]
+        return re.findall(r'^\s+"(\w+)":', block, flags=re.M)
+    ui = _read(V2 / "lib" / "coverage.ts")
+    def client(name: str) -> list[str]:
+        return re.findall(r'"(\w+)"', re.search(rf"export const {name} = \[(.*?)\];", ui).group(1))
+    assert client("SHOTS") == server("SHOT_SIZES")
+    assert client("ANGLES") == server("ANGLES")
+    assert client("EXPRESSIONS") == server("EXPRESSIONS")
+    for f in ("compose/Expand.tsx", "shell/Stage.tsx"):
+        assert 'from "../lib/coverage"' in _read(V2 / f), f                       # no second copy
+
+
+def test_keyboard_moves_by_visual_row_and_covers_the_review_keys():
+    grid = _read(CANVAS / "Grid.tsx")
+    assert "new ResizeObserver(" in grid and "Math.floor((el.clientWidth + GAP) / (zoom + GAP))" in grid
+    keys = _read(V2 / "shell" / "Shortcuts.tsx")
+    assert "idx + cols" in keys and "idx - cols" in keys and "idx + 5" not in keys   # v1 moved by a fixed 5
+    for k in ('e.key === "k"', 'e.key === "x"', 'e.key === " "', 'e.key === "Delete"', 'e.key === "Enter"',
+              'e.key === "c"', 'e.key === "Home"', 'e.key === "End"'):
+        assert k in keys, k
+    assert "s.pendingDelete === cur.key" in keys                                  # Del twice
+    for line in ("<dt>← → ↑ ↓</dt>", "<dt>Enter</dt>", "<dt>k</dt>", "<dt>x</dt>", "<dt>space</dt>", "<dt>Del</dt>", "<dt>c</dt>"):
+        assert line in keys, line                                                # the ? overlay lists them
+
+
+def test_destructive_actions_never_run_on_a_single_click():
+    for f in CANVAS.glob("*.ts*"):
+        assert "window.confirm" not in _read(f), f.name
+    tile = _read(CANVAS / "Tile.tsx")
+    assert 'flags.pendingDelete ? "Delete?"' in tile and "if (flags.pendingDelete) void tileActions.remove(tile); else setPendingDelete(tile.key)" in tile
+    stage = _read(V2 / "shell" / "Stage.tsx")
+    assert 'pendingDelete === "__bulk__"' in stage                               # bulk delete, second click
+    grouped = _read(CANVAS / "Grouped.tsx")
+    assert "confirmGroup === g.id" in grouped                                     # group delete, second click
+    actions = _read(CANVAS / "actions.ts")
+    assert "perImage = !!names && names.length > 1 && !!t.output" in actions      # v1's per-image rule
+    for call in ("starCandidate(", "keepRef(", "cullRef(", "rejectOutput(", "cancelJob(", "deleteOutput(", "deleteJob("):
+        assert call in actions, call
+
+
+def test_affordances_show_on_hover_and_on_the_selected_tile():
+    css = _read(V2 / "styles.css")
+    assert ".tile:hover .acts, .tile.selected .acts, .tile:focus-within .acts { opacity: 1; }" in css
+    assert ".grid.fill .tile img" in css                                          # fit / fill
+    tile = _read(CANVAS / "Tile.tsx")
+    assert 'title={flags.hero ? "remove the hero star" : "star as the hero"}' in tile
+    assert "keep into the curated set (k)" in tile and "reject (x)" in tile and "bulk action (space)" in tile
+
+
+def test_loupe_and_grouped_views():
+    loupe = _read(CANVAS / "Loupe.tsx")
+    assert "go(-1)" in loupe and "go(1)" in loupe and "setCompare(" in loupe and 'className={`loupe-body${pinned ? " two" : ""}`}' in loupe
+    store = _read(V2 / "store.ts")
+    assert "viewBeforeLoupe" in store and "closeLoupe:" in store and "openLoupe:" in store
+    assert "refId?: string" in store                                              # a durable ref is selectable
+    assert "<RefInfo" in _read(V2 / "shell" / "Inspector.tsx")
+    grouped = _read(CANVAS / "Grouped.tsx")
+    assert "node.job.chained_from" in grouped and "`solo:${root.job.id}`" in grouped
+    for prefix in ("prv_", "trn_", "rdn_", "poses_"):
+        assert f'batchId.startsWith("{prefix}")' in grouped, prefix
+    assert 'className="chain-arrow"' in grouped                                   # a chain reads left to right

@@ -1,8 +1,15 @@
-// The centre: stage header, the one contextual Strip, and the Canvas. The canvas already
-// draws a real read-only grid of the selected scope's finished images (the review view of
-// migration step 5 arrives on top of it: zoom is live, selection is live, actions are not).
-import { outputUrl, type Job } from "@loom/shared/api/orchestrator";
+// The centre: stage header, the one contextual Strip, and the Canvas (kb-loom-ui.md §3.4,
+// migration step 5). The strip carries the stage verbs, the view switch, the Curate filters,
+// the selection bar when tiles are marked, fit/fill and the zoom slider. The canvas is the
+// flat grid, the grouped tree or the loupe — the same tiles in every view.
+import { useMemo } from "react";
 
+import { tileActions } from "../canvas/actions";
+import { Grid } from "../canvas/Grid";
+import { Grouped } from "../canvas/Grouped";
+import { Loupe } from "../canvas/Loupe";
+import { deriveCanvas, scopedJobs } from "../canvas/tiles";
+import { ANGLES, EXPRESSIONS, SHOTS, nice } from "../lib/coverage";
 import { STAGE_LETTER, useApp, type Stage as StageId, type View } from "../store";
 import { Start } from "./Start";
 
@@ -28,7 +35,7 @@ function WorldStage() {
       <div className="empty">
         <h2>World</h2>
         <p>The style editor, the world text, the story spine and the pose sets open here, listed from the panel on the left.</p>
-        <p className="faint">Arrives with migration step 3 of the UI plan.</p>
+        <p className="faint">Arrives with migration step 8 of the UI plan.</p>
       </div>
     </div>
   );
@@ -42,24 +49,28 @@ function AssetsStage() {
   const setView = useApp((s) => s.setView);
   const zoom = useApp((s) => s.zoom);
   const setZoom = useApp((s) => s.setZoom);
+  const fit = useApp((s) => s.fit);
+  const setFit = useApp((s) => s.setFit);
   const selectedAsset = useApp((s) => s.selectedAsset);
   const selection = useApp((s) => s.selection);
   const jobs = useApp((s) => s.jobs);
-  const select = useApp((s) => s.select);
   const asset = useApp((s) => s.assetDetail);
+  const filters = useApp((s) => s.filters);
+  const setFilters = useApp((s) => s.setFilters);
+  const bulk = useApp((s) => s.bulk);
+  const setBulk = useApp((s) => s.setBulk);
+  const pendingDelete = useApp((s) => s.pendingDelete);
+  const setPendingDelete = useApp((s) => s.setPendingDelete);
+  const offline = useApp((s) => s.offline);
 
   const versionId = asset?.profile.active_version ?? null;
   const activeVersion = asset?.versions.find((v) => v.id === versionId) ?? null;
+  const projectId = project?.id ?? null;
+  const model = useMemo(() => deriveCanvas(jobs, projectId, asset, stage, filters), [jobs, projectId, asset, stage, filters]);
+  const scoped = useMemo(() => scopedJobs(jobs, projectId, versionId, stage), [jobs, projectId, versionId, stage]);
+  const marked = useMemo(() => model.tiles.filter((t) => bulk.includes(t.key)), [model.tiles, bulk]);
+  const curating = !!selectedAsset && stage === "curate";
   const letter = STAGE_LETTER[stage];
-  const gridLetter = letter === "C" ? "B" : letter;   // Curate reviews the expansion set
-  const scoped: Job[] = Object.values(jobs)
-    .filter((j) => !j.deleted && j.status === "done")
-    .filter((j) => (selectedAsset && versionId ? j.requester_id === versionId && (j.stage ?? "A") === gridLetter : !selectedAsset && (j.requester_id ?? "sandbox") === "sandbox"))
-    .sort((a, b) => a.created_at.localeCompare(b.created_at));
-  const tiles = scoped.flatMap((j) => {
-    const names = j.result?.output_names ?? (j.result?.output_name ? [j.result.output_name] : []);
-    return names.filter((n) => !/\.(mp4|webm|mov)$/i.test(n)).map((n) => ({ job: j, output: n }));
-  });
 
   return (
     <>
@@ -68,7 +79,7 @@ function AssetsStage() {
           <>
             <span className="name">{asset.profile.name}</span>
             {activeVersion && <span className="pill">{activeVersion.name}{activeVersion.lora ? " ✨" : ""}{activeVersion.finalized ? " 🔒" : ""}</span>}
-            <span className="faint">{asset.versions.length} version(s)</span>
+            <span className="faint">{asset.versions.length} version{asset.versions.length === 1 ? "" : "s"}</span>
           </>
         ) : (
           <span className="name">{project ? "Sandbox" : ""}</span>
@@ -78,7 +89,7 @@ function AssetsStage() {
         <div className="verbs" role="tablist" aria-label="Stage">
           {VERBS.map((v) => (
             <button key={v.id} role="tab" aria-selected={stage === v.id} className={`verb${stage === v.id ? " active" : ""}`}
-                    onClick={() => setStage(v.id)} disabled={!selectedAsset} title={selectedAsset ? v.label : "Select a character to work through its stages"}>
+                    onClick={() => setStage(v.id)} disabled={!selectedAsset} title={selectedAsset ? `${v.label} (stage ${STAGE_LETTER[v.id]}, key ${VERBS.indexOf(v) + 1})` : "Select a character to work through its stages"}>
               {v.label}
             </button>
           ))}
@@ -87,40 +98,58 @@ function AssetsStage() {
           {VIEWS.map((v) => (
             <button key={v.id} role="tab" aria-selected={view === v.id} className={`verb${view === v.id ? " active" : ""}`}
                     onClick={() => setView(v.id)}
-                    disabled={(v.id === "captions" && stage !== "train") || (v.id === "loupe" && !selection)}
-                    title={v.id === "captions" ? "Captions view shows in Train" : v.id === "loupe" ? "Loupe needs a selected tile" : v.label}>
+                    disabled={(v.id === "captions") || (v.id === "loupe" && !selection)}
+                    title={v.id === "captions" ? "Captions view arrives with step 6" : v.id === "loupe" ? (selection ? "Loupe (Enter)" : "Loupe needs a selected tile") : v.label}>
               {v.label}
             </button>
           ))}
         </div>
-        <span className="muted">{tiles.length ? `${tiles.length} image${tiles.length === 1 ? "" : "s"}` : ""}</span>
+        {curating && bulk.length === 0 && (
+          <div className="filters" aria-label="Curate filters">
+            <select value={filters.shot} onChange={(e) => setFilters({ shot: e.target.value })} title="shot size"><option value="">any shot</option>{SHOTS.map((s) => <option key={s} value={s}>{nice(s)}</option>)}</select>
+            <select value={filters.angle} onChange={(e) => setFilters({ angle: e.target.value })} title="angle"><option value="">any angle</option>{ANGLES.map((s) => <option key={s} value={s}>{nice(s)}</option>)}</select>
+            <select value={filters.expression} onChange={(e) => setFilters({ expression: e.target.value })} title="expression"><option value="">any expression</option>{EXPRESSIONS.map((s) => <option key={s} value={s}>{nice(s)}</option>)}</select>
+            <label className="p-flag" style={{ margin: 0 }}><input type="checkbox" checked={filters.showRejected} onChange={(e) => setFilters({ showRejected: e.target.checked })} />rejected</label>
+            <span className="faint">{model.kept.size + model.tiles.filter((t) => t.ref).length} kept, {model.rejected.size} rejected, {model.tiles.length} of {model.all} shown</span>
+          </div>
+        )}
+        {bulk.length > 0 && (
+          <div className="selbar" aria-label="Selection">
+            <span>{bulk.length} marked</span>
+            {curating && !model.locked && <button onClick={() => void tileActions.bulk("keep", marked)} disabled={offline}>Keep</button>}
+            {curating && !model.locked && <button onClick={() => void tileActions.bulk("reject", marked)} disabled={offline}>Reject</button>}
+            <button className={pendingDelete === "__bulk__" ? "danger" : ""} onBlur={() => { if (pendingDelete === "__bulk__") setPendingDelete(null); }}
+                    onClick={() => { if (pendingDelete === "__bulk__") void tileActions.bulkDelete(marked); else setPendingDelete("__bulk__"); }} disabled={offline}>
+              {pendingDelete === "__bulk__" ? `Delete ${bulk.length}?` : "Delete"}
+            </button>
+            <button onClick={() => setBulk([])}>Clear</button>
+          </div>
+        )}
+        <span className="spacer" />
+        <span className="muted">{model.tiles.length ? `${model.tiles.length} tile${model.tiles.length === 1 ? "" : "s"}` : ""}</span>
+        <button className={`verb${fit === "fill" ? " active" : ""}`} onClick={() => setFit(fit === "fill" ? "fit" : "fill")} title="fill the tile box (crops) or fit the whole image (bars)">{fit === "fill" ? "Fill" : "Fit"}</button>
         <input className="zoom" type="range" min={120} max={360} step={10} value={zoom}
                onChange={(e) => setZoom(Number(e.target.value))} title="thumbnail size" aria-label="Thumbnail size" />
       </div>
-      <div className="canvas" style={{ ["--tile" as string]: `${zoom}px` }}>
+      <div className="canvas">
         {!project ? (
           <Start />
-        ) : tiles.length === 0 ? (
+        ) : view === "loupe" ? (
+          <Loupe model={model} assetId={selectedAsset} versionId={versionId} />
+        ) : model.tiles.length === 0 ? (
           <div className="empty">
             <h2>{selectedAsset ? `Nothing in ${VERBS.find((v) => v.id === stage)?.label} yet` : "The Sandbox is empty"}</h2>
-            <p>{selectedAsset
-              ? "Images made for this stage appear here as tiles. Generating them moves into the Compose panel with migration step 3."
-              : "Unscoped generations land here. Compose arrives with migration step 3; until then v1 still generates."}</p>
+            <p>{model.all > 0 ? "Every tile is hidden by the filters." : selectedAsset
+              ? (stage === "cast" ? "Cast candidates from the Compose panel; star the one that becomes the hero."
+                : stage === "expand" || stage === "curate" ? "Expand the hero into a coverage set from the Compose panel; the cells land here, and Curate keeps the good ones."
+                : "LoRA previews land here once a run is promoted.")
+              : "Unscoped generations land here. Use the Compose panel."}</p>
+            {letter && <p className="faint">stage {letter}</p>}
           </div>
+        ) : view === "grouped" ? (
+          <Grouped model={model} jobs={scoped} assetId={selectedAsset} versionId={versionId} />
         ) : (
-          <div className="grid">
-            {tiles.map(({ job, output }) => {
-              const isSel = selection?.jobId === job.id && selection?.output === output;
-              return (
-                <button key={`${job.id}:${output}`} className={`tile${isSel ? " selected" : ""}`}
-                        onClick={() => select(isSel ? null : { jobId: job.id, output })}
-                        title={output}>
-                  <img src={outputUrl(output)} alt="" loading="lazy" />
-                  <span className="cap">{job.pass ?? job.pipeline}</span>
-                </button>
-              );
-            })}
-          </div>
+          <Grid model={model} assetId={selectedAsset} versionId={versionId} />
         )}
       </div>
     </>

@@ -9,15 +9,12 @@ import {
   stageBPreview, styleSampleUrl, type PoseCell, type StageBPreview, type StageBRequest,
 } from "@loom/shared/api/orchestrator";
 
+import { ANGLES, EXPRESSIONS, SHOTS, nice } from "../lib/coverage";
 import { reasonOf } from "../lib/project";
 import { useApp } from "../store";
 import { buildStageB, effectiveModel, useCompose } from "./composeStore";
 import { ParamControls } from "./ParamControls";
 
-const SHOTS = ["face_closeup", "portrait", "waist_up", "full_body"];
-const ANGLES = ["front", "three_quarter_left", "three_quarter_right", "profile_left", "profile_right", "back"];
-const EXPRESSIONS = ["neutral", "smile", "serious", "sad", "surprised"];
-const nice = (s: string) => s.replace(/_/g, " ");
 
 export function ExpandComposer() {
   const project = useApp((s) => s.project);

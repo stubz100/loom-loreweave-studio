@@ -3917,3 +3917,197 @@ Until then: keep the aggressive fan curve, prefer **512²**, avoid long sustaine
 and **watch Hot Spot, never GPU temperature**.
 
 The P2 M7 stamp is unblocked — training never enters the danger band.
+
+
+## 🛠 Hardening pass — the 2026-09-20 code review, groups 1–4 fixed (started 2026-09-20 10:33, finished 14:25 CEDT)
+
+**Context.** The RX 9070 XT is away on RMA (the thermal-interface defect root-caused on
+2026-08-16). Standing rule for the RMA period: **nothing that imports torch or needs the GPU
+runs on this box** — a first suite attempt where the guard silently failed to engage let the
+real ROCm torch load through `transformers` and the pytest process **segfaulted**, so the
+rule is not theoretical. The suite is run with a scratchpad `notorch/` dir (stub `torch/`,
+`diffusers/`, `transformers/` packages that `raise ImportError`) prepended to a
+**Windows-style** `PYTHONPATH`, verified with `python -c "import torch"` before pytest.
+Under it: the 14 `test_flux2_dev_quantized` tests, 4 `test_warm_worker` serve tests and
+`test_vendored_flux2_imports_as_module` are torch-bound by construction (deselected), and
+the 118-test i2i schedule matrix skips via `importorskip`. The app itself starts without
+torch (the only orchestrator import is lazy, inside the flux2 weight pre-flight), so
+browsing, curation, L1 authoring and UI verification stay usable; every generation job would
+fail in its worker.
+
+**The review.** Four read-only slices — orchestrator core (queue/runner), the P2 domain
+modules, the frontend + Tauri shell, and the `84053aa..HEAD` diff + doc drift — cross-checked
+against each other and spot-verified in source. Verified sound: the atomic JSON stores with
+quarantine-on-load, process-tree cancel, the zip-bomb caps, caption-hash honesty, the frozen
+coverage vocabulary, the `img2img_schedule` math (reduces exactly to the stock schedule at
+strength 1.0), the R162 vendor guard (12 of 12 pairs byte-identical), and the client/server
+contract (no shape mismatches). The author picked four of the six finding groups to fix now;
+the other two are ledgered below.
+
+### 1 · Externally reachable file writes
+
+- **Bundle import could write anywhere on any drive.** `import_profile` checked the RAW
+  member name (`..`, absolute) but wrote to the name with `asset/` stripped, and on Windows
+  pathlib's `/` re-roots a stripped `/etc/x` to the current drive, switches drive on `D:/x`
+  and leaves the tree on a UNC name — confirmed by execution. `assets._bundle_member_dest`
+  now validates the stripped path (no root, drive, `..` or `:`) AND checks the resolved
+  destination against the staging root.
+- **Pose-icon delete/serve globbed the raw key.** Only `set_pose_icon` validated it;
+  `delete_pose_icon` and `pose_icon_path` globbed `f"{key}.*"`, and `glob` walks `..` — an
+  encoded `..%5C..%5Cproject` served `project.json` unauthenticated and the token-gated delete
+  unlinked it. One `_check_pose_key` gate for all three.
+- **The orchestrator token was baked into the production bundle.** `import.meta.env?.X`
+  makes Vite inline the WHOLE env object — every `VITE_*` value, the `.env.local` token
+  included — into `dist/assets/index-*.js` (verified: 1 occurrence). Every read is now the
+  per-key `import.meta.env.KEY` form, the token read sits inside an `import.meta.env.DEV`
+  branch (dead in production), and the Tauri shell **re-injects `window.__LOOM_*` on every
+  page load** (`on_page_load`) — the READY-time eval only reached a page that was already
+  loaded, so a READY that beat the first paint or any webview reload left the globals unset
+  and every mutating call 401'd (masked, until now, by the baked token). Rebuilt and grepped:
+  the token literal and even the env key name are absent from `dist/`. `cargo check` clean.
+
+### 2 · Durability on a machine that has lost power dozens of times
+
+- **The trainer's text files skipped the §6 fsync rule.** `_atomic_write_text` was
+  rename-only, and it wrote `captions.jsonl`, every dataset `.txt` and `train.yaml` — a cut
+  in the write-cache window leaves zero-length caption files under their final names and a
+  later train runs on empty captions with nothing to notice. `workspace.atomic_write_text`
+  (temp → fsync → replace) now backs it, plus the factgraph writer and the trainer wrapper's
+  manifest.
+- **Re-promote overwrote the live adapter in place** (`shutil.copy2` straight over it, before
+  the manifest and version were updated; nothing verifies `version.lora.sha256` at load).
+  `workspace.atomic_copy` copies to a temp beside the target, fsyncs, replaces — the old
+  adapter survives every failure before the final rename (test: a simulated rename failure
+  leaves the previous good file byte-identical).
+- **The lineage index had two unserialized writers** — `remove_edge` on the API thread
+  (delete) and `record_output` on the worker thread (finalize) — sharing one
+  `index.json.tmp`; a tile deleted while a sweep cell finalized could tear it, and
+  `load_index` resets a corrupt index to EMPTY with no rebuild. A module lock (the
+  `postproc._STORE_LOCK` shape) and **per-writer temp names** in `atomic_write_json`
+  (`<name>.<8 hex>.tmp`, cleaned on failure). Also: the per-image delete never removed that
+  image's edge — `remove_edge(..., output_file=)` now does.
+- **Every P2 mutator of version.json bypassed the M2.8 record lock** — caption overrides,
+  `stage_lora`, `promote_lora`, `readiness.persist` loaded the record outside
+  `_VERSION_LOCK`, worked, and wrote the stale copy back, so a curation click or the runner's
+  anchor-verified observer landing in between was silently overwritten. `assets.mutates_records`
+  (the public name for the RLock decorator) now wraps all five (test: an edit blocks while the
+  lock is held elsewhere, then lands).
+- **Seed-from-parent took the last `*.safetensors` by sort order**, ignoring `version.lora`.
+  Artifact names embed the family and promote never removes the other family's file, so a
+  version promoted for both families ALWAYS seeded sd35 runs from the `_zimage` adapter
+  (`s` < `z`). `_resolve_parent_lora(…, base_family=)` reads the record: its file, its
+  family (mismatch → refused), its sha256 (mismatch → refused, case-insensitive — the project's
+  hasher emits upper-case hex). `test_seed_from_parent_places_the_step0_checkpoint` now crafts
+  the record promote writes, not just the file.
+- **`dataset_hash` was a path hash.** It hashed `dataset_manifest.json`, which is full of
+  absolute per-staging paths, so two stagings of the identical dataset never matched and the
+  P2-13 fact could not say "same data as run X". Now sorted `(ref_id, image sha256, caption
+  text)` tuples — path-free, order-free.
+
+### 3 · Queue and runner races
+
+- **A cancel in the dispatch window was recorded and then ignored.** `running` is set before
+  the process exists; `cancel()` found no handle, added the id to `_canceled`, spawned no
+  kill; finalize (`canceled and not rec.ok`) let an OK run land `done` — a multi-hour trainer
+  ran to completion unless the author clicked twice. `_register_proc` (cold) and the warm feed
+  re-check `_canceled` right after registering the process and fell the tree immediately
+  (test: a sleeping worker registered after a cancel dies within seconds).
+- **A runner error orphaned a live GPU worker.** An exception escaping `_execute` (the
+  stdout loop's `log_fp.write` on a full disk had no `except`) marked the job failed and
+  dispatched the next one on top of the still-running worker, its kill handle stale. The log
+  write is best-effort now (disk full → log disabled, worker kept), and
+  `_reap_after_runner_error` fells the tree (or `_drop_warm`s the resident worker) before
+  the job is marked failed.
+- **Graceful shutdown terminated only the direct child** — multi/flux2 grandchildren and
+  the trainer's ai-toolkit child kept the GPU and the inherited pipe. It fells the tree
+  through the per-job Job Object now, `terminate()` only as the no-handle fallback.
+- **Per-image delete popped a key from a dict a `/jobs` response might be encoding**
+  (`snapshot()` is shallow) → "dictionary changed size during iteration" → 500. It rebuilds
+  `output_meta` instead.
+
+### 4 · The tombstone rollout, finished
+
+The 2026-08-09 tombstone semantics had reached the server and `GroupedGrid` only. Three
+reviewers independently flagged the same gaps.
+
+- **Re-firing a DONE step orphaned its old job and image** and broke children's links
+  (`mark_queued` re-bound the step; nothing owned the old output; `remove_step` no longer
+  protected it). Rule now: a step and its image are one thing, so **a re-fire REPLACES the
+  image** — refused (409) while anything derives from it (`postproc.dependants_of` or
+  `RUNNER.has_descendants`), otherwise the old job is deleted **after** the new one is
+  submitted. *Found while fixing:* deleting first cleared a sticky pause (last queued job
+  gone → auto-unpause) and the new job slipped past a pause the author had set — hence
+  submit-before-delete.
+- **Tombstones were branch points at every layer** — `stack_sources`, `add_step`'s allowed
+  set and its default "continue", and the UI picker — and the queue then 404'd on the missing
+  source, leaving a dead `configured` step. All four skip `deleted`; "continue" with only
+  tombstones left falls back to the base.
+- **Tombstones never collapsed**, and group delete walks parent-first, so every group delete
+  left a permanent ghost record in queue.json. `_collapse_tombstones_locked` walks UP from
+  every full removal and drops any tombstoned ancestor nothing derives from any more
+  (A→B→C in any order ends empty); a tombstone also clears `result.manifest_path`. *Found
+  while fixing:* `reconcile` computed its branch-point set once per pass, so a tombstoned
+  step whose only dependant was pruned in the same pass survived forever — it runs to a
+  fixpoint now.
+- **`/rerun` dropped `chained_from`, `pass` and `style_id`** — re-running a failed pass
+  re-created the exact unparented-card anomaly the tombstone work fixed, and lost the style
+  edge M2.12 demands on every generation path. Passed through.
+- **The flat grid rendered a tombstone as an undeletable blank "—" tile**, and both delete
+  handlers stripped the id from the Sandbox scope regardless of outcome, re-orphaning the
+  tombstone's children as top-level cards. The flat grid draws no tile for `deleted` (the id
+  stays in scope so descendants are still reached); `forgetGoneJobs` drops only the ids the
+  server actually removed; step ✕ prunes its job id the same way (it used to leave a phantom
+  "queued…" tile); the postproc panel reads a tombstone as `deleted` (struck through, no 🔍,
+  no ↻); `GroupedGrid` skips a childless tombstone root; the group-delete confirm now says
+  what actually happens (the passes shown inside the group go with it, anything out of view
+  is kept and stays attached).
+- Smaller, same thread: a pass fired from **Stage D** was routed to stage "B" and its tile
+  vanished from the D grid (now mirrors `gridStage`); the FE step-budget readout applied the
+  fraction formula to flux2 and claimed lifted steps the backend never sends (`I2I_EXACT_BACKENDS`
+  mirrors `model_catalog._I2I_STEP_SEMANTICS`, pinned by a test).
+
+**Gates.** `tsc --noEmit` + `vite build` clean (token absent from `dist/`); `cargo check`
+clean; **tests +24 → 593** (`test_hardening_2026_09.py`: the destination guard by shape,
+the import refusal end-to-end, the key gate, fsync/temp-name/atomic-copy contracts, the
+lineage lock under two threads, the record lock, the content hash, the record-based seed,
+the dispatch-window cancel, the runner-error reap, the Job-Object shutdown, the served-dict
+invariant, re-fire refused/replaced, tombstone-not-a-branch-point, only-tombstones → base,
+collapse in both orders, rerun provenance, and FE source contracts) — **437 pass + 2 skip
+under the no-torch guard**, 36 torch-bound deselected. Three `test_grouped_view` contract
+tests were updated to the new wording/lines they pin.
+
+**PUSHED `4af8387`.**
+
+### Ledger — what the review found that is NOT in this pass (author's scope call)
+
+- **Frontend state lifecycle** (group 5): `characterClause`/`advParamsB`/`stageBModel`
+  never reset on asset or version switch, so character B's sweep can be built with A's
+  identity clause (App.tsx:225, 952–966) — a data-quality bug, first in line; the Sandbox
+  `batchIds` re-seed runs on every poll, so an empty Sandbox adopts any character's live
+  jobs (App.tsx:258–274); `refreshCasting` has no staleness guard and the 2 s poll no
+  in-flight guard (`/jobs` is the full table); no `confirm()` on style delete / sample clear
+  / spine-character removal / pose-icon delete / the ✕ that kills a running sweep;
+  `GroupedGrid` label prefixes `trn_`/`poses_` match nothing server-side.
+- **Docs drift** (group 6): README:118–121 and `kb-loom-p2.md`:1548–1553 still say the
+  hardware blocker was CLOSED by fan curves and blame a heatwave; `kb-loom-p2.md`:1216
+  still attributes shutdowns to sustained training / the PSU; nothing in the repo records
+  that the card was sent for RMA; `factgraph.py`:143 says `chained_from` is populated
+  nowhere while line 149 says it has been since 2026-08-08 (both postproc and chained
+  passes write it), and spec §12 M2.13 still assigns that edge to P4; the stray empty file
+  `99` at the repo root (`9ddd48e`) is referenced by nothing.
+- **Test hygiene:** no `torch` marker (the 19 torch-bound tests + the 118-test matrix are
+  only discoverable by running them); the two `importorskip("torch")` calls will start
+  ERRORING at pytest 9.1 (`exc_type=ImportError`); the vendored flux2 library
+  (`pipelines/multistack/flux2/src/flux2/*`) is not under the R162 drift guard (currently
+  matches).
+- **Debt the review says now costs correctness:** App.tsx (4 000+ lines, ~90 state values in
+  one closure — the Inspector + PostprocPanel lift is the cheapest seam); queue.json is
+  rewritten with fsync on every state change and only ever grows.
+- **Plausible-only, unverified:** the trainer wrapper picks checkpoints by newest mtime
+  with no integrity check after a cut; a step output used as the BASE of a second stack can
+  be deleted through the first stack's `remove_step`; `reconcile` amplifies a lost
+  queue.json into stack loss by design; the UI's remove gate is still "array tail" while
+  the backend is "any leaf".
+- **Rig-owed (visual):** the tombstone rendering in the flat grid/panel and the re-fire
+  flow on a real stack; the flux2 schedule fix's visible result and the sd35 preview from
+  the 2026-08-09 ledger still stand.

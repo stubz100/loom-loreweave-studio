@@ -4674,3 +4674,6 @@ the loupe instead), virtualisation past ~300 tiles (plan §3.4 row 1), `Ctrl+P` 
 **Next:** step 6 — Train: the Captions view on the canvas, the dock's Jobs pane with training
 rows (step / loss / ETA from `job.note`, Preview / Promote on the row), the Readiness tab with
 inline details, the LoRA-preview pose picker in the composer.
+
+
+**Pushed:** step 5 = `3ef73bb` (code + tests + plan §6 row 5 + this entry).

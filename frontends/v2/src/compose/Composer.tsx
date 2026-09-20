@@ -1,6 +1,6 @@
-// The Composer (kb-loom-ui.md §3.3, migration step 3a): Cast / Sandbox generation as a column —
-// model, prompt (text or the dev JSON tree), how many, style, advanced — with Preview and
-// Generate pinned at the foot. Expand (Stage B) is step 3b and lives in the same panel.
+// The Composer (kb-loom-ui.md §3.3, migration steps 3a/3b): Cast / Sandbox generation as a
+// column — model, prompt (text or the dev JSON tree), how many, style, advanced — with Preview
+// and Generate pinned at the foot; Expand (Stage B) takes the same column from stage B on.
 import { useEffect, useState } from "react";
 
 import {
@@ -10,10 +10,20 @@ import {
 import { reasonOf } from "../lib/project";
 import { useApp } from "../store";
 import { buildRequest, effectiveModel, isDevSelected, PIPELINES, useCompose } from "./composeStore";
+import { ExpandComposer } from "./Expand";
 import { Flux2JsonTree } from "./Flux2JsonTree";
 import { ParamControls } from "./ParamControls";
 
+/** The Composer follows the stage: Cast for the Sandbox or stage A, Expand from B on (a sweep
+ *  can be re-fired while curating or training). Train mode is the Panel's own Train tab. */
 export function Composer() {
+  const selectedAsset = useApp((s) => s.selectedAsset);
+  const stage = useApp((s) => s.stage);
+  if (!selectedAsset || stage === "cast") return <CastComposer />;
+  return <ExpandComposer />;
+}
+
+function CastComposer() {
   const project = useApp((s) => s.project);
   const offline = useApp((s) => s.offline);
   const disk = useApp((s) => s.disk);

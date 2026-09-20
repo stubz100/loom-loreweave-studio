@@ -181,7 +181,7 @@ loom-loreweave-studio/
 │   ├── shell/         #   the one Tauri 2 desktop shell (src-tauri); wraps v1 or v2 by config
 │   ├── shared/api/    #   the typed orchestrator client + logger, imported by every frontend
 │   ├── v1/            #   the current React/TS frontend — frozen reference (Vite :1420)
-│   └── v2/            #   the new frontend, built from scratch on the same API (Vite :1421) — the frame is in (M2.14 step 1)
+│   └── v2/            #   the new frontend, built from scratch on the same API (Vite :1421) — frame, dialogs, Cast/Expand/Train composer in (M2.14 steps 1–3b)
 │   ├── src/           #   React UI (three-pane shell + job-queue dock + batch grid + project bar)
 │   └── src-tauri/     #   Rust: single-instance, orchestrator sidecar spawn + kill, READY handshake
 └── orchestrator/      # Python FastAPI service (127.0.0.1)

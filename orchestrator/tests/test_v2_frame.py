@@ -152,3 +152,83 @@ def test_json_tree_has_one_serializer():
     composer = _read(COMPOSE / "Composer.tsx")
     assert "generatePreview(" in composer and "generate(" in composer     # preview = the same request, dry-run
     assert "window.prompt" not in composer and "window.confirm" not in composer
+
+
+# --- migration step 3b: Expand (Stage B) and Train modes ------------------------------------
+
+
+def _server_fields(marker: str) -> set[str]:
+    """The declared fields of the pydantic request model whose source contains `marker`."""
+    src = _read(ROOT / "orchestrator" / "main.py")
+    for block in src.split("\nclass ")[1:]:
+        block = block.split("\n\n\n")[0]
+        if marker in block:
+            return set(re.findall(r"^    (\w+):", block, flags=re.M))
+    raise AssertionError(f"no request model contains {marker!r}")
+
+
+def test_composer_follows_the_stage_and_train_has_its_tab():
+    """Cast for the Sandbox and stage A; Expand from stage B on; Train on the Panel's Train tab
+    (plan §3.6: the staging form is the composer in Train mode)."""
+    composer = _read(COMPOSE / "Composer.tsx")
+    assert 'stage === "cast"' in composer and "<ExpandComposer />" in composer
+    panel = _read(V2 / "shell" / "Panel.tsx")
+    assert "<TrainComposer />" in panel and "Placeholder" not in panel
+    for name in ("Expand", "Train"):
+        assert (COMPOSE / f"{name}.tsx").is_file(), name
+
+
+def test_stage_b_body_sends_only_fields_the_server_accepts_and_mirrors_v1():
+    """StageBRequest is extra=forbid, so a stray key would be a 422 at fire time: pin the keys
+    against the server's own model, and the conditionals against v1's buildStageBBody."""
+    store = _read(COMPOSE / "composeStore.ts")
+    body = store[store.index("export function buildStageB"):]
+    server = _server_fields("StageBRequest(BaseModel)")
+    for key in ("preset", "pipeline", "model_name", "strength", "realize", "bg_mask", "identity",
+                "advanced_prompt", "character_clause", "cells", "apply_style", "style_id",
+                "width", "height", "base_seed", "params"):
+        assert f"{key}:" in body, key
+        assert key in server, key
+    v1 = _read(V1 / "App.tsx")
+    for frag in ('realize === "mixed"', "{ bg_mask:", "{ identity:", "advanced_prompt: true",
+                 "character_clause:", "{ cells:", "apply_style:", "{ style_id:", "{ base_seed:"):
+        assert frag in body and frag in v1, frag
+    # v1's defaults, and the two things v1 got wrong
+    assert 'preset: "full_coverage"' in store and "strength: 0.55" in store
+    assert "applyStyle: false" in store                  # M2.10: the hero carries the style; expansion default OFF
+    assert "clauses: Record<string, string>" in store     # the clause is per asset (v1 leaked it across characters)
+
+
+def test_expand_states_its_rules_in_words_and_reaches_every_stage_b_call():
+    expand = _read(COMPOSE / "Expand.tsx")
+    for text in ("reference conditioning already carries identity", "Set a face anchor first",
+                 "swapped to the anchor after generation", "not verified yet"):
+        assert text in expand, text                       # the four identity states, as text not tooltips
+    for call in ("getPoseCells(", "poseIconUrl(", "recipePresets.map", "stageBPreview(", "stageB(assetId",
+                 "matteHero(", "sketchHero("):
+        assert call in expand, call
+    assert 'setStage("curate")' in expand                 # a fired sweep lands in Curate, as v1 did
+    assert 'disabled={!bgMask}' in expand                 # mixed needs the matte (v1's 2026-06-11 422)
+    assert "window.confirm" not in expand and "window.prompt" not in expand
+
+
+def test_train_form_sends_the_staging_fields_the_server_takes():
+    train = _read(COMPOSE / "Train.tsx")
+    server = _server_fields("train_init: Literal")
+    for key in ("version_id", "base_family", "train_init", "trigger_token", "steps", "rank", "alpha",
+                "learning_rate", "resolution"):
+        assert f"{key}:" in train, key
+        assert key in server, key
+    for call in ("stageZimageLora(", "getStagedTraining(", "queueStagedTraining(", "deleteStagedTraining("):
+        assert call in train, call
+    assert "window.confirm" not in train                  # removal is an inline second click
+
+
+def test_asset_detail_is_shared_through_the_store():
+    """The stage header, the canvas, the composer and the inspector read one copy of the
+    selected character; the poller keeps it current (hero, anchor, refs)."""
+    store = _read(V2 / "store.ts")
+    assert "assetDetail: AssetDetail | null" in store and "refreshAsset: async" in store
+    assert "getAsset(" not in _read(V2 / "shell" / "Stage.tsx")
+    assert "refreshAsset()" in _read(V2 / "poll.ts")
+    assert "starCandidate(" in _read(V2 / "shell" / "Inspector.tsx")   # the hero star, until step 5's canvas actions

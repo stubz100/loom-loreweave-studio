@@ -1,10 +1,11 @@
-// The left Panel: Library (real, read-only for now), Compose and Train (their forms arrive with
-// migration steps 3 and 6 — what is here proves the shape: a scrolling body and a pinned foot).
+// The left Panel: Library (read-only for now), Compose (Cast / Expand, step 3) and Train (the
+// staging form, step 3b; captions, readiness and job rows follow with step 6).
 import { useEffect, useState } from "react";
 
 import { listAssets, type AssetSummary } from "@loom/shared/api/orchestrator";
 
 import { Composer } from "../compose/Composer";
+import { TrainComposer } from "../compose/Train";
 import { useApp, type PanelTab } from "../store";
 import { Resizer } from "./Resizer";
 
@@ -28,23 +29,23 @@ export function Panel() {
       </div>
       {tab === "library" && <Library />}
       {tab === "compose" && <Composer />}
-      {tab === "train" && <Placeholder title="Train" step="6"
-        text="The staging form (base, init, trigger, steps, advanced) moves in here; staged runs and training progress go to the dock." action="Stage" />}
+      {tab === "train" && <TrainTab />}
       <Resizer edge="right" size={width} onResize={setPanelWidth} />
     </aside>
   );
 }
 
-function Placeholder({ title, step, text, action }: { title: string; step: string; text: string; action: string }) {
+function TrainTab() {
+  const selectedAsset = useApp((s) => s.selectedAsset);
+  if (selectedAsset) return <TrainComposer />;
   return (
     <>
       <div className="panel-body">
-        <div className="section-title">{title}</div>
-        <p className="muted">{text}</p>
-        <p className="faint">Arrives with migration step {step} of the UI plan.</p>
+        <div className="section-title">Train</div>
+        <p className="muted">Select a character in the Library to stage a LoRA from its curated references.</p>
       </div>
       <div className="panel-foot">
-        <button className="primary" disabled title={`Arrives with step ${step}`}>{action}</button>
+        <button className="primary" disabled>Stage the run</button>
       </div>
     </>
   );

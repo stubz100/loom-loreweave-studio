@@ -4,8 +4,9 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-import type {
-  DiskStatus, Health, Job, JobStatus, JobsResponse, PauseReason, ProjectInfo,
+import {
+  getAsset, type AssetDetail, type DiskStatus, type Health, type Job, type JobStatus, type JobsResponse,
+  type PauseReason, type ProjectInfo,
 } from "@loom/shared/api/orchestrator";
 
 export type Workspace = "world" | "assets" | "shots" | "flow" | "episode";
@@ -51,6 +52,7 @@ interface LiveSlice {
   disk: DiskStatus | null;
   notices: Notice[];
   selectedAsset: string | null;
+  assetDetail: AssetDetail | null;
   selection: Selection | null;
   helpOpen: boolean;
   menuOpen: boolean;
@@ -76,6 +78,7 @@ interface Actions {
   notify: (kind: NoticeKind, text: string) => void;
   dismiss: (id: number) => void;
   selectAsset: (id: string | null) => void;
+  refreshAsset: () => Promise<void>;
   select: (s: Selection | null) => void;
   setHelpOpen: (open: boolean) => void;
   setMenuOpen: (open: boolean) => void;
@@ -115,6 +118,7 @@ export const useApp = create<AppState>()(
       disk: null,
       notices: [],
       selectedAsset: null,
+      assetDetail: null,
       selection: null,
       helpOpen: false,
       menuOpen: false,
@@ -148,7 +152,7 @@ export const useApp = create<AppState>()(
       setProject: (project) => set((s) => {
         // a project change resets what depends on it
         const changed = (project?.id ?? null) !== (s.project?.id ?? null);
-        return changed ? { project, selectedAsset: null, selection: null } : { project };
+        return changed ? { project, selectedAsset: null, assetDetail: null, selection: null } : { project };
       }),
       applyJobs: (r) => set({
         jobs: r.jobs, counts: r.counts, paused: r.paused,
@@ -158,7 +162,16 @@ export const useApp = create<AppState>()(
         notices: [...s.notices.slice(-19), { id: noticeSeq++, kind, text, at: Date.now() }],
       })),
       dismiss: (id) => set((s) => ({ notices: s.notices.filter((n) => n.id !== id) })),
-      selectAsset: (selectedAsset) => set({ selectedAsset, selection: null }),
+      selectAsset: (selectedAsset) => { set({ selectedAsset, selection: null, assetDetail: null }); void get().refreshAsset(); },
+      refreshAsset: async () => {
+        const id = get().selectedAsset;
+        if (!id) { set({ assetDetail: null }); return; }
+        try {
+          const d = await getAsset(id);
+          if (get().selectedAsset !== id) return;
+          if (JSON.stringify(d) !== JSON.stringify(get().assetDetail)) set({ assetDetail: d });
+        } catch { /* the poller retries on its next tick */ }
+      },
       select: (selection) => set({ selection }),
       setHelpOpen: (helpOpen) => set({ helpOpen }),
       setMenuOpen: (menuOpen) => set({ menuOpen }),

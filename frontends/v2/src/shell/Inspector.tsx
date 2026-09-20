@@ -1,7 +1,11 @@
-// The right Inspector: tabs, resizable, collapsible. Info is real (the selected tile's job);
-// Post, Readiness, Version and Muse land with migration steps 4, 6 and P4.
-import { outputUrl } from "@loom/shared/api/orchestrator";
+// The right Inspector: tabs, resizable, collapsible. Info is real (the selected tile's job, and
+// the hero star for a cast candidate until the canvas actions land with step 5); Post,
+// Readiness, Version and Muse land with migration steps 4, 6 and P4.
+import { useState } from "react";
 
+import { outputUrl, starCandidate } from "@loom/shared/api/orchestrator";
+
+import { reasonOf } from "../lib/project";
 import { useApp, type InspectorTab } from "../store";
 import { Resizer } from "./Resizer";
 
@@ -20,7 +24,33 @@ export function Inspector() {
   const setInspectorWidth = useApp((s) => s.setInspectorWidth);
   const selection = useApp((s) => s.selection);
   const job = useApp((s) => (selection ? s.jobs[selection.jobId] : undefined));
+  const selectedAsset = useApp((s) => s.selectedAsset);
+  const detail = useApp((s) => s.assetDetail);
+  const refreshAsset = useApp((s) => s.refreshAsset);
+  const notify = useApp((s) => s.notify);
+  const [starring, setStarring] = useState(false);
   const current = TABS.find((t) => t.id === tab)!;
+
+  // A done stage-A output of the selected character can be starred as the hero (the Expand
+  // recipe grows from it). Toggles like v1's onStar; the shared detail refreshes after.
+  const version = detail?.versions.find((v) => v.id === detail.profile.active_version);
+  const candidate = selection && job && selectedAsset && job.stage === "A" && job.status === "done" && job.requester_id === selectedAsset
+    ? { current: version?.casting.find((c) => c.job_id === job.id && (selection.output ? c.source_output === selection.output : true)) ?? null }
+    : null;
+  const onStar = async () => {
+    if (!selection || !selectedAsset) return;
+    setStarring(true);
+    try {
+      const makeHero = !(candidate?.current?.starred ?? false);
+      await starCandidate(selectedAsset, selection.jobId, makeHero, selection.output);
+      await refreshAsset();
+      notify("ok", makeHero ? "Starred as the hero. Expand grows the dataset from it." : "Hero star removed.");
+    } catch (e) {
+      notify("err", "Could not star: " + reasonOf(e));
+    } finally {
+      setStarring(false);
+    }
+  };
 
   return (
     <aside className="inspector" aria-label="Inspector">
@@ -64,6 +94,10 @@ export function Inspector() {
               {selection.output && <><dt>file</dt><dd className="mono">{selection.output}</dd></>}
               {job.chained_from && <><dt>from</dt><dd className="mono">{job.chained_from}</dd></>}
               {job.style_id && <><dt>style</dt><dd className="mono">{job.style_id}</dd></>}
+              {candidate && <><dt>hero</dt><dd>
+                {candidate.current?.starred ? "★ this is the hero " : "not the hero "}
+                <button onClick={() => void onStar()} disabled={starring}>{candidate.current?.starred ? "Unstar" : "Star as hero"}</button>
+              </dd></>}
             </dl>
             {typeof job.params.prompt === "string" && (
               <>

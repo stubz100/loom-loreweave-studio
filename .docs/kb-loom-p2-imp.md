@@ -4472,3 +4472,63 @@ rail, the JSON tree with flux.2-dev, Preview, then Generate.
 **Next:** 3b — Expand mode (recipe preset, the cell picker with pose icons, pipeline/model,
 identity with its explanation as text, character clause, sketch, Generate dataset) and Train
 mode's form; then step 4 (Inspector tabs: Post with the stack tree).
+
+
+## ✦ M2.14 step 3b — the Composer, Expand + Train modes (2026-09-20, ~20:10–21:25 CEDT)
+
+Author: *"Let's continue"* → 3b: Expand mode (the Stage-B recipe) and the Train staging form.
+
+**Built in `frontends/v2/src/`:**
+- `compose/composeStore.ts` — two more persisted slices: `expand` (preset · cell subset ·
+  pipeline · variant/params · flux2 sampling preset · strength · realize · identity override ·
+  directive prompting · style apply+id · the sketch cell) and `train` (base family · init ·
+  trigger · steps · rank/alpha/lr/res), plus **`clauses` keyed by asset id** — v1 carried one
+  character clause across characters, so B's sweep could be built with A's clause; here the
+  clause belongs to the asset. `buildStageB()` assembles the body **exactly as v1's
+  `buildStageBBody`** did: `realize:"mixed"` carries `bg_mask`, an explicit identity override
+  rides as `identity`, `advanced_prompt` only for flux2, the cell subset as `cells`,
+  `apply_style` + `style_id`, `width/height` top-level, `seed` → `base_seed`, and
+  `num_steps / guidance_scale / negative_prompt` + the channel under `params`. Expansion style
+  defaults **off** (M2.10: the hero carries the style), strength 0.55, preset full_coverage.
+- `compose/Expand.tsx` — the column: **hero ★ + anchor** at the head (what the sweep grows from,
+  verified or not, stated); **Recipe** = preset + the **cell picker** (pose icons from
+  `GET /pose-cells`, text chips when an icon is missing; All / None; "n of m cells"; a subset
+  fires `cells`, the whole recipe omits it — byte-identical to v1); **Model** = pipeline
+  (zimage / sd35 img2img · flux2 reference-conditioned), variant, flux2 sampling preset +
+  directive-led prompting, or strength + realize with **Matte hero** (mixed is disabled until the
+  version has a bg mask — the 2026-06-11 422 cannot recur); **Identity** = one checkbox and its
+  rule **as text**, the four v1 tooltips (flux2 carries identity already · set an anchor first ·
+  verified = every face swapped · unverified = tick to run it now); **Character clause** (per
+  asset); **Style** (apply, default off); **Video sketch** folded (cell selects · motion · every ·
+  max stills · Sketch); **Advanced** = the catalog params in img2img mode; foot: **Preview**
+  (the Stage-B dry-run as a modal: recipe, jobs + split, kept target, hero, the first cell's
+  prompt and method, the post passes) and **Generate dataset**, which lands the author in
+  Curate as v1 did.
+- `compose/Train.tsx` on the **Panel's Train tab** (plan §3.6: the composer in Train mode) —
+  base family (zimage 768 / sd35 512) · start from base or the parent's promoted adapter
+  (disabled with the reason when none) · trigger · steps · advanced rank/alpha/lr/res with the
+  trained-resolution note; **Stage the run** pinned, blocked with a stated reason (finalized ·
+  no refs · offline); the version's **staged runs** with **Add to queue** and an inline
+  two-click remove (no native confirm dialogs in v2).
+- `store.ts` — the selected character's `assetDetail` moved into the app store (`refreshAsset`),
+  so the stage header, the canvas, the composer and the inspector read one copy; `poll.ts`
+  refreshes it on the same tick (hero, anchor, refs stay current; set only when changed).
+- `shell/Inspector.tsx` — **Star as hero / Unstar** on a done stage-A output of the selected
+  character, in the Info tab — the Expand recipe needs a hero and the canvas actions are step 5;
+  this bridge keeps the loop closable in v2 today.
+- `shell/Panel.tsx` — the Train placeholder is gone; Composer switches Cast (Sandbox / stage A)
+  ↔ Expand (from B on).
+
+**Verified:** v2 `tsc` + `vite build`; **+5 tests** in `test_v2_frame.py` (27 with the grouped
+view): the mode switch + Train tab; the Stage-B body keys pinned **against the server's
+`StageBRequest` fields** (extra=forbid: a stray key would be a 422 at fire time) and its
+conditionals against v1's builder + the two per-asset defaults; the identity rules present as
+text and every Stage-B call reached; the staging fields pinned against the server's model; the
+shared asset detail (no `getAsset` on the canvas, the poller refreshes, the star bridge). No
+live Stage-B dry-run this time: it needs a version with a starred hero, which the temporary
+orchestrator has no cheap way to fabricate; the key pin stands in. Not click-tested — the
+author's next launch: select a character, star a hero in Info, Expand in the strip, pick cells,
+Preview, Generate dataset; Train tab → Stage the run.
+
+**Next:** step 4 — Inspector tabs (Post = the stack tree with tombstones, Version), then step 5
+(canvas actions: star/anchor/keep/reject on the tile, loupe, keyboard).

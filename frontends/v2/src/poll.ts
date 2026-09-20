@@ -32,6 +32,7 @@ export function usePolling(): void {
         if (stopped) return;
         s.setProject(p.open ? p : null);
         s.applyJobs(j);
+        if (useApp.getState().selectedAsset) await s.refreshAsset();   // hero, anchor, refs stay current
         const ds = j.disk?.state ?? null;
         if (ds && lastDiskState && ds !== lastDiskState) {
           if (ds === "hard") s.notify("err", "Disk hard-stop: new jobs are held until space is freed.");

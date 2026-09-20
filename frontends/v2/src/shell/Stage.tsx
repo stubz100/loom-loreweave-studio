@@ -1,9 +1,7 @@
 // The centre: stage header, the one contextual Strip, and the Canvas. The canvas already
 // draws a real read-only grid of the selected scope's finished images (the review view of
 // migration step 5 arrives on top of it: zoom is live, selection is live, actions are not).
-import { useEffect, useState } from "react";
-
-import { getAsset, outputUrl, type AssetDetail, type Job } from "@loom/shared/api/orchestrator";
+import { outputUrl, type Job } from "@loom/shared/api/orchestrator";
 
 import { STAGE_LETTER, useApp, type Stage as StageId, type View } from "../store";
 import { Start } from "./Start";
@@ -48,14 +46,7 @@ function AssetsStage() {
   const selection = useApp((s) => s.selection);
   const jobs = useApp((s) => s.jobs);
   const select = useApp((s) => s.select);
-  const [asset, setAsset] = useState<AssetDetail | null>(null);
-
-  useEffect(() => {
-    if (!selectedAsset) { setAsset(null); return; }
-    let alive = true;
-    getAsset(selectedAsset).then((a) => { if (alive) setAsset(a); }).catch(() => { if (alive) setAsset(null); });
-    return () => { alive = false; };
-  }, [selectedAsset]);
+  const asset = useApp((s) => s.assetDetail);
 
   const versionId = asset?.profile.active_version ?? null;
   const activeVersion = asset?.versions.find((v) => v.id === versionId) ?? null;

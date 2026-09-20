@@ -4342,3 +4342,6 @@ Mistral encoder?"* Not until now — the dev run above used Mistral (dev's only 
 
 **Consequence for M2.16:** the JSON tree needs no special handling on the ggml backend — the
 serialised string goes straight to `-p`. `bench-cpu.ps1 flux2dev -Prompt '<json>'` reproduces it.
+
+
+*Addendum 20:05 CEDT — v2 showed "offline — TypeError: Failed to fetch" on first launch (author). Cause: the frontends move added the v2 dev origin (:1421) to the CORS DEFAULTS in `config.py`, but `.env` pins `LOOM_CORS_ORIGINS` explicitly and that list still named :1420 only — an env value overrides the defaults, so the browser blocked every response. Fixed in `.env` (both :1421 origins added; verified with an Origin-header probe: `Access-Control-Allow-Origin: http://localhost:1421` now returned). The seed page now explains the two causes of that browser message (nothing listening vs CORS allowlist) with the fix inline. The orchestrator reads `.env` at startup — restart the launcher after the change.*

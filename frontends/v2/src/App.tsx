@@ -30,6 +30,13 @@ export default function App() {
 
   useEffect(() => { log.info("v2 seed mounted →", orchestratorUrl()); }, []);
 
+  // A browser reports "Failed to fetch" both when nothing listens at the URL and when the
+  // response was blocked by CORS (the orchestrator's allowlist must name THIS page's origin —
+  // LOOM_CORS_ORIGINS in .env; the v2 dev server is :1421). Say so, since the message alone
+  // cannot tell the two apart (author hit exactly this on 2026-09-20).
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const unreachable = error && /Failed to fetch|NetworkError|Load failed/i.test(error);
+
   return (
     <div className="seed">
       <h1>Loreweave Studio <span className="tag">v2</span></h1>
@@ -46,6 +53,17 @@ export default function App() {
             ? <span className="ok">● online · v{health.app_version} · schema {health.schema_version} · up {Math.round(health.uptime_s)} s</span>
             : <span className="err">● offline{error ? ` — ${error}` : ""}</span>}
         </dd>
+        {unreachable && (
+          <>
+            <dt>why</dt>
+            <dd className="muted">
+              either nothing is listening at that URL (start it: <code>.\loom-dev.ps1 -Frontend v2</code>),
+              or the orchestrator's CORS allowlist does not include this page's origin
+              (<code>{origin}</code> must appear in <code>LOOM_CORS_ORIGINS</code> in <code>.env</code>;
+              restart the orchestrator after changing it).
+            </dd>
+          </>
+        )}
       </dl>
     </div>
   );

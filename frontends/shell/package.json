@@ -1,0 +1,16 @@
+{
+  "name": "loreweave-shell",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Loreweave Studio (loom) — the one Tauri 2 desktop shell. Wraps a frontend chosen by config: v1 (the frozen reference, default) or v2 (the new UI, kb-loom-ui.md) via tauri.v2.conf.json.",
+  "scripts": {
+    "dev": "tauri dev",
+    "dev:v2": "tauri dev --config tauri.v2.conf.json",
+    "build": "tauri build",
+    "build:v2": "tauri build --config tauri.v2.conf.json",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}

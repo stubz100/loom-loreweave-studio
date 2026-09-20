@@ -57,9 +57,10 @@ fn resolve_python() -> String {
 fn spawn_orchestrator(app: &tauri::AppHandle, child_slot: ChildSlot, endpoint: Arc<Mutex<OrchestratorEndpoint>>) {
     let python = resolve_python();
     // cwd must be the app-repo root (it holds the `orchestrator/` package), i.e.
-    // two levels up from src-tauri/ (src-tauri -> app -> <app repo root>). The
-    // built exe should set LOOM_APP_REPO absolutely.
-    let cwd = std::env::var("LOOM_APP_REPO").unwrap_or_else(|_| "../..".into());
+    // three levels up from src-tauri/ (src-tauri -> shell -> frontends -> <app repo root>;
+    // the shell moved under frontends/ on 2026-09-20, kb-loom-ui.md). The built exe should
+    // set LOOM_APP_REPO absolutely.
+    let cwd = std::env::var("LOOM_APP_REPO").unwrap_or_else(|_| "../../..".into());
 
     let child = Command::new(&python)
         .args(["-m", "orchestrator.main"])

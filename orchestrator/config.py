@@ -117,8 +117,10 @@ def _resolve_cors_origins() -> list[str]:
     if env:
         return [o.strip() for o in env.split(",") if o.strip()]
     return [
-        "http://localhost:1420",
+        "http://localhost:1420",         # frontends/v1 (Vite)
         "http://127.0.0.1:1420",
+        "http://localhost:1421",         # frontends/v2 (Vite) — kb-loom-ui.md, 2026-09-20
+        "http://127.0.0.1:1421",
         "http://tauri.localhost",
         "https://tauri.localhost",
     ]

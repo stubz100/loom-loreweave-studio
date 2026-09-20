@@ -103,8 +103,8 @@ import {
   type StyleInfo,
   type StylesInfo,
   type StyleEntry,
-} from "./lib/orchestrator";
-import { log } from "./lib/log";
+} from "@loom/shared/api/orchestrator";
+import { log } from "@loom/shared/api/log";
 import TrainPanel from "./TrainPanel";
 import RerunPanel from "./RerunPanel";
 import GroupedGrid, { TileRef } from "./GroupedGrid";

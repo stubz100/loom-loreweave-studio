@@ -16,7 +16,7 @@ import {
   getPoseCells,
   poseIconUrl,
   setPoseIcon,
-} from "./lib/orchestrator";
+} from "@loom/shared/api/orchestrator";
 
 const PRESETS = ["npc_lite", "portrait_heavy", "full_body", "full_coverage", "comprehensive"];
 const DEFAULT_SUBJECT = "a simple wooden mannequin figure, plain light grey background";

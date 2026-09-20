@@ -35,8 +35,9 @@ from fastapi.testclient import TestClient
 
 from orchestrator.config import CONFIG
 
-APP = Path(__file__).resolve().parents[2] / "app" / "src"
-TAURI = Path(__file__).resolve().parents[2] / "app" / "src-tauri" / "src"
+APP = Path(__file__).resolve().parents[2] / "frontends" / "v1" / "src"
+TAURI = Path(__file__).resolve().parents[2] / "frontends" / "shell" / "src-tauri" / "src"
+SHARED = Path(__file__).resolve().parents[2] / "frontends" / "shared"
 
 
 @pytest.fixture()
@@ -167,10 +168,10 @@ def test_production_bundle_carries_no_token_fallback():
     """`import.meta.env?.X` makes Vite inline the WHOLE env object — token included — into
     the built bundle. Only per-key `import.meta.env.KEY` reads remain, and the token read is
     inside a DEV-only branch, so a production build contains no fallback at all."""
-    for f in ("lib/orchestrator.ts", "lib/log.ts"):
-        src = (APP / f).read_text(encoding="utf-8")
+    for f in ("api/orchestrator.ts", "api/log.ts"):
+        src = (SHARED / f).read_text(encoding="utf-8")
         assert "import.meta.env?." not in src, f
-    orch = (APP / "lib/orchestrator.ts").read_text(encoding="utf-8")
+    orch = (SHARED / "api/orchestrator.ts").read_text(encoding="utf-8")
     assert "if (import.meta.env.DEV)" in orch
     assert "import.meta.env.VITE_LOOM_ORCH_TOKEN" in orch
     rs = (TAURI / "lib.rs").read_text(encoding="utf-8")

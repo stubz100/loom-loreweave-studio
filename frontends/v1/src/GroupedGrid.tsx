@@ -23,7 +23,7 @@
 
 import { useMemo, useState } from "react";
 
-import { Job, RefItem } from "./lib/orchestrator";
+import { Job, RefItem } from "@loom/shared/api/orchestrator";
 
 /** One renderable tile — the same shape the flat grid's `Cell` uses, so `renderTile` is
  *  literally the same function in both views (`refItem` = a durable curated ref with no job

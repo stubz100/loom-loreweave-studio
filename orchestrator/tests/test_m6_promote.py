@@ -386,7 +386,7 @@ def test_stage_d_grid_shows_previews_instead_of_the_sandbox(client):
     assert pjob["stage"] == "D"                           # half 2 — the missed one
 
     app_tsx = (Path(__file__).resolve().parents[2]
-               / "app" / "src" / "App.tsx").read_text(encoding="utf-8")
+               / "frontends" / "v1" / "src" / "App.tsx").read_text(encoding="utf-8")
     # gridStage maps D to "D" (not the "A"/"B" fallback that stranded the tile)
     assert 'stage === "D" ? "D"' in app_tsx
     # and stage D no longer short-circuits its grid to empty
@@ -425,7 +425,7 @@ def test_stage_d_grid_admits_only_image_producing_jobs(client):
     assert trainer["profile_version_id"] == version_id
 
     app_tsx = (Path(__file__).resolve().parents[2]
-               / "app" / "src" / "App.tsx").read_text(encoding="utf-8")
+               / "frontends" / "v1" / "src" / "App.tsx").read_text(encoding="utf-8")
     assert 'j.pipeline !== "zimage_trainer" && j.mode !== "score"' in app_tsx
     assert 'gridStage !== "D" || makesAnImage(j)' in app_tsx
 

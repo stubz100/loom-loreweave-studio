@@ -5,7 +5,7 @@
 // component (pre-M1 review #4: new feature families stay OUT of the App.tsx monolith).
 
 import { useEffect, useState } from "react";
-import { Job } from "./lib/orchestrator";
+import { Job } from "@loom/shared/api/orchestrator";
 
 interface RerunPanelProps {
   job: Job;                                            // terminal (done/failed/canceled)

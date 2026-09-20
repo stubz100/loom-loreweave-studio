@@ -17,7 +17,8 @@ from PIL import Image
 
 from orchestrator.config import CONFIG
 
-APP = Path(__file__).resolve().parents[2] / "app" / "src"
+APP = Path(__file__).resolve().parents[2] / "frontends" / "v1" / "src"
+SHARED = Path(__file__).resolve().parents[2] / "frontends" / "shared"
 
 
 @pytest.fixture()
@@ -274,7 +275,7 @@ def test_deleting_an_image_refetches_the_stacks():
     assert "if (!Object.keys(jobs).length) return;" in app
 
     # the step type carries the tombstone flag the effect keys on
-    api = (APP / "lib" / "orchestrator.ts").read_text(encoding="utf-8")
+    api = (SHARED / "api" / "orchestrator.ts").read_text(encoding="utf-8")
     assert "deleted?: boolean;" in api
 
     # group delete no longer promises a cascade the tombstone rule removed

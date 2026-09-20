@@ -32,7 +32,7 @@ import {
   queueStagedTraining,
   setCaptionOverride,
   stageZimageLora,
-} from "./lib/orchestrator";
+} from "@loom/shared/api/orchestrator";
 
 interface TrainPanelProps {
   assetId: string;

@@ -177,7 +177,11 @@ loom-loreweave-studio/
 ├── trainers/          # P2 LoRA training runtime (M1/M2)
 │   ├── ai-toolkit/    #   VENDORED ostris/ai-toolkit snapshot (pinned; LOOM_VENDOR.md = seams/license)
 │   └── loom_zimage_lora.py  # thin queue-facing wrapper: manifest + real checkpoint/resume discovery
-├── app/               # Tauri 2 + React/TS desktop shell
+├── frontends/         # UI — layout per .docs/kb-loom-ui.md (2026-09-20)
+│   ├── shell/         #   the one Tauri 2 desktop shell (src-tauri); wraps v1 or v2 by config
+│   ├── shared/api/    #   the typed orchestrator client + logger, imported by every frontend
+│   ├── v1/            #   the current React/TS frontend — frozen reference (Vite :1420)
+│   └── v2/            #   the new frontend, built from scratch on the same API (Vite :1421)
 │   ├── src/           #   React UI (three-pane shell + job-queue dock + batch grid + project bar)
 │   └── src-tauri/     #   Rust: single-instance, orchestrator sidecar spawn + kill, READY handshake
 └── orchestrator/      # Python FastAPI service (127.0.0.1)
@@ -248,9 +252,9 @@ $env:LOOM_VENV_PYTHON = "..\..\.venv\Scripts\python.exe"
 # GET /health -> {"status":"ok",...} ; POST /generate {"prompt":"…","count":3}
 ```
 
-**2. UI only** (from `app/`): `npm install` then `npm run dev` → http://localhost:1420.
+**2. UI only** (from `frontends/v1/`, or `frontends/v2/` for the new one): `npm install` then `npm run dev` → http://localhost:1420.
 
-**3. Full desktop app** (from `app/`): `npm run tauri dev` — boots the window, spawns
+**3. Full desktop app** (from `frontends/shell/`; `npm run dev:v2` wraps the new frontend): `npm run dev` (or `npm run dev:v2`) — boots the window, spawns
 the orchestrator as a sidecar, and kills it on exit. (Requires the Rust toolchain.)
 
 ## Known gaps (P0, by milestone)

@@ -245,15 +245,15 @@ hf_cache/
 # M4 durable queue state (relocated to <project>/jobs/ at M5)
 .loom_state/
 
-# Node / Vite (app/)
+# Node / Vite (frontends/*)
 node_modules/
-app/dist/
-app/.vite/
+frontends/*/dist/
+frontends/*/.vite/
 *.tsbuildinfo
 
-# Tauri / Rust build output (app/src-tauri/)
-app/src-tauri/target/
-app/src-tauri/gen/
+# Tauri / Rust build output (frontends/shell/src-tauri/)
+frontends/shell/src-tauri/target/
+frontends/shell/src-tauri/gen/
 
 # Project workspaces are NOT part of the app repo (they live on the work disk,
 # e.g. F:\_tmp\<project>\) — never commit one if it lands here.

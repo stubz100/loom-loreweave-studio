@@ -2,7 +2,7 @@
 .dev_out/
 .loom_state/
 .pytest_cache/
-app/dist/
+frontends/*/dist/
 app/src-tauri/gen/
 app/src-tauri/target/
 **/__pycache__/

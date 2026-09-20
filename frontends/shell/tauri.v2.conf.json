@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "frontendDist": "../../v2/dist",
+    "devUrl": "http://localhost:1421",
+    "beforeDevCommand": { "script": "npm run dev", "cwd": "../../v2" },
+    "beforeBuildCommand": { "script": "npm run build", "cwd": "../../v2" }
+  }
+}

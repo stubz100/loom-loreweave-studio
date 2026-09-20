@@ -4182,3 +4182,34 @@ new adapter; needs the author's explicit go to run CPU inference during the RMA)
 frame (plan §6 step 1) — or the two side by side, they do not touch the same files.
 
 *Erratum (same entry, line above): the cached path reads `app/src-tauri/target/debug/build/tauri-<hash>/out/permissions/...` — a Python escape turned `	` into a tab in the first write; the journal is append-only, so it is corrected here rather than rewritten.*
+
+
+## 🚀 `loom-dev.ps1` — one command for backend + frontend, and the test suite stops clobbering app state (2026-09-20, ~17:20–17:50 CEDT)
+
+Author: *"/app path was useful to start both front and backends, now both need to start
+separately — can we construct a file that starts both?"* Built **`loom-dev.ps1`** (+ `loom-dev.cmd`
+wrapper) at the app-repo root: browser mode (default) starts `python -m orchestrator.main`, waits
+for `/health`, runs the chosen frontend's Vite server in the foreground (`-Frontend v1|v2`,
+:1420/:1421) and opens the browser; Ctrl+C stops Vite and the orchestrator gets a graceful
+`POST /shutdown` with the dev token from `.env.local` (kill after 10 s). An orchestrator that
+already answers is reused, so a second launcher (v2 beside v1) attaches to the same one.
+`-Mode tauri` hands over to `npm run dev` / `dev:v2` in `frontends/shell`, which spawns the
+sidecar itself (the old one-command path). Settings follow the orchestrator's precedence
+(env > .env.local > .env). README run section documents it as step 0.
+
+⚠ **Two things found on the way:**
+1. In PowerShell a bare `npm` resolves to the **`npm.ps1` shim, which mangles the argument
+   list** — npm reported `Unknown command: "pm"` and the first smoke run died (its `finally`
+   still shut the orchestrator down gracefully, which was the proof that path works). `npm.cmd`
+   passes the arguments intact; the launcher calls it explicitly.
+2. **The test suite shared the real `.loom_state/` with the app.** `app.json` (recents +
+   last-opened project) held 20 `loom/testing/...` entries and the author's `stubz001` project
+   had been pushed out entirely — the orchestrator opened a *test* folder at launch. `conftest`
+   now sets `LOOM_STATE_DIR` to `loom/testing/_state` for the session (`CONFIG.state_dir` reads
+   it lazily), verified: a test run writes 15 recents there and leaves the real file alone.
+   The real `app.json` was repaired (test entries dropped, `stubz001` restored as active). The
+   smoke test's hard teardown (`taskkill /T`) means the next real launch may show the queue
+   as resume-paused — one click.
+
+Smoke-tested end to end: orchestrator + v1 up in 4 s (project `stubz001`), a second launcher
+for v2 reused it (1 s), teardown left :8765/:1420/:1421 free.

@@ -4111,3 +4111,36 @@ tests were updated to the new wording/lines they pin.
 - **Rig-owed (visual):** the tombstone rendering in the flat grid/panel and the re-fire
   flow on a real stack; the flux2 schedule fix's visible result and the sd35 preview from
   the 2026-08-09 ledger still stand.
+
+
+## 📐 UI plan drafted — `kb-loom-ui.md` (2026-09-20, ~14:40–15:20 CEDT)
+
+Author's call after the hardening pass: *"the image generation part is a key component … I
+don't think it is used either correctly, or efficiently"* and, on the shell, *"the pane
+arrangements are very ineffective … before we start chopping and changing things, I'd like to
+create a documented UI plan, where we evaluate each current (and future) function's arrangement
+on the UI with pros/cons"*, taking Canva / Photoshop as references. **No code touched.**
+
+Inputs: a read-only inventory of the whole frontend at HEAD `ce70c60` (zone map with CSS sizes,
+every control group with its App.tsx line, 20 code-visible pain points, and the finding that no
+rail entry, comment or type reserves room for L3–L5 or Muse), the original shell drawn in
+`kb-storyboard01.md` §6.1–6.7, the M0a reset in `kb-loom-p2.md` §12, and the L3/L4/L5/Muse
+sections of the P3–P5 specs.
+
+**Verdict recorded in the doc:** the *content* model is right (tiles, grouped tree, post stack,
+JSON tree, readable L1 editors); the *frame* froze at M0a — two fixed 240 px columns around a
+stage column that absorbed every control bar (Stage B = one 14-control wrapping row + a second
+bar + drawer + inline picker + strip above a fixed 3-column grid), a 240 px inspector hosting
+four stacked panels, project paths typed into `window.prompt`, no error surface in L1 at all.
+**Plan:** finish the spec's Navigator · Stage · Inspector triad with what we learned — top bar
+with workspace tabs + status cluster + banner slot; 48 px icon rail + resizable/collapsible
+Panel (Library · **Compose** · Train, primary action pinned at the foot — the JSON tree and the
+Stage-B recipe are columns, not bars); one contextual Strip (stage verbs · view switch · filters
+· selection bar · zoom); the grid as a responsive Canvas with Loupe/Compare, Captions view and a
+coming **Edit mode** (mask painter → the inpaint tool); a tabbed resizable Inspector (Info · Post
+· Readiness · Version · Muse); a Dock that collapses to one line and expands into a Jobs pane
+(later the L3/L5 timeline zone). Function-by-function pros/cons in §3, two rejected alternatives
++ the hybrid in §4, three workflows in §5, an 8-step GPU-free migration (step 0 = the App.tsx
+split the review already named) in §6, and **D1–D10 for the author** in §7 — recommended
+scheduling: **M2.14 — shell overhaul**, before P3 opens (an M0-class preflight; no P0–P5 scope
+change, R165). The CPU/ggml spike follows the plan per the author's sequencing.

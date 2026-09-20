@@ -4144,3 +4144,39 @@ coming **Edit mode** (mask painter → the inpaint tool); a tabbed resizable Ins
 split the review already named) in §6, and **D1–D10 for the author** in §7 — recommended
 scheduling: **M2.14 — shell overhaul**, before P3 opens (an M0-class preflight; no P0–P5 scope
 change, R165). The CPU/ggml spike follows the plan per the author's sequencing.
+
+
+## 📐 UI plan ADOPTED + the frontends move (2026-09-20, ~15:40–16:30 CEDT) — code `19a73cc`
+
+Author: *"I agree with all your recommendations in the decisions list (Chapter 7)"* — **D1–D10
+accepted as recommended** — with one amendment: *"as the front-end is independent from the
+backend, we should be able to build the new one from scratch and attach it to the same API rail
+as the current one … move all the files to a separate folder (both old and new front ends)"*.
+Feasibility checked first (the only path couplings: the Tauri config's `frontendDist` /
+before-commands, the shell's sidecar cwd, four ignore entries, three README lines, three tests'
+`APP` constants, the CORS allowlist) → author: *"I say go"*.
+
+**Built (one session):** `app/` → **`frontends/`** — `shell/` (the one Tauri 2 shell; `npm run
+dev` wraps v1, `npm run dev:v2` wraps v2 through a `tauri.v2.conf.json` overlay: frontendDist,
+devUrl, before-commands with `cwd`; sidecar cwd default now `../../..`, `LOOM_APP_REPO` still
+wins) · `shared/api/` (`orchestrator.ts` + `log.ts` — 83 functions, 52 types — imported by both
+frontends as `@loom/shared/api/*` via a vite alias + tsconfig `paths`, no `baseUrl`) · `v1/`
+(today's frontend, **frozen** as the reference/fallback; imports re-pointed, `envDir` two levels
+up, the Tauri CLI removed from its package) · `v2/` (the new frontend, **seeded**: React +
+zustand, Vite :1421, a health probe over the shared client — the frame is next). The
+orchestrator's CORS admits :1421; ignores/README/tests re-pointed; `kb-loom-ui.md` carries the
+Adopted note (layout, consequences: migration step 0 = the App.tsx split is REPLACED by this
+move; steps 1–7 are v2's build order; the §2 inventory is v2's parity checklist; v1's contract
+tests stay until v1 is deleted). **Scheduled as M2.14 — v2 frontend**, before P3.
+
+**Gates:** v1 `tsc` + `vite build` from its new home (token still absent from `dist/`); v2 `tsc`
++ `vite build`; `cargo check` from `frontends/shell/src-tauri` — ⚠ it first failed on the
+MOVED `target/`: cargo's build-script caches hold absolute output paths from the old location
+(`app\src-tauri	arget\...\permissions\...`), so `target/debug/build/tauri-*` +
+`loreweave-studio-*` had to be deleted before the check passed (recorded for the next move);
+backend suite **437 passed · 2 skipped** under the no-torch guard (36 torch-bound deselected).
+Git recorded the move as 74 renames.
+
+**Next, per the author's sequencing:** the **CPU/ggml spike** (stable-diffusion.cpp + GGUF as a
+new adapter; needs the author's explicit go to run CPU inference during the RMA), then v2's
+frame (plan §6 step 1) — or the two side by side, they do not touch the same files.

@@ -6,6 +6,26 @@ where we evaluate each current (and future) function's arrangement on the UI wit
 Baseline = the UI at HEAD `ce70c60` (inventory in §2). Nothing here is built. The decisions the
 author still owns are collected in §7 as **D1–D10**; everything else is a recommendation.*
 
+> **⭐ Adopted 2026-09-20 (author).** D1–D10 accepted exactly as recommended (§7). One amendment
+> from the author, also adopted: **the new UI is built from scratch beside the old one, on the
+> same orchestrator API**, instead of refactoring App.tsx in place. Both frontends moved into
+> their own tree the same day (code: the "frontends" commit; journal: "📐 UI plan adopted"):
+>
+> ```
+> frontends/
+>   shell/        the ONE Tauri 2 shell (src-tauri) — wraps v1 by default, v2 via
+>                 `npm run dev:v2` / `build:v2` (tauri.v2.conf.json overlay)
+>   shared/api/   the typed orchestrator client + logger (83 functions, 52 types),
+>                 imported by both frontends as `@loom/shared/api/*`
+>   v1/           today's frontend — FROZEN as the reference and fallback (Vite :1420)
+>   v2/           the new frontend — seeded (health probe over the shared client, Vite :1421)
+> ```
+>
+> Consequences for this plan: migration **step 0 (the App.tsx split) is replaced** by the move
+> + seed above — v1 is never refactored; **steps 1–7 are v2's build order** (frame first); the
+> §2 inventory is v2's parity checklist; the frontend contract tests re-point to v2 feature by
+> feature and v1's stay until v1 is deleted. Scheduled as **M2.14 — v2 frontend**, before P3.
+
 **Verdict in one paragraph.** The good part is the *content* model — image tiles, the grouped
 operation/derivation tree, the postprocess stack, the JSON prompt tree, the readable L1 editors.
 The bad part is the *frame*: the shell froze at the M0a "File menu + labelled rail" reset and
@@ -299,7 +319,7 @@ contract tests in `orchestrator/tests` pin the source, `tsc` + `vite build` gate
 
 | # | Step | What it delivers | Verify without GPU |
 | --- | --- | --- | --- |
-| **0** | **Split App.tsx** into `Shell`, `TopBar`, `Rail`, `Panel/*` (Library, Compose, Train), `Strip`, `Canvas/*` (Grid, Grouped, Captions, Loupe), `Inspector/*` (Info, Post, Readiness, Version), `Dock`, `dialogs/*`, one `useShortcuts` dispatcher, one `useLayout` (persisted sizes) — behaviour-preserving | the enabler the review named ("the cheapest seam"); also fixes the global `busy` flag, the `.pp-steps` collision, the dead CSS, the `.sm` no-ops | `tsc`, `vite build`, the existing FE contract tests, a click-through of every stage in the browser dev build |
+| **0** | ~~Split App.tsx~~ → **DONE 2026-09-20 as the move + seed** (see the Adopted note at the top): `app/` → `frontends/{shell, shared, v1}`; `frontends/v2` scaffolded on the shared client; one shell wraps either by config overlay; the orchestrator's CORS admits the v2 dev port; tests and README re-pointed | v1 frozen as reference/fallback — never refactored; v2 starts clean with a real state layer (zustand) | v1 `tsc` + `vite build` from its new home (token still absent from `dist/`), v2 `tsc` + `vite build`, `cargo check` from `frontends/shell/src-tauri`, the backend suite under the torch guard |
 | **1** | **Frame**: top bar with workspace tabs (L3–L5 disabled) + status cluster + banner slot; icon rail + resizable/collapsible Panel; resizable/collapsible Inspector; dock collapsed/expanded with a handle; layout memory; **toast + banner system** (fixes the L1 blind spot) | the author's two complaints (unused rail, squeezed inspector) fixed structurally | resize/collapse/persist across reload; an L1 style-sample error now shows |
 | **2** | **Project dialogs**: `tauri-plugin-dialog` folder picker for Open/New; New-project modal with the estimate inline; **Start screen** with visual recents | "painful project open" fixed | dev-build fallback to the typed path; a recents screen with thumbnails |
 | **3** | **Composer panel** (Cast / Expand / Train modes; Sandbox = Cast) with the pinned foot; **stage header**; **strip** (stage verbs, view switch, filters, selection bar, zoom); the bars, drawers, inline picker, sketch bar and style bar leave the canvas column | the grid becomes the canvas | every control reachable in its new home; Stage-B recipe fires the same request (the pre-flight modal proves it byte-for-byte) |
@@ -334,6 +354,8 @@ the plan-consistency rule requires when it is adopted.
 | **D8** | Dock as the future **timeline** zone (L3/L5) vs timelines in the canvas | dock | matches Resolve and the spec's always-visible queue; the canvas stays the compositor/preview |
 | **D9** | Muse as an **Inspector tab** vs a separate side sheet | tab | keeps the selection link the spec requires |
 | **D10** | Schedule: adopt as **M2.14** before P3 (recommended), or run steps 0–2 now and the rest alongside P3 | M2.14, steps 0–7; step 8 with P3 | half a shell is worse than the old one; P3's compositor and timeline need the frame first |
+
+*All ten accepted as recommended by the author on 2026-09-20, plus the from-scratch amendment (see the Adopted note at the top).*
 
 ---
 

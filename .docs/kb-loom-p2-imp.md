@@ -4180,3 +4180,5 @@ Git recorded the move as 74 renames.
 **Next, per the author's sequencing:** the **CPU/ggml spike** (stable-diffusion.cpp + GGUF as a
 new adapter; needs the author's explicit go to run CPU inference during the RMA), then v2's
 frame (plan §6 step 1) — or the two side by side, they do not touch the same files.
+
+*Erratum (same entry, line above): the cached path reads `app/src-tauri/target/debug/build/tauri-<hash>/out/permissions/...` — a Python escape turned `	` into a tab in the first write; the journal is append-only, so it is corrected here rather than rewritten.*

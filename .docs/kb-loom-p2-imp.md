@@ -4428,3 +4428,47 @@ Not click-tested — the author's next launch (default = v2 in the desktop windo
 New project… should open the native folder picker on Browse….
 
 **Next (plan §6):** step 3, the Composer — generation moves into v2.
+
+
+## ✦ M2.14 step 3a — the Composer, Cast / Sandbox half (2026-09-20, ~21:50–22:40 CEDT)
+
+Author: *"Let's continue"* → step 3, taken in two halves: **3a** = the Cast / Sandbox composer
+(the author's daily loop: flux.2-dev JSON t2i), **3b** = Expand (Stage-B recipe) + Train mode.
+
+**Built in `frontends/v2/src/compose/`:**
+- `composeStore.ts` — the Composer's own zustand store, **persisted under `loom.v2.compose`**
+  (pipeline, prompt, JSON tree, count/candidates/ideation, sampling preset, advanced params,
+  style choice) — a half-written prompt or tree survives a reload, the one thing a tool must
+  never lose. Loads the model catalog and the project's styles once. `buildRequest()` assembles
+  the request **exactly as v1's `buildGenerateReq` did**: the same `TOP_LEVEL` split (width /
+  height / seed / num_steps / guidance_scale / negative_prompt / model_name top-level, the rest
+  in `params`), the JSON tree winning over the text prompt when flux.2-dev is the effective
+  model, `num_candidates` + `ideation_mode` for multi, `asset_id` + `stage: "A"` when a
+  character is selected, `apply_style` + optional `style_id`. A sampling preset sets
+  `model_name` / `num_steps` / `guidance` like v1; hand-editing any of them makes it Custom.
+- `Flux2JsonTree.tsx` — the dev JSON tree as a proper column form (scene · subjects · camera
+  with the pose-directive picker · lighting · style · mood · palette · raw JSON view/apply);
+  serialise/parse come from the shared client — one source for the shape.
+- `ParamControls.tsx` — the catalog-driven tunables, grouped as v1 grouped them, model- and
+  mode-gated, unset = the model default.
+- `Composer.tsx` — the column: scope line (Sandbox / Cast for the selected character, stage A),
+  Model (pipeline · variant · flux2 sampling preset · the distilled-guidance note), Prompt
+  (text, or the JSON tree when dev is selected), How many, Style (sample chip · picker ·
+  apply), Advanced (collapsible, count of set fields, Reset); **Preview** and
+  **Generate / Cast pinned at the foot**, disabled with a stated reason (no project · offline ·
+  disk hard-stop). Preview = the same request dry-run, shown as a modal (pipeline, jobs, the
+  resolved prompt, the worker command folded) with **Run this**. Server refusals (412 weights,
+  422 catalog) show inline via `reasonOf`.
+- Panel: the Compose tab now mounts it (the placeholder is gone).
+
+**Verified:** v2 `tsc` + `vite build` (token absent); **+3 tests** (composer mounted + persisted
+keys; the request contract pinned against v1's own `TOP_LEVEL` set, the dev/JSON rule, the multi
+fields, the Stage-A scope, the preset fields; the tree uses the shared serializer only); and a
+**live dry-run** against a temporary orchestrator of the two shapes the builder produces — a
+Sandbox flux.2-dev JSON cast with a preset applied, and a multi cast — both accepted, the
+resolved prompt echoed. Not click-tested; the author's next launch is it — Compose ✦ in the
+rail, the JSON tree with flux.2-dev, Preview, then Generate.
+
+**Next:** 3b — Expand mode (recipe preset, the cell picker with pose icons, pipeline/model,
+identity with its explanation as text, character clause, sketch, Generate dataset) and Train
+mode's form; then step 4 (Inspector tabs: Post with the stack tree).

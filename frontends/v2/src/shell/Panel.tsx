@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { listAssets, type AssetSummary } from "@loom/shared/api/orchestrator";
 
+import { Composer } from "../compose/Composer";
 import { useApp, type PanelTab } from "../store";
 import { Resizer } from "./Resizer";
 
@@ -26,8 +27,7 @@ export function Panel() {
         ))}
       </div>
       {tab === "library" && <Library />}
-      {tab === "compose" && <Placeholder title="Compose" step="3"
-        text="The prompt, the JSON prompt tree, the model picker and the Stage-B recipe move in here as a column, with Generate pinned below." action="Generate" />}
+      {tab === "compose" && <Composer />}
       {tab === "train" && <Placeholder title="Train" step="6"
         text="The staging form (base, init, trigger, steps, advanced) moves in here; staged runs and training progress go to the dock." action="Stage" />}
       <Resizer edge="right" size={width} onResize={setPanelWidth} />

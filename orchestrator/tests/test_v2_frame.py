@@ -110,3 +110,47 @@ def test_start_screen_replaces_the_empty_canvas():
     start = _read(V2 / "shell" / "Start.tsx")
     assert "listProjects()" in start and "start-card" in start
     assert "Escape" in _read(V2 / "shell" / "Shortcuts.tsx") and "s.dialog" in _read(V2 / "shell" / "Shortcuts.tsx")
+
+
+# --- migration step 3a: the Cast / Sandbox composer -----------------------------------------
+
+COMPOSE = V2 / "compose"
+V1 = ROOT / "frontends" / "v1" / "src"
+
+
+def test_composer_is_mounted_and_owns_its_persisted_state():
+    for name in ("Composer", "Flux2JsonTree", "ParamControls"):
+        assert (COMPOSE / f"{name}.tsx").is_file(), name
+    assert "<Composer />" in _read(V2 / "shell" / "Panel.tsx")
+    store = _read(COMPOSE / "composeStore.ts")
+    assert 'name: "loom.v2.compose"' in store          # a half-written prompt survives a reload
+    for key in ("prompt", "tree", "params", "pipeline", "sampling", "styleId"):
+        assert key in store
+
+
+def test_composer_builds_the_same_request_v1_sends():
+    """The server must see no change: the same top-level/params split, the JSON tree winning
+    over the text prompt when flux.2-dev is selected, and multi's candidates/ideation fields."""
+    store = _read(COMPOSE / "composeStore.ts")
+    v1 = _read(V1 / "App.tsx")
+    v2_top = set(re.search(r'TOP_LEVEL = new Set\(\[(.*?)\]\)', store, re.S).group(1).replace('"', "").replace("
+", "").split(","))
+    v1_top = set(re.search(r'TOP_LEVEL = new Set\(\[(.*?)\]\)', v1, re.S).group(1).replace('"', "").replace("
+", "").split(","))
+    assert {x.strip() for x in v2_top if x.strip()} == {x.strip() for x in v1_top if x.strip()}
+    assert "jsonPrompt || text" in store and 'effectiveModel(s) === "flux.2-dev"' in store
+    assert "num_candidates: s.candidates, ideation_mode: s.ideation" in store
+    assert 'stage: "A" as const' in store                # a cast for a character is Stage A
+    # a sampling preset sets exactly what v1 set
+    assert "model_name: preset.model_name, num_steps: preset.num_steps, guidance: preset.guidance" in store
+
+
+def test_json_tree_has_one_serializer():
+    """The tree editor never re-implements the JSON shape — it imports the shared client's
+    serialize/parse, the same functions v1 and the postprocess panel use."""
+    tree = _read(COMPOSE / "Flux2JsonTree.tsx")
+    assert "serializeFlux2PromptTree" in tree and "parseFlux2PromptTree" in tree
+    assert "JSON.stringify" not in tree
+    composer = _read(COMPOSE / "Composer.tsx")
+    assert "generatePreview(" in composer and "generate(" in composer     # preview = the same request, dry-run
+    assert "window.prompt" not in composer and "window.confirm" not in composer

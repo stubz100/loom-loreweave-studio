@@ -37,7 +37,7 @@ button:focus-visible, [tabindex]:focus-visible, input:focus-visible, select:focu
 button:disabled { opacity: .45; cursor: default; background: none; }
 .primary { background: var(--amber); color: var(--amber-ink); font-weight: 600; padding: 6px 12px; }
 .primary:hover { background: var(--amber); filter: brightness(1.08); }
-input[type="text"], input[type="number"], select { background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 6px; }
+input[type="text"], input[type="number"], select, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 6px; }
 code, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
 .muted { color: var(--muted); }
 .faint { color: var(--faint); }
@@ -168,3 +168,34 @@ code, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px
 .start-card .name { font-weight: 600; }
 .start-card .path { font-size: 11px; color: var(--faint); overflow-wrap: anywhere; }
 .start-card .meta { font-size: 11px; color: var(--muted); }
+
+/* ---- composer (migration step 3a) ------------------------------------------------------- */
+textarea { width: 100%; resize: vertical; line-height: 1.4; }
+.compose .section-title { margin-top: 14px; }
+.compose .section-title:first-of-type { margin-top: 6px; }
+.p-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); margin: 6px 0; min-width: 0; }
+.p-field input, .p-field select { width: 100%; color: var(--fg); }
+.p-flag { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin: 6px 0; }
+.p-group { margin: 8px 0; }
+.p-group summary { cursor: pointer; }
+.jt { margin-top: 6px; }
+.jt-head { display: flex; align-items: center; gap: 8px; }
+.jt-head .section-title { margin: 0; flex: 1; }
+.jt-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); margin: 6px 0; }
+.jt-field input { width: 100%; color: var(--fg); }
+.jt-group { margin: 8px 0; }
+.jt-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.jt-row { display: flex; gap: 6px; margin: 4px 0; align-items: center; }
+.jt-row input, .jt-row select { flex: 1; min-width: 0; color: var(--fg); }
+.jt-subject { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 6px; margin: 4px 0; }
+.jt-subject input { min-width: 0; color: var(--fg); }
+.jt-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.jt-chip { display: inline-flex; gap: 2px; align-items: center; }
+.jt-chip input { width: 120px; color: var(--fg); }
+.jt-raw { margin-top: 8px; }
+.jt-raw textarea { margin-top: 6px; }
+.style-row { display: flex; align-items: center; gap: 8px; }
+.style-row select { flex: 1; min-width: 0; }
+.style-chip { width: 32px; height: 32px; object-fit: cover; border-radius: var(--radius); background: var(--bg); }
+.argv { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; color: var(--muted); max-height: 160px; overflow: auto; margin: 6px 0 0; }
+.panel-foot .form-error, .panel-foot .faint { font-size: 12px; align-self: center; }

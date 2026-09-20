@@ -1462,7 +1462,9 @@ author's visual sign-off.
    32 threads; 1024² = 4.6×; **Z-Image-Turbo ≈ 1.6 min** from its Q8 GGUF). Q8 at load is visually lossless and −45 % RAM;
    128 GB holds dev with room to spare. Three of four families ran with **zero downloads** (the
    Comfy scaled-fp8 dev files are read directly; the Qwen3 text encoder is merged from the cached
-   shards). **Verdict: GO for a `ggml` backend** — proposed **M2.16 — `sdcpp` adapter + a catalog
+   shards). **dev JSON prompting verified on the CPU** — the ggml encoder uses BFL's own system message +
+   layers 10/20/30, and a loom-shaped JSON prompt was followed (pose, props, camera, light,
+   palette) at identical cost. **Verdict: GO for a `ggml` backend** — proposed **M2.16 — `sdcpp` adapter + a catalog
    `backend` axis** (torch-rocm · ggml-cpu · ggml-vulkan); design + numbers in the journal
    "🧪 CPU / ggml spike". Reusable tools in `tools/sdcpp/`.
 

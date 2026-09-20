@@ -4315,3 +4315,30 @@ download; the link recovered to normal speed). **Z-Image-Turbo Q8 GGUF, 512², 8
 encode 5.8 s · sampling 87 s (10.9 s/step) · decode 5.4 s · total 98.5 s · 10.5 GB RAM** — image
 on-prompt and clean. That makes the CPU ladder at 512²: **klein 54 s < Z-Image-Turbo 99 s <
 SD3.5 120 s ≪ dev 27.5 min**. Reproduce: `tools\sdcpp\bench-cpu.ps1 zimage`.
+
+
+*Addendum 19:55 CEDT — the author asked: "have we tested the flux.2-dev JSON inference with the
+Mistral encoder?"* Not until now — the dev run above used Mistral (dev's only text path) with a
+**plain-text** prompt. Two checks followed:
+
+1. **Encoder equivalence (static).** The ggml runtime's FLUX.2 branch (`src/conditioning/
+   conditioner.hpp`, `VERSION_FLUX2`) wraps the prompt as `[SYSTEM_PROMPT]<system>[/SYSTEM_PROMPT]
+   [INST]<prompt>[/INST]` with **the same system message** as BFL's vendored reference
+   (`flux2/system_messages.py` `SYSTEM_MESSAGE`: "You are an AI that reasons about image
+   descriptions…"), stacks the **same Mistral hidden-state layers {10, 20, 30}**
+   (`OUTPUT_LAYERS_MISTRAL`) and pads to the **same 512-token minimum** (`MAX_LENGTH`). So the
+   conditioning is faithful to the torch path — JSON adherence on the CPU is a property of the
+   model, not of a different encoder.
+2. **Adherence (measured).** A prompt in loom's exact `serializeFlux2PromptTree` shape (scene ·
+   subjects[description/pose/position] · camera[angle/lens/depth_of_field] · lighting · style ·
+   mood · color_palette — `.tmp/sdcpp/bench/flux2dev_json_prompt.json`), same seed 42 / 512² /
+   20 steps / Q8 as the text run: **encode 45 s · sampling 1 601 s · total 1 651 s — identical
+   cost.** The image follows the structure: three-quarter-left body **looking back over the
+   shoulder at the viewer**, hand on the **sword hilt at the hip**, the **brass compass** and
+   **leather satchel**, mist between pines at dawn, **rim light from behind** with fill on the face,
+   shallow DoF, subject centre-right, the **emerald / rust / cream** palette. One soft miss: the
+   "low angle" reads as eye level. The plain-text run had none of the pose/prop/camera directives
+   to follow, so this is the adherence the author values from dev — on the CPU, unchanged.
+
+**Consequence for M2.16:** the JSON tree needs no special handling on the ggml backend — the
+serialised string goes straight to `-p`. `bench-cpu.ps1 flux2dev -Prompt '<json>'` reproduces it.

@@ -133,10 +133,8 @@ def test_composer_builds_the_same_request_v1_sends():
     over the text prompt when flux.2-dev is selected, and multi's candidates/ideation fields."""
     store = _read(COMPOSE / "composeStore.ts")
     v1 = _read(V1 / "App.tsx")
-    v2_top = set(re.search(r'TOP_LEVEL = new Set\(\[(.*?)\]\)', store, re.S).group(1).replace('"', "").replace("
-", "").split(","))
-    v1_top = set(re.search(r'TOP_LEVEL = new Set\(\[(.*?)\]\)', v1, re.S).group(1).replace('"', "").replace("
-", "").split(","))
+    v2_top = set(re.search(r'TOP_LEVEL = new Set\(\[(.*?)\]\)', store, re.S).group(1).replace('"', "").replace("\n", "").split(","))
+    v1_top = set(re.search(r'TOP_LEVEL = new Set\(\[(.*?)\]\)', v1, re.S).group(1).replace('"', "").replace("\n", "").split(","))
     assert {x.strip() for x in v2_top if x.strip()} == {x.strip() for x in v1_top if x.strip()}
     assert "jsonPrompt || text" in store and 'effectiveModel(s) === "flux.2-dev"' in store
     assert "num_candidates: s.candidates, ideation_mode: s.ideation" in store

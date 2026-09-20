@@ -109,7 +109,7 @@ def stack_sources(ws: Workspace, base: str) -> list[dict]:
     stack = _find_stack(_load(ws), base)
     out = [{"output": base, "from": None, "preset": None, "step_id": None}]
     for st in (stack or {}).get("steps", []):
-        if st.get("output"):
+        if st.get("output") and not st.get("deleted"):   # a tombstone's image is gone
             out.append({"output": st["output"], "from": st.get("source"),
                         "preset": st.get("preset"), "step_id": st["id"]})
     return out
@@ -137,20 +137,23 @@ def add_step(ws: Workspace, *, base: str, preset: str, backend: str, mode: str,
         stack = {"base": base, "steps": []}
         store["stacks"].append(stack)
     steps = stack["steps"]
+    # A tombstoned step (its image deleted, kept only as a link — see `reconcile`) is NOT a
+    # branch point: its `output` names a file that is gone. Review 2026-09-20: every layer
+    # offered it, and the queue then 404'd on the missing source, leaving a dead step.
+    live = [s for s in steps if s.get("output") and not s.get("deleted")]
     if source:
-        allowed = {base} | {s["output"] for s in steps if s.get("output")}
+        allowed = {base} | {s["output"] for s in live}
         if source not in allowed:
             raise ws_mod.WorkspaceError(
                 f"cannot branch from {source!r} — it is not this stack's base or a finished "
-                "step's output")
-    elif steps:
-        finished = [s for s in steps if s.get("output")]
-        if not finished:
-            raise ws_mod.WorkspaceError(
-                "queue and finish the previous step before adding another")
-        source = finished[-1]["output"]
+                "(undeleted) step's output")
+    elif live:
+        source = live[-1]["output"]
+    elif any(not s.get("output") for s in steps):
+        raise ws_mod.WorkspaceError(
+            "queue and finish the previous step before adding another")
     else:
-        source = base
+        source = base            # nothing live but the base (every step is a tombstone)
     steps.append({
         "id": new_id("pps"), "preset": preset, "backend": backend, "mode": mode,
         "params": params, "mask": mask, "requires_mask": requires_mask,
@@ -158,6 +161,17 @@ def add_step(ws: Workspace, *, base: str, preset: str, backend: str, mode: str,
         "status": "configured", "added_at": _now(),
     })
     return _save(ws, store)
+
+
+def dependants_of(ws: Workspace, step_id: str) -> list[str]:
+    """Ids of the steps that branch from `step_id`'s output (empty when it has none, or no
+    output yet). The re-fire rule reads this (main.py, review 2026-09-20): a step whose
+    image others were built from cannot be re-run in place."""
+    stack, step = _find_step(_load(ws), step_id)
+    out = (step or {}).get("output")
+    if not stack or not out:
+        return []
+    return [s["id"] for s in stack["steps"] if s.get("source") == out and s["id"] != step_id]
 
 
 @_mutates_store
@@ -229,21 +243,28 @@ def reconcile(ws: Workspace, resolve) -> list[dict]:
         # A DONE step whose producing job is gone points at an image that went with it. Keep
         # it only while something still branches from its output — then it is a tombstone
         # holding the chain together; otherwise it is a dead record and goes.
-        sources = {s.get("source") for s in stack["steps"]}
-        kept = []
-        for st in stack["steps"]:
-            gone = bool(st.get("job_id")) and resolve(st["job_id"]) is None
-            if st.get("status") == "done" and gone:
-                if st.get("output") in sources:
-                    if not st.get("deleted"):
-                        st["deleted"] = True          # tombstone: keeps the chain linked
-                        changed = True
-                    kept.append(st)
-                else:
-                    changed = True                    # leaf with nothing behind it → drop
-                continue
-            kept.append(st)
-        if kept != stack["steps"]:
+        # To a FIXPOINT (review 2026-09-20): the branch-point set was computed once, so a
+        # tombstone whose only dependant was pruned in the same pass survived it — forever,
+        # since the next pass saw the same picture. Each round drops at least one step or
+        # stops, so this terminates; a tombstone collapses the moment nothing branches from it
+        # (the runner does the same for job records).
+        while True:
+            sources = {s.get("source") for s in stack["steps"]}
+            kept = []
+            for st in stack["steps"]:
+                gone = bool(st.get("job_id")) and resolve(st["job_id"]) is None
+                if st.get("status") == "done" and gone:
+                    if st.get("output") in sources:
+                        if not st.get("deleted"):
+                            st["deleted"] = True          # tombstone: keeps the chain linked
+                            changed = True
+                        kept.append(st)
+                    else:
+                        changed = True                    # leaf with nothing behind it → drop
+                    continue
+                kept.append(st)
+            if kept == stack["steps"]:
+                break
             stack["steps"] = kept
             changed = True
         # A stack is over once nothing of it survives: no steps left, and no base image.

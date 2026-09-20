@@ -155,10 +155,10 @@ def _sha256_file(path: Path) -> str:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    """Review 2026-09-20: was rename-only (no fsync) — the one §6 rule the trainer's text
+    files skipped. On a rig with dozens of hard power cuts that meant zero-length caption
+    `.txt` files under their final names. Now the workspace's fsync'd writer."""
+    ws_mod.atomic_write_text(path, text)
 
 
 def _staged_path(ws: Workspace) -> Path:
@@ -280,6 +280,7 @@ def list_captions(ws: Workspace, asset_id: str, *, version_id: str | None = None
     }
 
 
+@assets.mutates_records
 def set_caption_override(ws: Workspace, asset_id: str, ref_id: str, caption: str,
                          *, version_id: str | None = None) -> dict:
     """Durably override one ref's caption on the version. Whitespace collapses to single
@@ -302,6 +303,7 @@ def set_caption_override(ws: Workspace, asset_id: str, ref_id: str, caption: str
     return _caption_row_view(refs[ref_id], overrides, _resolve_trigger(version, profile))
 
 
+@assets.mutates_records
 def clear_caption_overrides(ws: Workspace, asset_id: str, *, ref_id: str | None = None,
                             version_id: str | None = None) -> dict:
     """Reset one ref (idempotent) or ALL refs back to the template caption. Clearing all
@@ -554,25 +556,46 @@ meta:
     _atomic_write_text(config_path, text)
 
 
-def _resolve_parent_lora(ws: Workspace, asset_id: str, version: dict) -> Path:
+def _resolve_parent_lora(ws: Workspace, asset_id: str, version: dict,
+                         *, base_family: str) -> Path:
     """R68 seed-from-parent: the parent version's PROMOTED LoRA artifact (versions/<p>/lora/).
     Explicit errors — no parent, or a parent that was never promoted — so the toggle can't
-    silently train from base while claiming to seed."""
+    silently train from base while claiming to seed.
+
+    Review 2026-09-20: this used to take the LAST `*.safetensors` in the folder by sort order,
+    ignoring `version.lora` (the record of what was actually promoted). Artifact names embed
+    the family and promote never removes the other family's file, so once a version had been
+    promoted for both, `..._sd35` < `..._zimage` meant an sd35 run was always seeded from the
+    ZIMAGE adapter. The record is authoritative now: its file, its family, its sha256."""
     parent_id = version.get("derived_from")
     if not parent_id:
         raise ws_mod.WorkspaceError(
             "seed-from-parent needs a parent version (derived_from) — this version has none; "
             "train-from-base is the default (R68)")
-    pdir, _parent = assets.resolve_version_dir(ws, asset_id, parent_id)
-    lora_dir = pdir / "lora"
-    cands = sorted(lora_dir.glob("*.safetensors")) if lora_dir.is_dir() else []
-    if not cands:
+    pdir, parent = assets.resolve_version_dir(ws, asset_id, parent_id)
+    rec = parent.get("lora") or {}
+    if not rec.get("file"):
         raise ws_mod.WorkspaceError(
             f"parent version {parent_id!r} has no promoted LoRA to seed from "
             "(promote a trained run into it first — Stage E/M6)")
-    return cands[-1]
+    fam = rec.get("base_family")
+    if fam and fam != base_family:
+        raise ws_mod.WorkspaceError(
+            f"parent version {parent_id!r}'s promoted LoRA was trained for {fam!r}, not "
+            f"{base_family!r} — seed-from-parent needs the same base family (R68)")
+    src = pdir / "lora" / rec["file"]
+    if not src.is_file():
+        raise ws_mod.WorkspaceError(
+            f"parent version {parent_id!r}'s promoted LoRA file {rec['file']!r} is missing "
+            "on disk — re-promote it before seeding from it")
+    if rec.get("sha256") and _sha256_file(src).lower() != str(rec["sha256"]).lower():
+        raise ws_mod.WorkspaceError(
+            f"parent version {parent_id!r}'s promoted LoRA does not match its record "
+            "(sha256) — re-promote it before seeding from it")
+    return src
 
 
+@assets.mutates_records
 def stage_lora(ws: Workspace, asset_id: str, *, base_family: str = "zimage",
                backend: str = "ai_toolkit", train_init: str = "from_base",
                version_id: str | None = None, trigger_token: str | None = None,
@@ -600,7 +623,7 @@ def stage_lora(ws: Workspace, asset_id: str, *, base_family: str = "zimage",
     vdir, version, profile = _version_dir_for(ws, asset_id, version_id)
     if version.get("finalized"):
         raise ws_mod.WorkspaceError("cannot stage LoRA training for a finalized version; unlock or duplicate it first")
-    seed_src = (_resolve_parent_lora(ws, asset_id, version)
+    seed_src = (_resolve_parent_lora(ws, asset_id, version, base_family=base_family)
                 if train_init == "seed_parent" else None)
     # M2.9b: default the isolated dependency overlay from rig-level config (the Train
     # panel doesn't ask for a path; the shared venv can't run ai-toolkit without it).
@@ -754,6 +777,26 @@ def _find_artifact(job: dict) -> Path:
         "trained artifact not found (was the run's temp dir cleaned before promote?)")
 
 
+def _dataset_content_hash(manifest: dict) -> str:
+    """P2-13 `dataset_hash` = a hash of WHAT was trained on, not WHERE it was staged.
+    Review 2026-09-20: it used to hash `dataset_manifest.json`, which is full of absolute
+    per-staging paths (`_temp/lora_<slug>_<ver>_<stg_id>/…`), so two stagings of the
+    identical dataset never matched and the fact could not say "same data as run X".
+    Sorted (ref_id, image sha256, caption text) tuples — path-free and order-free."""
+    rows = []
+    for f in manifest.get("files") or []:
+        cap = ""
+        cp = Path(f.get("caption") or "")
+        if cp.is_file():
+            try:
+                cap = cp.read_text(encoding="utf-8").strip()
+            except OSError:
+                cap = ""
+        rows.append((str(f.get("ref_id")), str(f.get("image_sha256")), cap))
+    return _sha256_bytes(json.dumps(sorted(rows)).encode("utf-8"))
+
+
+@assets.mutates_records
 def promote_lora(ws: Workspace, job: dict) -> dict:
     """Stage E (R13 promote-then-manual-cleanup): COPY the trained adapter into
     `versions/<vN>/lora/` + write `lora.manifest.json` (P2-13 graph-ready facts:
@@ -773,7 +816,7 @@ def promote_lora(ws: Workspace, job: dict) -> dict:
     lora_dir = vdir / "lora"
     lora_dir.mkdir(parents=True, exist_ok=True)
     dst = lora_dir / (promo.get("artifact_name") or src.name)
-    shutil.copy2(src, dst)
+    ws_mod.atomic_copy(src, dst)     # whole or not at all — the old adapter survives a cut
     sha = _sha256_file(dst)
 
     # THIS run's stage-time facts ride the job params (M5+); older jobs fall back to the
@@ -789,7 +832,10 @@ def promote_lora(ws: Workspace, job: dict) -> dict:
     dataset_hash = None
     dm = Path(params.get("run_dir") or "") / "dataset_manifest.json"
     if dm.is_file():
-        dataset_hash = _sha256_file(dm)
+        try:
+            dataset_hash = _dataset_content_hash(ws_mod.read_json(dm))
+        except ws_mod.WorkspaceError:
+            dataset_hash = _sha256_file(dm)      # unreadable manifest → at least a file hash
 
     trainer_status = None
     duration_s = None

@@ -113,6 +113,9 @@ import GroupedGrid, { TileRef } from "./GroupedGrid";
 // match): the fewest denoise steps an img2img pass may actually walk before it stops being
 // a re-render at all. Rig finding 2026-08-09 — klein at strength 0.6 ran TWO.
 const MIN_EFFECTIVE_I2I_STEPS = 4;
+// Mirrors orchestrator/model_catalog._I2I_STEP_SEMANTICS — the backends whose i2i walks
+// exactly `num_steps` intervals (a test pins the two lists to each other).
+const I2I_EXACT_BACKENDS = new Set(["flux2"]);
 import { CellPicker, PosesPanel } from "./PosePicker";
 
 // Coverage-cell vocabulary (frozen P1→P2 contract, coverage.py) — drives the Stage-C
@@ -273,6 +276,21 @@ export default function App() {
     });
   };
 
+  // After a delete: drop the Sandbox scope's ids for jobs the server actually REMOVED —
+  // and keep the ones it kept as tombstones (something was postprocessed from them), or
+  // their children lose the parent link and float to the top level as orphans (review
+  // 2026-09-20). Only the ids just deleted are judged, never anything fired meanwhile.
+  const forgetGoneJobs = async (ids: string[]) => {
+    if (!ids.length) return;
+    try {
+      const r = await listJobs();
+      applyJobs(r);
+      setBatchIds((prev) => prev.filter((b) => !ids.includes(b) || !!r.jobs[b]));
+    } catch (e) {
+      log.error("refresh after delete failed:", e);
+    }
+  };
+
   // One-shot refresh right after an action (generate/cancel/unpause/…) so the user sees
   // the transition immediately instead of waiting out the 2 s probe.
   const refreshJobs = async () => {
@@ -353,21 +371,25 @@ export default function App() {
     const busy = jobs.filter((j) => j.status === "queued" || j.status === "running").length;
     const msg = `Delete ${jobs.length} job(s) in ${label}, with all their images and files?`
       + (busy ? `\n\n${busy} still running/queued — cancel those first; they will be skipped.` : "")
-      // No cascade (author 2026-08-09): anything postprocessed FROM these is kept, and what
-      // is deleted stays in the chain as a tombstone so its descendants remain attached.
-      + "\n\nImages postprocessed from them are kept. It cannot be undone.";
+      // The group already holds the passes made from its images (the tree collects
+      // descendants), so those go too; anything built from them that is NOT in view is kept,
+      // and a deleted parent stays in the chain as a tombstone so it remains attached.
+      + "\n\nThe passes shown inside this group are deleted with it; anything else built from "
+      + "these images is kept and stays attached. It cannot be undone.";
     if (!window.confirm(msg)) return;
     let ok = 0;
     const failed: string[] = [];
+    const gone: string[] = [];
     for (const j of jobs) {
       try {
         await deleteJob(j.id);
         ok += 1;
-        setBatchIds((prev) => prev.filter((b) => b !== j.id));
+        gone.push(j.id);
       } catch {
         failed.push(j.id.slice(0, 10));
       }
     }
+    await forgetGoneJobs(gone);
     log.info("group delete:", label, `${ok} deleted`, failed.length ? `${failed.length} skipped` : "");
     if (failed.length) {
       setError(`${ok} deleted · ${failed.length} could not be deleted (cancel running jobs first): `
@@ -393,7 +415,7 @@ export default function App() {
       } else {
         await deleteJob(job.id);
         log.info("deleted generation:", job.id);
-        setBatchIds((prev) => prev.filter((b) => b !== job.id));
+        await forgetGoneJobs([job.id]);
       }
       if (selected === cellKey || selected === job.id) setSelected(null);
     } catch (e) {
@@ -815,7 +837,9 @@ export default function App() {
       // its version + current bootstrap stage; the Sandbox → the project default + track the
       // job id so its tile streams into the (batch-id-driven) Sandbox grid.
       const requester = activeAsset?.active_version;
-      const st = activeAsset ? (stage === "A" ? "A" : "B") : undefined;
+      // Mirrors `gridStage`: Stage D has its own grid (the LoRA previews), so a pass fired
+      // there must land there, not in the B/C grid (review 2026-09-20).
+      const st = activeAsset ? (stage === "A" ? "A" : stage === "D" ? "D" : "B") : undefined;
       const stacks = await queuePostprocStep(stepId, requester, st);
       setPostprocStacks(stacks);
       const jid = stacks.flatMap((s) => s.steps).find((x) => x.id === stepId)?.job_id;
@@ -828,8 +852,12 @@ export default function App() {
   const onRemovePostprocStep = async (stepId: string) => {
     setBusy(true); setError(null);
     try {
+      const jid = postprocStacks.flatMap((s) => s.steps).find((x) => x.id === stepId)?.job_id;
       setPostprocStacks(await removePostprocStep(stepId));
-      void refreshJobs();   // the step's image goes with it — drop its tile from the grid
+      // The step's image (and job) go with it — drop its tile, and its Sandbox id unless the
+      // server kept it as a tombstone (a bare id with no job drew a phantom "queued…" tile).
+      await forgetGoneJobs(jid ? [jid] : []);
+      void refreshJobs();
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
   // The persisted step status only catches up via the server-side completion observer, which
@@ -1356,6 +1384,11 @@ export default function App() {
   type Cell = { key: string; job?: Job; output?: string; interim?: boolean; refItem?: RefItem };
   const cells: Cell[] = gridIds.flatMap((id) => {
     const job = jobs[id];
+    // A tombstone (deleted image kept as a chain link) has nothing to draw: the grouped
+    // view shows the gap in its chain; the flat grid simply has no tile for it (review
+    // 2026-09-20 — it rendered as an undeletable blank "—" tile). It stays in `gridIds`
+    // so its descendants are still reached through `chained_from`.
+    if (job?.deleted) return [];
     const names = job?.result?.output_names;
     if (names && names.length > 1) {
       return names.map((o) => ({ key: `${id}:${o}`, job, output: o }));
@@ -2437,6 +2470,14 @@ export default function App() {
                 const v = vars.find((x) => x.id === m) ?? vars[0];
                 const base = v?.defaults?.num_steps;
                 if (!base || !st || st <= 0) return null;
+                // flux2's worker builds the i2i schedule ACROSS [strength, 0] with exactly
+                // `num_steps` intervals ("exact", 2026-08-09), so its preset already IS the
+                // effective count and only a preset below the floor is lifted — the backend
+                // never sends num_steps otherwise, so the readout must not claim it does.
+                if (I2I_EXACT_BACKENDS.has(b)) {
+                  if (base >= MIN_EFFECTIVE_I2I_STEPS) return { request: null, effective: base };
+                  return { request: MIN_EFFECTIVE_I2I_STEPS, effective: MIN_EFFECTIVE_I2I_STEPS };
+                }
                 const plain = Math.floor(base * st);
                 if (plain >= MIN_EFFECTIVE_I2I_STEPS) return { request: null, effective: plain };
                 const request = Math.min(60, Math.ceil(MIN_EFFECTIVE_I2I_STEPS / st));
@@ -3291,6 +3332,7 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, i2iBudget, angl
   // Live status from the job queue (the persisted status lags / goes stale on cancel/delete):
   // a queued/running step whose job vanished from the queue is dead → treat as canceled.
   const liveStatus = (st: PostprocStep): string => {
+    if (st.deleted) return "deleted";   // a tombstone: its image is gone, the link is kept
     if (!st.job_id) return st.status;
     const live = jobs[st.job_id]?.status;
     if (live) return live;
@@ -3480,7 +3522,7 @@ function PostprocPanel({ stack, jobs, busy, l1Styles, modelsFor, i2iBudget, angl
                       title="which image this pass reads — branch a NEW line off the base (or any FINISHED step) instead of continuing the last one. Unfinished steps can't be branched from: a source has to be a real image.">
                 <option value="">↳ continue the chain</option>
                 <option value={stack!.base}>⌂ branch from the base image</option>
-                {stack!.steps.filter((st) => st.output).map((st, i) => (
+                {stack!.steps.filter((st) => st.output && !st.deleted).map((st, i) => (
                   <option key={st.id} value={st.output!}>⑂ branch from #{i + 1} {st.preset}</option>
                 ))}
               </select>

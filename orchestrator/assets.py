@@ -60,6 +60,15 @@ def _mutates_records(fn):
     return wrapper
 
 
+# Public name (M2.8 #5 privacy boundary) for the modules that mutate version records
+# from outside this file — training (caption overrides, stage, promote) and readiness
+# (persist). Review 2026-09-20: they loaded the record OUTSIDE this lock, worked, then
+# wrote the stale copy back, so a curation click or the runner's anchor-verified
+# observer landing in between was silently overwritten. The RLock is re-entrant, so a
+# wrapped function calling `write_version` (also wrapped) is fine.
+mutates_records = _mutates_records
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -781,6 +790,31 @@ def _free_name(ws: Workspace, asset_class: str, base_name: str) -> tuple[str, st
 
 
 @_mutates_records
+def _bundle_member_dest(staging: Path, member: str) -> Path:
+    """Where a bundle member lands under `staging` — refusing anything that would land
+    anywhere else. Review 2026-09-20: the raw-name check in `import_profile` rejected `..`
+    and absolute names, but the WRITE used the name with `asset/` stripped, and on Windows
+    a stripped `/etc/x` re-roots to the current drive, `D:/x` switches drive and a
+    `//srv/share/x`-style UNC name (backslashes) leaves the machine's tree — pathlib's `/`
+    joins all three OUTSIDE staging, so a bundle from another machine (the R66 use case)
+    could write any file anywhere. The STRIPPED path is the one that has to be clean (no
+    root, no drive, no `..`, no `:` — that also covers NTFS alternate data streams), and
+    the resolved destination is checked against the staging root as well."""
+    rel = member[len("asset/"):] if member.startswith("asset/") else member
+    p = Path(rel)
+    unsafe = (not rel or rel.startswith(("/", "\\")) or p.is_absolute() or bool(p.anchor)
+              or ".." in p.parts or ":" in rel)
+    dst = staging / p
+    if not unsafe:
+        try:
+            unsafe = not dst.resolve().is_relative_to(staging.resolve())
+        except OSError:
+            unsafe = True
+    if unsafe:
+        raise ws_mod.WorkspaceError(f"unsafe bundle member {member!r}")
+    return dst
+
+
 def import_profile(ws: Workspace, zip_path: str | Path) -> dict:
     """Import a bundle as a **brand-new profile** (R67): fresh profile + version ids (so a
     re-import into the SAME project can't cross-link the runner/lineage, which key on the
@@ -840,7 +874,7 @@ def import_profile(ws: Workspace, zip_path: str | Path) -> dict:
         staging = Path(tempfile.mkdtemp(dir=ws.temp_dir))
         try:
             for n in members:
-                dst = staging / n[len("asset/"):]
+                dst = _bundle_member_dest(staging, n)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 dst.write_bytes(zf.read(n))
 

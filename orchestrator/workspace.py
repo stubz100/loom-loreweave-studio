@@ -79,16 +79,66 @@ def slugify(name: str) -> str:
 
 # --- atomic JSON I/O ------------------------------------------------------------
 
+def _tmp_for(path: Path) -> Path:
+    """A writer-unique temp name beside `path`. Two threads writing the SAME file used to
+    share one `<name>.tmp` (review 2026-09-20 — the lineage index is written from the API
+    thread on delete and from the worker thread on output): the second writer truncated
+    the first's temp mid-write, and the winner could rename a torn file into place. A
+    per-writer name makes the replace race benign: last writer wins WHOLE, never a mix."""
+    return path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+
+
 def atomic_write_json(path: Path, data: Any) -> None:
     """Write temp → fsync → atomic `os.replace` (§6). A crash mid-write leaves either
     the old file or the new one, never a truncated one."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    tmp = _tmp_for(path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Text twin of `atomic_write_json` — the same temp → fsync → replace contract (§6).
+    Review 2026-09-20: the trainer's captions.jsonl, every dataset `.txt` and `train.yaml`
+    went through a rename-only writer, so on a machine that has lost power dozens of times
+    a stage could leave ZERO-LENGTH caption files under their final names — and a later
+    train would run on empty captions with nothing to notice. The fsync is the whole point."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _tmp_for(path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def atomic_copy(src: Path, dst: Path) -> None:
+    """Copy `src` over `dst` atomically: full copy to a temp beside `dst`, fsync, replace.
+    Review 2026-09-20: re-promoting a LoRA copied straight over the LIVE adapter, so a power
+    cut mid-copy destroyed the previous good file while the version record still asserted
+    its sha256 — and nothing verifies that sha at load time. `dst` now flips whole or not at
+    all; the old adapter survives every failure before the final rename."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _tmp_for(dst)
+    try:
+        shutil.copy2(src, tmp)
+        with open(tmp, "rb+") as f:
+            os.fsync(f.fileno())
+        os.replace(tmp, dst)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def read_json(path: Path) -> Any:

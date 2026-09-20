@@ -134,6 +134,17 @@ def test_seed_from_parent_places_the_step0_checkpoint(client):
     (v1_dir / "lora").mkdir(parents=True, exist_ok=True)
     seed_bytes = b"seed-lora-weights"
     (v1_dir / "lora" / "loom_mara_v1_base_zimage.safetensors").write_bytes(seed_bytes)
+    # …and the RECORD promote writes (review 2026-09-20: the picker reads `version.lora`,
+    # not the folder — a bare file is not a promotion).
+    import hashlib
+    from orchestrator import assets
+    vdir, vrec = assets.resolve_version_dir(ws, asset["id"], v1["id"])
+    vrec["lora"] = {"file": "loom_mara_v1_base_zimage.safetensors",
+                    "sha256": hashlib.sha256(seed_bytes).hexdigest(),
+                    "manifest": "lora/lora.manifest.json", "base_family": "zimage",
+                    "trigger_token": "mara_lw", "lora_weight_default": 1.0,
+                    "promoted_at": "2026-09-20T00:00:00+00:00", "job_id": "job_seed"}
+    assets.write_version(vdir, vrec)
 
     v2 = client.post(f"/assets/{asset['id']}/versions",
                      json={"name": "v2 seeded", "parent_version_id": v1["id"]}).json()

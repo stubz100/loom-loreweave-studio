@@ -735,6 +735,7 @@ a.ghost { text-decoration: none; display: inline-block; }
 .pp-status.pp-queued, .pp-status.pp-running { color: var(--amber); }
 .pp-status.pp-done { color: var(--ok); }
 .pp-status.pp-failed { color: var(--err); }
+.pp-status.pp-deleted { color: var(--muted); text-decoration: line-through; }
 .pp-add { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 /* WRAPS (author 2026-08-08): the row grew to five controls — preset, backend, style, branch
    point, restyle — and in the narrow inspector the last two fell off the right edge, reachable

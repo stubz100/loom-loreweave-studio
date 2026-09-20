@@ -270,7 +270,9 @@ export default function GroupedGrid({
         {groups.map((g) => {
           const shut = collapsed.has(g.id);
           const imgs = g.jobs.reduce((n, j) => n + (j.result?.output_names?.length ?? 0), 0);
-          const plain = g.roots.filter((r) => r.children.length === 0);
+          // A tombstone root with nothing left under it has nothing to draw (its chain is
+          // gone); one WITH children is a chain and shows its gap in place.
+          const plain = g.roots.filter((r) => r.children.length === 0 && !r.job.deleted);
           const chains = g.roots.filter((r) => r.children.length > 0);
           const cover = coverOf(g);
           const meta = `${g.sub}${imgs ? ` · ${imgs} image${imgs === 1 ? "" : "s"}` : ""} · ${when(g.at)}`;

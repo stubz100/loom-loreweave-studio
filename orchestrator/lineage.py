@@ -12,6 +12,7 @@ index is validated against `lineage.schema.json`.
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 
 try:
@@ -22,6 +23,13 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from workspace import Workspace  # type: ignore
 
 LINEAGE_SCHEMA_VERSION = 1
+
+# Review 2026-09-20: `remove_edge` runs on the API thread (delete) and `record_output` on
+# the worker thread (finalize), each a load→modify→write of the SAME index with nothing
+# serializing them — a tile deleted while a sweep cell finalized could lose the whole index
+# (a torn write is "corrupt", and `load_index` resets corrupt to EMPTY with no rebuild).
+# Same shape as `postproc._STORE_LOCK` / `assets._VERSION_LOCK`.
+_LOCK = threading.RLock()
 
 
 def _now() -> str:
@@ -78,19 +86,24 @@ def make_edges(job: dict, *, asset_version: str | None = None,
     return edges
 
 
-def remove_edge(ws: Workspace, job_id: str) -> bool:
+def remove_edge(ws: Workspace, job_id: str, *, output_file: str | None = None) -> bool:
     """Drop a job's lineage edge(s) from the index (atomic) — all of them for a
-    multi-output job. Used when a generation is deleted so the index never references
-    a removed output. Returns True if any was removed. Idempotent (absent → False,
-    no write)."""
-    index = load_index(ws)
-    kept = [e for e in index["edges"] if e.get("job_id") != job_id]
-    if len(kept) == len(index["edges"]):
-        return False
-    index["edges"] = kept
-    ws_mod.validate(index, "lineage.schema.json")
-    ws_mod.atomic_write_json(ws.lineage_index, index)
-    return True
+    multi-output job, or just ONE output's edge when `output_file` is given (the
+    per-image delete of a pool/batch tile; review 2026-09-20 — that path never touched
+    the index, so it kept naming a removed file). Used when a generation is deleted so
+    the index never references a removed output. Returns True if any was removed.
+    Idempotent (absent → False, no write)."""
+    with _LOCK:
+        index = load_index(ws)
+        kept = [e for e in index["edges"]
+                if e.get("job_id") != job_id
+                or (output_file is not None and e.get("output_file") != output_file)]
+        if len(kept) == len(index["edges"]):
+            return False
+        index["edges"] = kept
+        ws_mod.validate(index, "lineage.schema.json")
+        ws_mod.atomic_write_json(ws.lineage_index, index)
+        return True
 
 
 def record_output(ws: Workspace, job: dict, *, asset_version: str | None = None,
@@ -98,9 +111,10 @@ def record_output(ws: Workspace, job: dict, *, asset_version: str | None = None,
     """Append (or replace, on retry) the lineage edges for `job` — one per output —
     and persist the index atomically. Idempotent per job_id. Returns the edges."""
     edges = make_edges(job, asset_version=asset_version, lora_version=lora_version)
-    index = load_index(ws)
-    index["edges"] = [e for e in index["edges"] if e.get("job_id") != job["id"]]
-    index["edges"].extend(edges)
-    ws_mod.validate(index, "lineage.schema.json")
-    ws_mod.atomic_write_json(ws.lineage_index, index)
+    with _LOCK:
+        index = load_index(ws)
+        index["edges"] = [e for e in index["edges"] if e.get("job_id") != job["id"]]
+        index["edges"].extend(edges)
+        ws_mod.validate(index, "lineage.schema.json")
+        ws_mod.atomic_write_json(ws.lineage_index, index)
     return edges

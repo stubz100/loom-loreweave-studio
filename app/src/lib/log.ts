@@ -14,7 +14,7 @@ const ORDER: Record<LogLevel, number> = { silent: 0, error: 1, warn: 2, info: 3,
 
 function configuredLevel(): LogLevel {
   // @ts-expect-error - import.meta.env is provided by Vite
-  const raw = (import.meta.env?.VITE_LOOM_LOG_LEVEL as string | undefined)?.toLowerCase();
+  const raw = (import.meta.env.VITE_LOOM_LOG_LEVEL as string | undefined)?.toLowerCase();
   if (raw === "verbose") return "debug";
   if (raw === "brief") return "info";
   if (raw && raw in ORDER) return raw as LogLevel;

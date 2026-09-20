@@ -16,18 +16,30 @@ declare global {
   }
 }
 
+// Vite replaces `import.meta.env.<KEY>` per key at build time. NEVER touch `import.meta.env`
+// through `?.` or as a bare object: that form makes Vite inline the WHOLE env — every VITE_*
+// value, the .env.local token included — into the production bundle (review 2026-09-20).
+
 export function orchestratorUrl(): string {
   if (typeof window !== "undefined" && window.__LOOM_ORCH_URL__) return window.__LOOM_ORCH_URL__;
   // @ts-expect-error - import.meta.env is provided by Vite
-  const fromEnv = import.meta.env?.VITE_LOOM_ORCH_URL as string | undefined;
+  const fromEnv = import.meta.env.VITE_LOOM_ORCH_URL as string | undefined;
   return fromEnv || DEFAULT_URL;
 }
 
 export function orchestratorToken(): string {
   if (typeof window !== "undefined" && window.__LOOM_TOKEN__) return window.__LOOM_TOKEN__;
+  // Dev only (`npm run dev` in a browser, no Tauri shell): the token comes from .env.local.
+  // Gated on DEV so a production build carries NO fallback — the shell injects the real
+  // token on every page load (lib.rs), and a build that baked the literal would ship a
+  // static secret with the app.
   // @ts-expect-error - import.meta.env is provided by Vite
-  const fromEnv = import.meta.env?.VITE_LOOM_ORCH_TOKEN as string | undefined;
-  return fromEnv || "";
+  if (import.meta.env.DEV) {
+    // @ts-expect-error - import.meta.env is provided by Vite
+    const fromEnv = import.meta.env.VITE_LOOM_ORCH_TOKEN as string | undefined;
+    return fromEnv || "";
+  }
+  return "";
 }
 
 export interface Health {

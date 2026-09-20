@@ -513,15 +513,20 @@ class JobRunner:
         LOG.info("graceful shutdown — re-queue in-flight + clean stop")
         with self._lock:
             self._shutting_down = True
-            procs = list(self._procs.values())
-            if self._warm_proc is not None and self._warm_proc not in procs:
-                procs.append(self._warm_proc)   # M2.7: also stop an idle resident warm worker
-            for proc in procs:
+            pairs = [(proc, self._cancel_jobs.get(jid)) for jid, proc in self._procs.items()]
+            if self._warm_proc is not None and self._warm_proc not in self._procs.values():
+                pairs.append((self._warm_proc, self._warm_cancel_job))   # M2.7: idle resident worker too
+            for proc, handle in pairs:
                 if proc.poll() is None:
-                    try:
-                        proc.terminate()
-                    except Exception:
-                        pass
+                    # Review 2026-09-20: `terminate()` fells only the DIRECT child on Windows —
+                    # multi/flux2 grandchildren and the trainer's ai-toolkit child kept the GPU
+                    # and the inherited pipe. The per-job Job Object exists for exactly this;
+                    # terminate() stays as the no-handle fallback.
+                    if not _terminate_job(handle):
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
             self._persist_locked(clean_shutdown=True)
 
     # --- queue control ----------------------------------------------------
@@ -667,6 +672,27 @@ class JobRunner:
         with self._lock:
             return any(j.get("chained_from") == job_id for j in self.jobs.values())
 
+    def _collapse_tombstones_locked(self, parent_id: str | None) -> list[str]:
+        """Walk UP from a just-removed job (lock held): a tombstoned ancestor whose LAST
+        descendant just went has finished its work as a link and goes too — recursively,
+        so a chain A→B→C deleted in any order ends with nothing left behind. Review
+        2026-09-20: the keep/pop decision was made once, at delete time, and never
+        revisited; a group delete walks parent-first, so every one of them left a permanent
+        ghost record in queue.json. Artifacts, log and lineage were already freed when the
+        ancestor was tombstoned — only the record remains to drop."""
+        gone: list[str] = []
+        while parent_id:
+            p = self.jobs.get(parent_id)
+            if p is None or not p.get("deleted"):
+                break
+            if any(j.get("chained_from") == parent_id for j in self.jobs.values()):
+                break
+            self.jobs.pop(parent_id, None)
+            self._canceled.discard(parent_id)
+            gone.append(parent_id)
+            parent_id = p.get("chained_from")
+        return gone
+
     def delete(self, job_id: str, *, tombstone: bool | None = None) -> bool:
         """Delete a **terminal** job and **all** its artifacts atomically: the queue
         entry, the per-job output dir (`out/<id>/` — PNG + sidecar manifest), the per-job
@@ -692,16 +718,18 @@ class JobRunner:
             # Drop the durable record FIRST (+persist) so a crash mid-delete leaves at
             # worst orphaned files (harmless, swept by disk usage) — never a queue/lineage
             # entry pointing at deleted files.
+            collapsed: list[str] = []
             if keep:
                 # The record survives as a link in the chain; everything that POINTS AT
                 # artifacts is cleared so nothing tries to serve a file that is gone.
                 job["deleted"] = True
                 job["result"] = {**(job.get("result") or {}),
                                  "outputs": [], "output_names": [], "output_meta": {},
-                                 "output_name": None}
+                                 "output_name": None, "manifest_path": None}
                 job["partial_outputs"] = []
             else:
                 self.jobs.pop(job_id, None)
+                collapsed = self._collapse_tombstones_locked(job.get("chained_from"))
             self._canceled.discard(job_id)
             self._persist_locked()
             self._clear_pause_if_empty_locked()   # deleting the last queued job too
@@ -715,8 +743,9 @@ class JobRunner:
                 lineage.remove_edge(ws, job_id)
             except Exception as e:  # noqa: BLE001 - lineage is rebuildable, never block delete
                 _warn(f"lineage edge cleanup failed for {job_id}: {e}")
-        LOG.info("deleted %s + all artifacts%s", job_id,
-                 " (record kept — descendants depend on it)" if keep else "")
+        LOG.info("deleted %s + all artifacts%s%s", job_id,
+                 " (record kept — descendants depend on it)" if keep else "",
+                 f" (+ collapsed tombstones {collapsed})" if collapsed else "")
         return True
 
     def delete_output(self, job_id: str, output: str) -> str:
@@ -744,7 +773,10 @@ class JobRunner:
                 res["output_names"] = remaining
                 meta = res.get("output_meta")
                 if isinstance(meta, dict):
-                    meta.pop(output, None)
+                    # Rebuild, never pop in place: `snapshot()` is a shallow copy, so a
+                    # /jobs response being encoded on another thread shares THIS dict, and a
+                    # key removed mid-iteration is a 500 (review 2026-09-20).
+                    res["output_meta"] = {k: v for k, v in meta.items() if k != output}
                 if res.get("output_name") == output:
                     res["output_name"] = remaining[0]
                 job["partial_outputs"] = [p for p in (job.get("partial_outputs") or [])
@@ -761,6 +793,10 @@ class JobRunner:
                 f.with_suffix(".json").unlink(missing_ok=True)
             except OSError as e:
                 _warn(f"could not remove output {output} of {job_id}: {e}")
+            try:
+                lineage.remove_edge(ws, job_id, output_file=output)   # this image's edge only
+            except Exception as e:  # noqa: BLE001 - lineage is rebuildable, never block delete
+                _warn(f"lineage edge cleanup failed for {job_id}/{output}: {e}")
         LOG.info("deleted output %s of %s (%d remain)", output, job_id, len(remaining))
         return "output"
 
@@ -919,14 +955,49 @@ class JobRunner:
                 else:
                     self._execute(job_id, pipeline, mode, params)
             except Exception as e:  # never let the worker die
-                with self._lock:
-                    j = self.jobs.get(job_id)
-                    if j:
-                        j["status"] = "failed"
-                        j["finished_at"] = _now()
-                        j["result"] = {"ok": False, "returncode": -1, "outputs": [],
-                                       "error": f"runner error: {e}", "stderr_tail": str(e)}
-                        self._persist_locked()
+                self._reap_after_runner_error(job_id, e)
+
+    def _register_proc(self, job_id: str, proc: subprocess.Popen, cancel_job) -> bool:
+        """Make a just-spawned worker cancelable, and honour a cancel that came EARLY.
+        Review 2026-09-20: the job flips to `running` before the process exists, so a
+        cancel landing in that window (a click as the UI turns amber) found no handle,
+        was recorded in `_canceled` and then ignored — the worker ran to completion and an
+        OK result buried the cancel. Returns True when such a late cancel was pending; the
+        tree kill is already under way and finalize will land it `canceled`."""
+        with self._lock:
+            self._procs[job_id] = proc
+            if cancel_job is not None:
+                self._cancel_jobs[job_id] = cancel_job
+            late = job_id in self._canceled
+        if late:
+            threading.Thread(target=self._kill_tree, args=(proc,),
+                             kwargs={"job_handle": cancel_job}, daemon=True).start()
+        return late
+
+    def _reap_after_runner_error(self, job_id: str, err: Exception) -> None:
+        """An exception escaping `_execute`/`_execute_warm` (a log write hitting a full disk,
+        a parse error …) marks the job failed — but review 2026-09-20: it used to do ONLY
+        that, then dispatch the next job while the worker it had spawned was still alive:
+        holding VRAM, its unread pipe filling, its kill handle stale in `_procs`. Fell the
+        tree first (or reap the resident warm worker, whose protocol is now broken)."""
+        LOG.warning("runner error on %s: %s", job_id, err)
+        with self._lock:
+            proc = self._procs.pop(job_id, None)
+            handle = self._cancel_jobs.pop(job_id, None)
+            warm = proc is not None and proc is self._warm_proc
+            j = self.jobs.get(job_id)
+            if j:
+                j["status"] = "failed"
+                j["finished_at"] = _now()
+                j["result"] = {"ok": False, "returncode": -1, "outputs": [],
+                               "error": f"runner error: {err}", "stderr_tail": str(err)}
+                self._persist_locked()
+        if warm:
+            self._drop_warm()                 # closes the warm handle itself
+        else:
+            if proc is not None and proc.poll() is None:
+                self._kill_tree(proc, job_handle=handle)
+            _close_job(handle)
 
     # --- warm-worker dispatch (M2.7) — a persistent --serve process reused across a sweep -----
     def _next_same_group_queued_locked(self, group: str) -> str | None:
@@ -1038,6 +1109,13 @@ class JobRunner:
                 # handle stays owned by the warm lifecycle (popped per-cell, closed on
                 # evict/drop only — never per-cell like the cold path's finalize).
                 self._cancel_jobs[job_id] = self._warm_cancel_job
+            late_cancel = job_id in self._canceled
+        if late_cancel:
+            # Same dispatch-window cancel as the cold path (`_register_proc`): kill the
+            # resident worker now; the feed below then fails → `_drop_warm` → canceled.
+            LOG.info("cancel of %s arrived during warm dispatch — killing the worker", job_id)
+            threading.Thread(target=self._kill_tree, args=(proc,),
+                             kwargs={"job_handle": self._warm_cancel_job}, daemon=True).start()
         try:
             proc.stdin.write(json.dumps(spec) + "\n")
             proc.stdin.flush()
@@ -1203,10 +1281,8 @@ class JobRunner:
         if cancel_job is not None and not _assign_to_job(proc, cancel_job):
             _close_job(cancel_job)            # couldn't nest → drop it, taskkill /T covers cancel
             cancel_job = None
-        with self._lock:
-            self._procs[job_id] = proc
-            if cancel_job is not None:
-                self._cancel_jobs[job_id] = cancel_job
+        if self._register_proc(job_id, proc, cancel_job):
+            LOG.info("cancel of %s arrived during dispatch — killing the worker", job_id)
 
         # Full subprocess stdout/stderr → a persisted per-job log (P0-14); the in-memory
         # tail still drives the live UI pane. The log survives the process for post-mortem.
@@ -1238,7 +1314,17 @@ class JobRunner:
                     line = line.rstrip("\n")
                     tail.append(line)
                     if log_fp is not None:
-                        log_fp.write(line + "\n")
+                        try:
+                            log_fp.write(line + "\n")
+                        except OSError as e:
+                            # Disk full mid-run (the guard blocks new dispatch, not a running
+                            # job's log): keep the worker, drop the log — review 2026-09-20.
+                            _warn(f"job log write failed for {job_id} (log disabled): {e}")
+                            try:
+                                log_fp.close()
+                            except OSError:
+                                pass
+                            log_fp = None
                     pr = progress_fn(line)
                     nt = note_fn(line) if note_fn is not None else None
                     partial: str | None = None

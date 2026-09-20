@@ -400,6 +400,7 @@ def compute(ws: Workspace, asset_id: str, *, version_id: str | None = None) -> d
     }
 
 
+@assets.mutates_records
 def persist(ws: Workspace, asset_id: str, *, version_id: str | None = None,
             job: dict | None = None) -> dict:
     """Compute + atomically write `readiness.json` and stamp `version.readiness_status`.

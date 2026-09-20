@@ -2961,6 +2961,17 @@ def create_app() -> FastAPI:
         live = RUNNER.get(step["job_id"]) if step.get("job_id") else None
         if live and live.get("status") in ("queued", "running"):
             raise HTTPException(409, f"step already {live['status']}")
+        # Re-firing a DONE step REPLACES its image (a step and its image are one thing —
+        # the same rule that makes removing a step delete its image). Review 2026-09-20: it
+        # used to re-bind the step to a new job and leave the old job + image behind: no
+        # step produced that image any more, and anything branching from it pointed at an
+        # output nothing owned. So: refused while anything still derives from the image
+        # (add a new step instead); otherwise the old job goes right before the new one is
+        # submitted (after the pre-flights, so a 412 never destroys an image).
+        replaces = live["id"] if (live and step.get("output")) else None
+        if replaces and (postproc.dependants_of(ws, step_id) or RUNNER.has_descendants(replaces)):
+            raise HTTPException(409, "other steps branch from this step's image — add a new "
+                                     "step instead of re-running this one")
         backend, mode = step["backend"], step["mode"]
         is_upscale = mode == "cn-inpaint"    # M0e Part C — sd35 tile-CN creative upscale (single-run)
         params_in = step.get("params") or {}
@@ -3133,6 +3144,11 @@ def create_app() -> FastAPI:
                             profile_version_id=pvid, stage=stage, pass_name=step["preset"],
                             chained_from=parent.get("id"),
                             style_id=(_ssid if want_style else parent.get("style_id")))
+        if replaces:
+            # The previous image goes with the re-fire (a leaf). AFTER the submit, on
+            # purpose: deleting the last queued job clears a sticky pause, and the new job
+            # must not slip past a pause the author set — with it already queued, it stands.
+            RUNNER.delete(replaces)
         try:
             return postproc.mark_queued(ws, step_id=step_id, job_id=jid)
         except ws_mod.WorkspaceError as e:
@@ -3387,6 +3403,12 @@ def create_app() -> FastAPI:
             stage=src.get("stage"), coverage_cell=src.get("coverage_cell"),
             post_passes=list(src.get("post_passes") or []),
             warm_group=src.get("warm_group"),
+            # Provenance rides along (review 2026-09-20): without these a re-run pass
+            # surfaced as an unparented top-level card, its parent lost `has_descendants`
+            # (so a later delete removed it outright instead of tombstoning), and the
+            # style edge M2.12 demands on EVERY generation path was dropped.
+            chained_from=src.get("chained_from"), pass_name=src.get("pass"),
+            style_id=src.get("style_id"),
         )
         LOG.info("rerun %s -> %s (overrides=%s)", job_id, new_job, sorted(overrides))
         return {"job_id": new_job, "rerun_of": job_id, "overrides": overrides}

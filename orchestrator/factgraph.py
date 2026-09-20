@@ -237,13 +237,9 @@ def write(ws: Workspace) -> dict:
     Rebuildable by construction — safe to delete, never a source of truth."""
     facts = build(ws)
     path = facts_path(ws)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".jsonl.tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"kind": FACTS_KIND, "count": len(facts)}) + "\n")
-        for f in facts:
-            fh.write(json.dumps(f, ensure_ascii=False) + "\n")
-    tmp.replace(path)
+    lines = [json.dumps({"kind": FACTS_KIND, "count": len(facts)}) + "\n"]
+    lines.extend(json.dumps(f, ensure_ascii=False) + "\n" for f in facts)
+    ws_mod.atomic_write_text(path, "".join(lines))   # fsync'd, like every other store (§6)
     return {"path": str(path), "facts": len(facts), **stats(facts)}
 
 

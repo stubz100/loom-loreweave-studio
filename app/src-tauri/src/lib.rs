@@ -37,6 +37,16 @@ fn orchestrator_endpoint(state: tauri::State<AppState>) -> OrchestratorEndpoint 
     state.orchestrator.lock().unwrap().clone()
 }
 
+/// The JS that hands the endpoint to the page (`window.__LOOM_*`, read by orchestrator.ts).
+/// serde_json-encoded so the values can never break out of the string literals.
+fn inject_script(ep: &OrchestratorEndpoint) -> String {
+    format!(
+        "window.__LOOM_ORCH_URL__={};window.__LOOM_TOKEN__={};",
+        serde_json::to_string(&ep.url).unwrap_or_else(|_| "\"\"".into()),
+        serde_json::to_string(&ep.token).unwrap_or_else(|_| "\"\"".into()),
+    )
+}
+
 /// Resolve the python interpreter for the orchestrator sidecar (R103).
 fn resolve_python() -> String {
     std::env::var("LOOM_VENV_PYTHON").unwrap_or_else(|_| "python".into())
@@ -77,17 +87,13 @@ fn spawn_orchestrator(app: &tauri::AppHandle, child_slot: ChildSlot, endpoint: A
                         if let Some(v) = kv.strip_prefix("url=") { url = v.into(); }
                         if let Some(v) = kv.strip_prefix("token=") { token = v.into(); }
                     }
-                    *endpoint.lock().unwrap() =
-                        OrchestratorEndpoint { url: url.clone(), token: token.clone() };
+                    let ep = OrchestratorEndpoint { url: url.clone(), token: token.clone() };
+                    *endpoint.lock().unwrap() = ep.clone();
                     // Inject the loopback URL + token into the webview so the UI can send
-                    // X-Loom-Token on /generate (review #1). serde_json-encoded for safety.
+                    // X-Loom-Token on /generate (review #1). This reaches a page that is
+                    // already loaded; `on_page_load` below covers every (re)load after it.
                     if let Some(win) = app.get_webview_window("main") {
-                        let script = format!(
-                            "window.__LOOM_ORCH_URL__={};window.__LOOM_TOKEN__={};",
-                            serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".into()),
-                            serde_json::to_string(&token).unwrap_or_else(|_| "\"\"".into()),
-                        );
-                        let _ = win.eval(&script);
+                        let _ = win.eval(&inject_script(&ep));
                     }
                     println!("[loom] orchestrator ready at {url}");
                 }
@@ -163,6 +169,16 @@ pub fn run() {
         }))
         .manage(AppState { orchestrator: endpoint.clone() })
         .invoke_handler(tauri::generate_handler![orchestrator_endpoint])
+        // Re-inject on EVERY page load (review 2026-09-20): the READY-time eval only reached
+        // a page that was already loaded — a READY that beat the first paint, or any webview
+        // reload, left `window.__LOOM_*` unset and every mutating call 401'd. The frontend's
+        // production build carries no token fallback by design, so this IS the handshake.
+        .on_page_load(|webview, _payload| {
+            let ep = webview.state::<AppState>().orchestrator.lock().unwrap().clone();
+            if !ep.url.is_empty() {
+                let _ = webview.eval(&inject_script(&ep));
+            }
+        })
         .setup(move |app| {
             spawn_orchestrator(&app.handle(), setup_child.clone(), setup_endpoint.clone());
             Ok(())

@@ -105,9 +105,14 @@ def discover_resume_state(run_dir: Path, artifact_name: str | None = None) -> di
 
 
 def _write_manifest(path: Path, data: dict[str, Any]) -> None:
+    """temp → fsync → replace (the orchestrator's §6 rule; review 2026-09-20 — this wrapper
+    runs on the machine that loses power, and the manifest is what promote reads)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(data, indent=2))
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(tmp, path)
 
 

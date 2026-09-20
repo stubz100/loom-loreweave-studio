@@ -364,6 +364,19 @@ def _poses_dir(ws: Workspace) -> Path:
     return ws.bible_dir / "poses"
 
 
+_POSE_KEY_RE = re.compile(r"[a-z0-9_]+__[a-z0-9_]+__[a-z0-9_]+")
+
+
+def _check_pose_key(key: str) -> str:
+    """The pose key is a path component. Review 2026-09-20: only `set_pose_icon` validated
+    it — `delete_pose_icon` and `pose_icon_path` globbed the RAW key, and `glob` walks `..`,
+    so an encoded `..%5C..%5Cproject` served `project.json` unauthenticated and the token-
+    gated delete unlinked it (or the queue, or `*`). One gate for all three."""
+    if not _POSE_KEY_RE.fullmatch(key or ""):
+        raise ws_mod.WorkspaceError(f"invalid pose key {key!r}")
+    return key
+
+
 def list_pose_icons(ws: Workspace) -> dict[str, str]:
     """key -> filename for every stored pose icon."""
     pdir = _poses_dir(ws)
@@ -376,8 +389,7 @@ def set_pose_icon(ws: Workspace, key: str, *, source_output: str) -> dict:
     """Persist `source_output` (an out/-relative image from a finished generation) as the
     pose icon for `key` — copied into `bible/poses/<key>.<ext>` so it survives the source
     job's deletion (mirrors the style sample). Re-setting overwrites."""
-    if not re.fullmatch(r"[a-z0-9_]+__[a-z0-9_]+__[a-z0-9_]+", key):
-        raise ws_mod.WorkspaceError(f"invalid pose key {key!r}")
+    _check_pose_key(key)
     if ".." in source_output or "\\" in source_output:
         raise ws_mod.WorkspaceError(f"invalid output {source_output!r}")
     src = (ws.out_dir / source_output).resolve()
@@ -394,6 +406,7 @@ def set_pose_icon(ws: Workspace, key: str, *, source_output: str) -> dict:
 
 def delete_pose_icon(ws: Workspace, key: str) -> dict:
     """Remove one stored pose icon (the cell shows as a text chip again). Raises if none."""
+    _check_pose_key(key)
     hit = False
     for p in _poses_dir(ws).glob(f"{key}.*"):
         p.unlink(missing_ok=True)
@@ -405,6 +418,7 @@ def delete_pose_icon(ws: Workspace, key: str) -> dict:
 
 def pose_icon_path(ws: Workspace, key: str) -> Path:
     """The on-disk path of a pose icon (for serving); raises if missing."""
+    _check_pose_key(key)
     for p in _poses_dir(ws).glob(f"{key}.*"):
         if p.is_file():
             return p

@@ -121,7 +121,8 @@ def test_grouped_view_layout_contract():
     assert "tree-card-img" in tree and "tree-card-foot" in tree
 
     # 3 — childless roots pooled into a single grid (the one-column bug)
-    assert "const plain = g.roots.filter((r) => r.children.length === 0);" in tree
+    # (a tombstone root with nothing under it is skipped — review 2026-09-20)
+    assert "const plain = g.roots.filter((r) => r.children.length === 0 && !r.job.deleted);" in tree
     assert "plain.flatMap((r) => r.tiles).map(renderTile)" in tree
     # …and only a root that really has children keeps its own nested block
     assert "const chains = g.roots.filter((r) => r.children.length > 0);" in tree
@@ -244,6 +245,14 @@ def test_effective_step_readout_is_surfaced_and_stays_in_lockstep():
     # and it flags the lifted case rather than silently reporting a number
     assert "lifted" in app
 
+    # flux2's "exact" semantics (num_steps IS the interval count) must reach the readout too —
+    # it used to apply the fraction formula to every backend and claim lifted steps the
+    # backend never sent (review 2026-09-20). Pinned to the backend's table.
+    m = re.search(r'const I2I_EXACT_BACKENDS = new Set\(\[(.*?)\]\);', app)
+    assert m, "the FE must mirror model_catalog._I2I_STEP_SEMANTICS"
+    fe = {x.strip().strip('"') for x in m.group(1).split(",") if x.strip()}
+    assert fe == {k for k, v in mc._I2I_STEP_SEMANTICS.items() if v == "exact"}
+
 
 def test_deleting_an_image_refetches_the_stacks():
     """Author, 2026-08-09: deleting a stacked image left the stack showing it.
@@ -269,7 +278,10 @@ def test_deleting_an_image_refetches_the_stacks():
     assert "deleted?: boolean;" in api
 
     # group delete no longer promises a cascade the tombstone rule removed
-    assert "Images postprocessed from them are kept." in app
+    # (reworded 2026-09-20: the group DOES take the passes shown inside it — the tree
+    # collects descendants — and keeps only what is built from them out of view)
+    assert "The passes shown inside this group are deleted with it" in app
+    assert "anything else built from " in app and "is kept and stays attached" in app
     assert "This includes anything postprocessed from them" not in app
 
 
@@ -281,4 +293,6 @@ def test_removing_a_step_warns_that_it_deletes_the_image():
     assert "Remove this step and delete the image it produced?" in app
     assert "Anything built from that image is kept." in app
     assert "st.output && !window.confirm(" in app          # only a FINISHED step asks
-    assert "void refreshJobs();   // the step's image goes with it" in app
+    # the removal refreshes the jobs AND prunes the Sandbox id unless the server kept a
+    # tombstone (review 2026-09-20 — a bare id drew a phantom "queued…" tile)
+    assert "await forgetGoneJobs(jid ? [jid] : []);" in app and "void refreshJobs();" in app

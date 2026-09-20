@@ -18,7 +18,7 @@ author still owns are collected in §7 as **D1–D10**; everything else is a rec
 >   shared/api/   the typed orchestrator client + logger (83 functions, 52 types),
 >                 imported by both frontends as `@loom/shared/api/*`
 >   v1/           today's frontend — FROZEN as the reference and fallback (Vite :1420)
->   v2/           the new frontend — seeded (health probe over the shared client, Vite :1421)
+>   v2/           the new frontend — the FRAME is in (step 1, 2026-09-20); steps 2–7 follow (Vite :1421)
 > ```
 >
 > Consequences for this plan: migration **step 0 (the App.tsx split) is replaced** by the move
@@ -320,7 +320,7 @@ contract tests in `orchestrator/tests` pin the source, `tsc` + `vite build` gate
 | # | Step | What it delivers | Verify without GPU |
 | --- | --- | --- | --- |
 | **0** | ~~Split App.tsx~~ → **DONE 2026-09-20 as the move + seed** (see the Adopted note at the top): `app/` → `frontends/{shell, shared, v1}`; `frontends/v2` scaffolded on the shared client; one shell wraps either by config overlay; the orchestrator's CORS admits the v2 dev port; tests and README re-pointed | v1 frozen as reference/fallback — never refactored; v2 starts clean with a real state layer (zustand) | v1 `tsc` + `vite build` from its new home (token still absent from `dist/`), v2 `tsc` + `vite build`, `cargo check` from `frontends/shell/src-tauri`, the backend suite under the torch guard |
-| **1** | **Frame**: top bar with workspace tabs (L3–L5 disabled) + status cluster + banner slot; icon rail + resizable/collapsible Panel; resizable/collapsible Inspector; dock collapsed/expanded with a handle; layout memory; **toast + banner system** (fixes the L1 blind spot) | the author's two complaints (unused rail, squeezed inspector) fixed structurally | resize/collapse/persist across reload; an L1 style-sample error now shows |
+| **1** | **Frame** ✅ **DONE 2026-09-20** (v2; journal "🧱 M2.14 step 1"): top bar with workspace tabs (L3–L5 disabled) + status cluster + banner slot; icon rail + resizable/collapsible Panel; resizable/collapsible Inspector; dock collapsed/expanded with a handle; layout memory; **toast + banner system** (fixes the L1 blind spot); plus a read-only canvas grid with live zoom/selection and a real Info tab, so the frame shows the author's project on day one | the author's two complaints (unused rail, squeezed inspector) fixed structurally | resize/collapse/persist across reload; an L1 style-sample error now shows |
 | **2** | **Project dialogs**: `tauri-plugin-dialog` folder picker for Open/New; New-project modal with the estimate inline; **Start screen** with visual recents | "painful project open" fixed | dev-build fallback to the typed path; a recents screen with thumbnails |
 | **3** | **Composer panel** (Cast / Expand / Train modes; Sandbox = Cast) with the pinned foot; **stage header**; **strip** (stage verbs, view switch, filters, selection bar, zoom); the bars, drawers, inline picker, sketch bar and style bar leave the canvas column | the grid becomes the canvas | every control reachable in its new home; Stage-B recipe fires the same request (the pre-flight modal proves it byte-for-byte) |
 | **4** | **Inspector tabs** (Info · Post · Readiness · Version) with the Post add-form laid out for a 360 px column; tombstones/branches drawn as a tree | the stack gets room | the JSON tree renders as a form, not a stack of stacked inputs |

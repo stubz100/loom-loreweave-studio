@@ -7,7 +7,7 @@
   Since the frontends moved to frontends/{shell, v1, v2} (kb-loom-ui.md, 2026-09-20) the browser
   workflow needs the backend and the Vite dev server started separately — this script does both.
 
-  browser mode (default):
+  browser mode:
     1. starts `python -m orchestrator.main` from this repo root (unless one is already answering
        /health — then it is reused and left running on exit),
     2. waits for GET /health,
@@ -16,7 +16,7 @@
     Ctrl+C stops Vite; the orchestrator then gets POST /shutdown with the dev token (graceful:
     re-queues the in-flight job, clean stop — R159) and is killed if it does not exit in 10 s.
 
-  tauri mode:
+  tauri mode (default):
     hands over to `npm run dev` / `npm run dev:v2` in frontends/shell — the desktop window, which
     spawns the orchestrator as its sidecar itself (the old one-command path). Needs the Rust toolchain.
 
@@ -25,23 +25,23 @@
   LOOM_VENV_PYTHON (the interpreter; default ..\..\.venv\Scripts\python.exe).
 
 .PARAMETER Frontend
-  v1 (the frozen reference UI, default) or v2 (the new UI).
+  v2 (the new UI, default since 2026-09-20) or v1 (the frozen reference UI).
 .PARAMETER Mode
-  browser (default) or tauri.
+  tauri (the desktop window, default since 2026-09-20) or browser.
 .PARAMETER NoOpen
   Browser mode: do not open the browser when Vite is ready.
 .PARAMETER OrchestratorTimeoutSec
   How long to wait for /health before giving up (default 90 s — the launch gate checks weights).
 
 .EXAMPLE
-  .\loom-dev.ps1                  # orchestrator + v1 in the browser
-  .\loom-dev.ps1 -Frontend v2     # orchestrator + the new frontend
-  .\loom-dev.ps1 -Mode tauri      # the desktop window (v1); add -Frontend v2 for the new one
+  .\loom-dev.ps1                            # the desktop window on v2 (the default)
+  .\loom-dev.ps1 -Mode browser              # orchestrator + v2 in the browser
+  .\loom-dev.ps1 -Frontend v1 -Mode browser # the frozen reference UI in the browser
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet("v1", "v2")] [string]$Frontend = "v1",
-    [ValidateSet("browser", "tauri")] [string]$Mode = "browser",
+    [ValidateSet("v1", "v2")] [string]$Frontend = "v2",
+    [ValidateSet("browser", "tauri")] [string]$Mode = "tauri",
     [switch]$NoOpen,
     [int]$OrchestratorTimeoutSec = 90
 )

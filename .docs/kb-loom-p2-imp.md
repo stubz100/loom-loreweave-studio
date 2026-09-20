@@ -4345,3 +4345,54 @@ serialised string goes straight to `-p`. `bench-cpu.ps1 flux2dev -Prompt '<json>
 
 
 *Addendum 20:05 CEDT — v2 showed "offline — TypeError: Failed to fetch" on first launch (author). Cause: the frontends move added the v2 dev origin (:1421) to the CORS DEFAULTS in `config.py`, but `.env` pins `LOOM_CORS_ORIGINS` explicitly and that list still named :1420 only — an env value overrides the defaults, so the browser blocked every response. Fixed in `.env` (both :1421 origins added; verified with an Origin-header probe: `Access-Control-Allow-Origin: http://localhost:1421` now returned). The seed page now explains the two causes of that browser message (nothing listening vs CORS allowlist) with the fix inline. The orchestrator reads `.env` at startup — restart the launcher after the change.*
+
+
+## 🧱 M2.14 step 1 — the v2 frame (2026-09-20, ~20:15–21:05 CEDT)
+
+Author: *"Can you configure loom-dev.cmd so it starts v2/tauri by default? Otherwise, lets start
+2.14"* — after seeing that v2 was only the seed page in both the browser and the Tauri window.
+
+**Launcher:** `loom-dev.ps1` / `.cmd` now default to **v2 in Tauri mode** (`-Mode browser`,
+`-Frontend v1` for the old paths); README run step 0 updated.
+
+**The frame (kb-loom-ui.md §4), built from scratch in `frontends/v2/src`:**
+- `store.ts` — one zustand store: LIVE state (health, project, jobs/counts/pause/disk, notices,
+  selection) + LAYOUT state persisted per machine under `loom.v2.layout` (workspace, stage,
+  view, panel/inspector open+width+tab, dock open+height, zoom).
+- `poll.ts` — the ONE poller: 2 s, an in-flight guard (the guard v1 lacked), one store; the
+  offline↔online and disk-state transitions become notices. Nothing else polls.
+- `shell/TopBar` — workspace tabs L1–L5 (Shots/Flow/Episode present but disabled until their
+  phase), project name, status cluster (orchestrator · queue chip that opens the dock · disk
+  chip coloured by the guard state), the File menu (Open folder = typed path for now, Close,
+  Recent with open/forget; New project waits for step 2's native dialog).
+- `shell/Banners` — sticky states under the top bar, visible from EVERY workspace: offline
+  (with the two causes of a blocked fetch), queue paused with a Resume button, disk hard-stop.
+- `shell/Rail` + `shell/Panel` — the 48 px icon rail toggling a resizable (260–420 px),
+  collapsible Panel with Library / Compose / Train tabs; Library lists the project's assets
+  by class with version counts plus the Sandbox; Compose and Train are placeholders with the
+  **pinned foot** already in place; a drag `Resizer` (pointer capture, no library).
+- `shell/Stage` — the stage header (asset · version pill with ✨/🔒 · version count), the one
+  Strip (Cast · Expand · Curate · Train verbs, the Flat/Grouped/Captions/Loupe view switch, a
+  thumbnail-size slider), and the Canvas: a responsive `auto-fill` grid of the scope's finished
+  images (requester = active version + stage letter; Curate reads B; Sandbox = unscoped),
+  selectable, zoom live — read-only until step 5 adds actions.
+- `shell/Inspector` — resizable (280–480 px), collapsible, tabs Info / Post / Readiness /
+  Version / Muse; Info is real (preview, job facts, prompt, error); the others state what
+  lands and when.
+- `shell/Dock` — one line with the running job, its note and the **amber progress line across
+  the full width**; Pause/Resume; expands (drag-resizable) into the Jobs pane with per-row
+  Stop/Cancel (Cancel confirms).
+- `shell/Toasts` (transient notices, errors stay) + `shell/Shortcuts` (Tab hides/shows both
+  side panels, 1–4 pick the stage, `?` the list, Esc closes/clears).
+- Design tokens in `styles.css`: warm graphite (`#1b1d22 / #23262d / #2b2f38`), one accent
+  (v1's amber), system UI face at 13 px, sentence-case titles, zones by background steps,
+  focus rings, `prefers-reduced-motion` honoured.
+
+**Also:** `style_id` added to the shared `Job` type (the server has stamped it since
+2026-08-08; the type never carried it). **Gates:** v2 `tsc` + `vite build` (token absent from
+`dist/`), v1 `tsc` still clean, **+6 tests** (`test_v2_frame.py`: zones as modules, one poller
+with the guard, layout memory keys, API names bound, no env-object reads, the `.env` CORS
+origin, later layers disabled). Not run: a click-through — the author's next launch is it.
+
+**Next (plan §6):** step 2 project dialogs (native folder picker via `tauri-plugin-dialog`,
+new-project form, Start screen), then step 3 the Composer.

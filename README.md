@@ -181,7 +181,7 @@ loom-loreweave-studio/
 │   ├── shell/         #   the one Tauri 2 desktop shell (src-tauri); wraps v1 or v2 by config
 │   ├── shared/api/    #   the typed orchestrator client + logger, imported by every frontend
 │   ├── v1/            #   the current React/TS frontend — frozen reference (Vite :1420)
-│   └── v2/            #   the new frontend, built from scratch on the same API (Vite :1421)
+│   └── v2/            #   the new frontend, built from scratch on the same API (Vite :1421) — the frame is in (M2.14 step 1)
 │   ├── src/           #   React UI (three-pane shell + job-queue dock + batch grid + project bar)
 │   └── src-tauri/     #   Rust: single-instance, orchestrator sidecar spawn + kill, READY handshake
 └── orchestrator/      # Python FastAPI service (127.0.0.1)
@@ -243,11 +243,11 @@ monorepo's `src/village_ai/models/`) and are fetched on demand.
 The orchestrator runs in the parent monorepo's shared `.venv` (R103); install its
 deps once: `pip install -r orchestrator/requirements.txt`.
 
-**0. Both at once (dev):** `.\loom-dev.ps1` (or `loom-dev.cmd`) from this repo root starts the
-orchestrator, waits for `/health`, runs the v1 Vite server and opens the browser; **Ctrl+C stops
-both** (the orchestrator gets a graceful `/shutdown`). `-Frontend v2` for the new UI, `-Mode tauri`
-for the desktop window, `-NoOpen` to keep the browser closed. The steps below are the manual
-equivalents.
+**0. One command (dev):** `.\loom-dev.ps1` (or `loom-dev.cmd`) from this repo root opens the
+**desktop window on v2** (the shell spawns the orchestrator itself). `-Mode browser` starts the
+orchestrator, waits for `/health`, runs the Vite server and opens the browser, and **Ctrl+C stops
+both** (graceful `/shutdown`); `-Frontend v1` for the frozen reference UI; `-NoOpen` keeps the
+browser closed. The steps below are the manual equivalents.
 
 **1. Orchestrator** (from this repo root):
 

@@ -118,6 +118,9 @@ export interface Job {
   /** Tombstone (2026-08-09): artifacts deleted, record kept because something derives from
    *  it — so the chain still resolves and its children stay attached. */
   deleted?: boolean;
+  /** the resolved L1 style this job generated under (stamped on every generation path since
+   * 2026-08-08; inherited by postproc) — null when the L1 gate was off. */
+  style_id?: string | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;

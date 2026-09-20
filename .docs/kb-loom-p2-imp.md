@@ -4599,3 +4599,6 @@ was built (the temporary orchestrator has no finished image to postprocess).
 **Next:** step 5 — the canvas: responsive grid + zoom (there), uniform tiles with fit/fill,
 affordances on the tile (star · anchor · keep/reject · delete), keyboard by visual row, `?`
 overlay, **Loupe with prev/next + Compare**.
+
+
+**Pushed:** step 4 = `3dbd5ba` (code + tests + plan §6 row 4 + this entry).

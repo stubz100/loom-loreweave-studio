@@ -1,21 +1,25 @@
-// Train mode (Stage D): the staging form as a column with Stage pinned at the foot, and the
-// version's staged runs with Add to queue. Captions, readiness, previews and promote arrive
-// with migration step 6 (captions view on the canvas, Readiness tab, job rows in the dock).
-import { useCallback, useEffect, useState } from "react";
+// Train mode (Stage D): the staging form as a column with Stage pinned at the foot. Staged
+// runs and trainer jobs live in the dock's Training pane (they are jobs); the LoRA preview
+// form opens here when a done run's Preview is pressed there (kb-loom-ui.md §3.6).
+import { useEffect, useState } from "react";
 
-import {
-  deleteStagedTraining, getStagedTraining, queueStagedTraining, stageZimageLora, type StagedTraining,
-} from "@loom/shared/api/orchestrator";
+import { stageZimageLora } from "@loom/shared/api/orchestrator";
 
 import { reasonOf } from "../lib/project";
 import { useApp } from "../store";
 import { useCompose } from "./composeStore";
+import { LoraPreview } from "./LoraPreview";
 
 export function TrainComposer() {
   const project = useApp((s) => s.project);
   const offline = useApp((s) => s.offline);
   const assetId = useApp((s) => s.selectedAsset)!;
   const detail = useApp((s) => s.assetDetail);
+  const jobs = useApp((s) => s.jobs);
+  const staged = useApp((s) => s.staged);
+  const refreshStaged = useApp((s) => s.refreshStaged);
+  const openDock = useApp((s) => s.openDock);
+  const previewJobId = useApp((s) => s.previewJobId);
   const notify = useApp((s) => s.notify);
   const t = useCompose((s) => s.train);
   const patch = useCompose((s) => s.patchTrain);
@@ -24,25 +28,18 @@ export function TrainComposer() {
   const refs = version?.ref_set.length ?? 0;
   const locked = !!version?.finalized;
   const hasParent = !!version && detail!.versions.some((v) => v.id !== version.id && v.lora);
+  const stagedHere = staged.filter((s) => s.version_id === version?.id).length;
+  const runs = Object.values(jobs).filter((j) => j.pipeline === "zimage_trainer" && j.profile_version_id === version?.id);
+  const active = runs.filter((j) => j.status === "queued" || j.status === "running").length;
 
-  const [staged, setStaged] = useState<StagedTraining[] | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [confirmId, setConfirmId] = useState<string | null>(null);   // inline two-click remove, no native dialog
+  const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    try {
-      const r = await getStagedTraining();
-      setStaged(r.staged.filter((s) => s.asset_id === assetId));
-    } catch { setStaged([]); }
-  }, [assetId]);
-  useEffect(() => { if (!offline) void refresh(); }, [refresh, offline]);
+  useEffect(() => { if (!offline) void refreshStaged(); }, [refreshStaged, offline, assetId]);
 
   const blocked = !project ? "Open a project first." : offline ? "The orchestrator is offline." : locked ? "This version is finalized; unlock or duplicate it." : refs === 0 ? "Curate at least one reference first." : null;
-
   const num = (v: string) => (v.trim() ? Number(v) : undefined);
   const onStage = async () => {
-    setBusy("stage"); setProblem(null);
+    setBusy(true); setProblem(null);
     try {
       const r = await stageZimageLora(assetId, {
         version_id: version?.id, base_family: t.family, train_init: t.init,
@@ -50,44 +47,29 @@ export function TrainComposer() {
         steps: t.steps.trim() ? Math.min(10000, Math.max(1, Number(t.steps))) : undefined,
         rank: num(t.rank), alpha: num(t.alpha), learning_rate: num(t.lr), resolution: num(t.res),
       });
-      notify("ok", `Staged a ${r.kind.replace(/_/g, " ")} run with ${r.caption_count} captions. Add it to the queue when ready.`);
-      await refresh();
+      notify("ok", `Staged a ${r.kind.replace(/_/g, " ")} run with ${r.caption_count} captions. Add it to the queue from the dock.`);
+      await refreshStaged();
+      openDock("training");
     } catch (e) {
       setProblem(reasonOf(e));
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
-  const onQueue = async (id: string) => {
-    setBusy(id); setProblem(null);
-    try {
-      const r = await queueStagedTraining(id);
-      notify("ok", `Training queued as ${r.job_id}. Progress shows in the dock.`);
-      await refresh();
-    } catch (e) {
-      setProblem(reasonOf(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-  const onDelete = async (id: string) => {
-    if (confirmId !== id) { setConfirmId(id); return; }
-    setConfirmId(null);
-    setBusy(id); setProblem(null);
-    try {
-      await deleteStagedTraining(id);
-      await refresh();
-    } catch (e) {
-      setProblem(reasonOf(e));
-    } finally {
-      setBusy(null);
-    }
-  };
+
+  if (previewJobId && jobs[previewJobId]) {
+    return (
+      <>
+        <div className="panel-body compose"><LoraPreview jobId={previewJobId} /></div>
+        <div className="panel-foot"><span className="faint">Samples land on the Train canvas.</span></div>
+      </>
+    );
+  }
 
   return (
     <>
       <div className="panel-body compose">
-        <p className="faint">Train {detail?.profile.name ?? ""}: stage a character LoRA from the {refs} curated reference{refs === 1 ? "" : "s"}, then add it to the queue.</p>
+        <p className="faint">Train {detail?.profile.name ?? ""}: stage a character LoRA from the {refs} curated reference{refs === 1 ? "" : "s"}. Staging writes captions, context and the dataset; queueing is a separate, explicit step.</p>
 
         <div className="section-title">Run</div>
         <label className="p-field">Base model
@@ -117,32 +99,18 @@ export function TrainComposer() {
           <p className="faint">An adapter holds identity only at the resolution it was trained at; previews default to it.</p>
         </details>
 
-        <div className="section-title">Staged runs</div>
-        {staged === null && <p className="faint">Loading…</p>}
-        {staged?.length === 0 && <p className="faint">None yet. Stage one below.</p>}
-        {staged?.map((s) => (
-          <div key={s.id} className="staged-row">
-            <div>
-              <div>{s.trigger_token} <span className="faint">{s.version_name ?? s.version_id}</span></div>
-              <div className="faint">{s.kind.replace(/_/g, " ")}, {s.caption_count} captions{s.settings?.steps ? `, ${String(s.settings.steps)} steps` : ""}</div>
-            </div>
-            <div className="jt-row">
-              <button className="primary" onClick={() => void onQueue(s.id)} disabled={busy !== null || offline}>Add to queue</button>
-              <button onClick={() => void onDelete(s.id)} onBlur={() => setConfirmId(null)} disabled={busy !== null}
-                      title={confirmId === s.id ? "click again: the prepared dataset is deleted, the curated refs stay" : "remove this staged run"}>
-                {confirmId === s.id ? "Remove?" : "✕"}
-              </button>
-            </div>
-          </div>
-        ))}
+        <div className="section-title">Runs</div>
+        <p className="muted">{stagedHere} staged, {active} active, {runs.length - active} finished{version?.lora ? ", adapter promoted" : ""}.</p>
+        <button onClick={() => openDock("training")}>Show in the dock</button>
+        <p className="faint">Readiness is in the Inspector's Readiness tab; the captions are the Captions view on the canvas.</p>
       </div>
 
       <div className="panel-foot">
         {problem && <span className="form-error" role="alert">{problem}</span>}
         {blocked && !problem && <span className="faint">{blocked}</span>}
         <span className="spacer" />
-        <button className="primary" onClick={() => void onStage()} disabled={!!blocked || busy !== null}>
-          {busy === "stage" ? "Staging…" : "Stage the run"}
+        <button className="primary" onClick={() => void onStage()} disabled={!!blocked || busy}>
+          {busy ? "Staging…" : "Stage the run"}
         </button>
       </div>
     </>

@@ -34,6 +34,7 @@ export function usePolling(): void {
         s.applyJobs(j);
         if (useApp.getState().selectedAsset) await s.refreshAsset();   // hero, anchor, refs stay current
         await s.refreshStacks();                                       // step statuses reconcile on read
+        if (useApp.getState().dockOpen && useApp.getState().dockFilter === "training") await s.refreshStaged();
         const ds = j.disk?.state ?? null;
         if (ds && lastDiskState && ds !== lastDiskState) {
           if (ds === "hard") s.notify("err", "Disk hard-stop: new jobs are held until space is freed.");

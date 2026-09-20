@@ -4677,3 +4677,56 @@ inline details, the LoRA-preview pose picker in the composer.
 
 
 **Pushed:** step 5 = `3ef73bb` (code + tests + plan §6 row 5 + this entry).
+
+
+## ⚙ M2.14 step 6 — Train: captions view, readiness tab, the dock's Training pane, the preview form (2026-09-20, 21:49–22:00 CEDT)
+
+Author: *"Let's continue"* → step 6 of the plan's migration table.
+
+**Built in `frontends/v2/src/`:**
+- `shell/Dock.tsx` — the expanded dock is now a **Jobs pane with three filters**: **Active**
+  (queued + running, Stop for a batch, Cancel on a second click), **Training** (the selected
+  version's — or every — **staged runs** with their settings and *Add to queue* / *Remove?*, then
+  the **trainer jobs** newest first with status, progress, the `job.note` line (step / loss /
+  ETA), Cancel, and on a done run **Preview** (opens the form in the Train tab) · **Promote**
+  (then the asset detail refreshes so the ✨ appears) · *Cleanup?*; on a dead run *Cleanup?* /
+  *Remove?* (cleanup + delete); the promoted adapter named under the list), **Recent** (the last
+  40 finished, with wall time or the error). v1's TrainPanel lists are gone from the column.
+- `canvas/Captions.tsx` — the **Captions view** (strip: Captions, enabled in Train): one row
+  per curated ref — the thumbnail beside the caption, the pose, an *edited* / *template* badge,
+  a *no trigger* warning, a textarea with **Save / Discard**, **Reset** on an edited row,
+  **Reset all** on a second click; the Curate filters (shot · angle · expression) apply here
+  too; locked when the version is finalized. The arrow keys are unregistered on this view.
+- `inspect/ReadinessTab.tsx` — the advisory meter with its **details inline**: the verdict line
+  first (recommended or the reasons; "Advisory only; Train stays enabled"), then Coverage
+  (score · refs · cells; **missing values as chips per axis**), Duplicates (extras · groups;
+  **each group as thumbnails**; within-cell rule stated), Captions (count · edited · **the
+  no-trigger refs as thumbnails**), On-model (mode · mean cos · scored · faces; the
+  unreadable-anchor note; **outliers as thumbnails**; *Scan on-model* + *Refresh* + the
+  persisted stamp). The scan **closes through the one poller**: the tab watches the store's
+  jobs and persists when its job reaches done — v1 had its own `setInterval`.
+- `compose/LoraPreview.tsx` — the **preview form in the composer's Train tab** (opened by the
+  dock's Preview): the framing as pose icons (the L1 · Poses set; T-pose marked out of
+  vocabulary with the reason), the picked pose's prompt shown, a prompt override, seed, **size
+  blank = the trained resolution** (with the identity-collapses-at-2× note), weight, **Render**
+  or **A/B vs base** (same seed, `with_lora:false`). Samples land on the Train canvas.
+- `compose/Train.tsx` — the form as before; the staged list moved to the dock; a "n staged, n
+  active, n finished" line with **Show in the dock**; the preview form replaces the column
+  while a run is being previewed (Close returns).
+- `store.ts` — `dockFilter` (persisted), `openDock(filter)`, `staged` + `refreshStaged`
+  (refreshed by the poller while the Training pane is open, and after every action),
+  `previewJobId` + `setPreviewJob`. `shell/Stage.tsx` routes the Captions view and lets the
+  filters show there; `shell/Inspector.tsx` mounts the Readiness tab.
+
+**Verified:** v2 `tsc` + `vite build`; **+6 tests → 45** in `test_v2_frame.py` (with the grouped
+view): the homes of each Train surface; the preview / caption / readiness bodies against
+`LoraPreviewRequest`, `CaptionOverrideRequest`, `ReadinessEmbedRequest`, `ReadinessPersistRequest`
+(extra=forbid); the readiness scan closing through the poller and its details inline; the
+captions view's per-row edits and second-click reset; the preview's trained-size default and
+the A/B; and **no `window.confirm` / `prompt` / `alert` anywhere in v2** (the dock's last one
+went with this step). Not click-tested.
+
+**Next:** step 7 — **Edit mode**: the selected image fills the canvas with a tool rail (brush ·
+eraser · lasso · invert · feather · from-matte), the mask as an overlay, a PNG mask into `out/`,
+and the **Inpaint** postproc preset (sd35 / zimage inpaint modes today) with the Post tab
+holding the step; dry-run verified.

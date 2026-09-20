@@ -1,17 +1,18 @@
 // The right Inspector: tabs, resizable, collapsible (kb-loom-ui.md §3.5, migration step 4).
 // Info = the selected tile and its actions; Post = its postprocess stack as a tree; Version =
-// the active version (what the selection is when no tile is); Readiness lands with step 6,
-// Muse with P4.
+// the active version (what the selection is when no tile is); Readiness = the advisory meter
+// with its details inline; Muse lands with P4.
 import { useApp, type InspectorTab } from "../store";
 import { InfoTab, RefInfo } from "../inspect/InfoTab";
 import { PostTab } from "../inspect/PostTab";
+import { ReadinessTab } from "../inspect/ReadinessTab";
 import { VersionTab } from "../inspect/VersionTab";
 import { Resizer } from "./Resizer";
 
 const TABS: { id: InspectorTab; label: string; later?: string }[] = [
   { id: "info", label: "Info" },
   { id: "post", label: "Post" },
-  { id: "readiness", label: "Readiness", later: "step 6" },
+  { id: "readiness", label: "Readiness" },
   { id: "version", label: "Version" },
   { id: "muse", label: "Muse", later: "P4" },
 ];
@@ -42,7 +43,6 @@ export function Inspector() {
           <>
             <div className="section-title">{current.label}</div>
             <p className="muted">
-              {tab === "readiness" && "The four readiness tiers with their details inline: missing cells as chips, duplicate groups as tile pairs."}
               {tab === "muse" && "The chat dock that sees the current selection, and the agent plans awaiting approval."}
             </p>
             <p className="faint">Arrives with {current.later}.</p>
@@ -56,6 +56,7 @@ export function Inspector() {
           : <PostTab image={image!} />
         )}
         {tab === "version" && <VersionTab />}
+        {tab === "readiness" && <ReadinessTab />}
       </div>
     </aside>
   );

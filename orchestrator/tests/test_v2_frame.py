@@ -219,8 +219,10 @@ def test_train_form_sends_the_staging_fields_the_server_takes():
                 "learning_rate", "resolution"):
         assert f"{key}:" in train, key
         assert key in server, key
-    for call in ("stageZimageLora(", "getStagedTraining(", "queueStagedTraining(", "deleteStagedTraining("):
-        assert call in train, call
+    assert "stageZimageLora(" in train
+    assert "getStagedTraining(" in _read(V2 / "store.ts")                # staged runs are store state (step 6)
+    dock6 = _read(V2 / "shell" / "Dock.tsx")
+    assert "queueStagedTraining(" in dock6 and "deleteStagedTraining(" in dock6
     assert "window.confirm" not in train                  # removal is an inline second click
 
 
@@ -248,7 +250,7 @@ def test_inspector_tabs_are_their_own_modules():
     for mount in ("<InfoTab", "<PostTab", "<VersionTab"):
         assert mount in insp, mount
     assert "!selection ? <VersionTab />" in insp
-    assert 'later: "step 6"' in insp                     # Readiness still waits for step 6
+    assert 'later: "P4"' in insp                         # Muse still waits for P4
 
 
 def test_post_tab_sends_only_fields_the_server_accepts_and_mirrors_v1():
@@ -409,3 +411,76 @@ def test_loupe_and_grouped_views():
     for prefix in ("prv_", "trn_", "rdn_", "poses_"):
         assert f'batchId.startsWith("{prefix}")' in grouped, prefix
     assert 'className="chain-arrow"' in grouped                                   # a chain reads left to right
+
+
+# --- migration step 6: Train ----------------------------------------------------------------------
+
+
+def test_train_surfaces_have_their_homes():
+    """Form in the composer's Train tab; staged runs + trainer jobs in the dock's Training pane;
+    captions on the canvas; readiness in the Inspector; the preview form back in the composer."""
+    assert (CANVAS / "Captions.tsx").is_file() and (INSPECT / "ReadinessTab.tsx").is_file() and (COMPOSE / "LoraPreview.tsx").is_file()
+    assert "<Captions />" in _read(V2 / "shell" / "Stage.tsx")
+    insp = _read(V2 / "shell" / "Inspector.tsx")
+    assert "<ReadinessTab />" in insp and 'later: "step 6"' not in insp
+    dock = _read(V2 / "shell" / "Dock.tsx")
+    for f in ('id: "active"', 'id: "training"', 'id: "recent"'):
+        assert f in dock, f
+    assert 'j.pipeline === "zimage_trainer"' in dock and "queueStagedTraining(" in dock and "deleteStagedTraining(" in dock
+    for call in ("promoteTrainedLora(", "cleanupTrainingRun(", "deleteJob(", "setPreviewJob(j.id)"):
+        assert call in dock, call
+    train = _read(COMPOSE / "Train.tsx")
+    assert "<LoraPreview" in train and "getStagedTraining(" not in train        # staged runs moved to the dock
+    assert "refreshStaged" in _read(V2 / "store.ts") and "refreshStaged()" in _read(V2 / "poll.ts")
+
+
+def test_train_bodies_send_only_fields_the_server_accepts():
+    preview = _read(COMPOSE / "LoraPreview.tsx")
+    server = _server_fields("LoraPreviewRequest(BaseModel)")
+    for key in ("pose", "prompt", "seed", "width", "height", "lora_weight", "with_lora"):
+        assert key in server, key
+        assert f"{key}:" in preview or f"{key}: false" in preview, key
+    caps = _read(CANVAS / "Captions.tsx")
+    assert "caption" in _server_fields("CaptionOverrideRequest(BaseModel)")
+    assert "setCaptionOverride(" in caps and "clearCaptionOverride(" in caps and "getCaptions(" in caps
+    ready = _read(INSPECT / "ReadinessTab.tsx")
+    assert "version_id" in _server_fields("ReadinessEmbedRequest(BaseModel)")
+    assert {"version_id", "job_id"} <= _server_fields("ReadinessPersistRequest(BaseModel)")
+    for call in ("getReadiness(", "queueReadinessEmbed(", "persistReadiness("):
+        assert call in ready, call
+
+
+def test_readiness_scan_closes_through_the_one_poller():
+    """v1 polled the scan job with its own setInterval; v2 watches the store's jobs and
+    persists when the job reaches done."""
+    ready = _read(INSPECT / "ReadinessTab.tsx")
+    assert "setInterval" not in ready and "const j = jobs[scanJob];" in ready
+    assert 'if (j.status === "done")' in ready and "persistReadiness(assetId, versionId ?? undefined, scanJob)" in ready
+    # details inline, not tooltips: chips for missing cells, thumbnails for groups and outliers
+    assert "v.missing.map((m) => <span key={m} className=\"pill\">" in ready
+    assert "thumbs(g)" in ready and "thumbs(om.outliers!)" in ready and "thumbs(cap.missing_trigger)" in ready
+    assert "Advisory only; Train stays enabled." in ready                     # R14
+
+
+def test_captions_view_edits_are_per_row_and_reset_all_is_a_second_click():
+    caps = _read(CANVAS / "Captions.tsx")
+    assert "refUrl(assetId, c.file, version.id)" in caps                       # the image beside the text
+    assert 'c.origin === "edited" ? "edited" : "template"' in caps and "no trigger" in caps
+    assert 'confirmAll ? "Reset every caption?" : "Reset all"' in caps
+    assert "setCanvas(null)" in caps                                            # arrows have no tiles here
+    for f in ("filters.shot", "filters.angle", "filters.expression"):
+        assert f in caps, f
+
+
+def test_lora_preview_defaults_to_the_trained_resolution():
+    preview = _read(COMPOSE / "LoraPreview.tsx")
+    assert 'placeholder="trained"' in preview and "Identity collapses at twice the trained size." in preview
+    assert "with_lora: false" in preview                                        # the A/B against the base
+    assert "getPreviewPoses(" in preview and "poseIconUrl(p.pose_key)" in preview
+    assert "out of vocabulary" in preview                                       # T-pose says so
+
+
+def test_no_native_dialogs_anywhere_in_v2():
+    for p in list(V2.rglob("*.ts")) + list(V2.rglob("*.tsx")):
+        src = _read(p)
+        assert "window.confirm" not in src and "window.prompt" not in src and "window.alert" not in src, p.name

@@ -5,9 +5,9 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 import {
-  addPostprocStep, getAsset, getPostprocStacks, queuePostprocStep, removePostprocStep, type AssetDetail,
-  type DiskStatus, type Health, type Job, type JobStatus, type JobsResponse, type PauseReason,
-  type PostprocStack, type PostprocStep, type ProjectInfo,
+  addPostprocStep, getAsset, getPostprocStacks, getStagedTraining, queuePostprocStep, removePostprocStep,
+  type AssetDetail, type DiskStatus, type Health, type Job, type JobStatus, type JobsResponse, type PauseReason,
+  type PostprocStack, type PostprocStep, type ProjectInfo, type StagedTraining,
 } from "@loom/shared/api/orchestrator";
 
 export type Workspace = "world" | "assets" | "shots" | "flow" | "episode";
@@ -16,6 +16,7 @@ export type View = "flat" | "grouped" | "captions" | "loupe";
 export type PanelTab = "library" | "compose" | "train";
 export type InspectorTab = "info" | "post" | "readiness" | "version" | "muse";
 export type NoticeKind = "info" | "ok" | "warn" | "err";
+export type DockFilter = "active" | "training" | "recent";
 
 export interface Notice { id: number; kind: NoticeKind; text: string; at: number }
 /** A tile: a job output, a job placeholder (no output yet), or a durable curated ref. */
@@ -40,6 +41,7 @@ interface LayoutSlice {
   inspectorTab: InspectorTab;
   dockOpen: boolean;
   dockHeight: number;
+  dockFilter: DockFilter;
   zoom: number;
   fit: "fit" | "fill";
 }
@@ -63,6 +65,8 @@ interface LiveSlice {
   bulk: string[];                        // tile keys marked for a bulk action
   filters: Filters;                      // the Curate filters
   pendingDelete: string | null;          // a tile key (or "__bulk__") awaiting its second click
+  staged: StagedTraining[];              // staged (not queued) training runs, project-wide
+  previewJobId: string | null;           // a done trainer job whose preview form is open in the Train tab
   viewBeforeLoupe: View;
   helpOpen: boolean;
   menuOpen: boolean;
@@ -78,6 +82,8 @@ interface Actions {
   toggleInspector: (tab?: InspectorTab) => void;
   setInspectorWidth: (w: number) => void;
   toggleDock: () => void;
+  openDock: (filter?: DockFilter) => void;
+  setDockFilter: (f: DockFilter) => void;
   setDockHeight: (h: number) => void;
   setZoom: (z: number) => void;
   setFit: (f: "fit" | "fill") => void;
@@ -94,6 +100,8 @@ interface Actions {
   addStep: (body: { base: string; preset?: PostprocStep["preset"]; backend?: string; params?: Record<string, unknown>; source?: string }) => Promise<void>;
   queueStep: (stepId: string, requesterId?: string, stage?: string) => Promise<void>;
   removeStep: (stepId: string) => Promise<void>;
+  refreshStaged: () => Promise<void>;
+  setPreviewJob: (id: string | null) => void;
   select: (s: Selection | null) => void;
   setCompare: (s: Selection | null) => void;
   toggleBulk: (key: string) => void;
@@ -127,6 +135,7 @@ export const useApp = create<AppState>()(
       inspectorTab: "info",
       dockOpen: false,
       dockHeight: 220,
+      dockFilter: "active",
       zoom: 180,
       fit: "fit",
       // live
@@ -149,6 +158,8 @@ export const useApp = create<AppState>()(
       filters: { shot: "", angle: "", expression: "", showRejected: false },
       pendingDelete: null,
       viewBeforeLoupe: "flat",
+      staged: [],
+      previewJobId: null,
       helpOpen: false,
       menuOpen: false,
       dialog: null,
@@ -170,6 +181,8 @@ export const useApp = create<AppState>()(
       }),
       setInspectorWidth: (w) => set({ inspectorWidth: clamp(w, 280, 480) }),
       toggleDock: () => set((s) => ({ dockOpen: !s.dockOpen })),
+      openDock: (filter) => set((s) => ({ dockOpen: true, dockFilter: filter ?? s.dockFilter })),
+      setDockFilter: (dockFilter) => set({ dockFilter }),
       setDockHeight: (h) => set({ dockHeight: clamp(h, 120, 480) }),
       setZoom: (z) => set({ zoom: clamp(z, 120, 360) }),
       setFit: (fit) => set({ fit }),
@@ -185,7 +198,7 @@ export const useApp = create<AppState>()(
       setProject: (project) => set((s) => {
         // a project change resets what depends on it
         const changed = (project?.id ?? null) !== (s.project?.id ?? null);
-        return changed ? { project, selectedAsset: null, assetDetail: null, stacks: [], selection: null, compare: null, bulk: [], pendingDelete: null } : { project };
+        return changed ? { project, selectedAsset: null, assetDetail: null, stacks: [], staged: [], previewJobId: null, selection: null, compare: null, bulk: [], pendingDelete: null } : { project };
       }),
       applyJobs: (r) => set({
         jobs: r.jobs, counts: r.counts, paused: r.paused,
@@ -196,7 +209,7 @@ export const useApp = create<AppState>()(
       })),
       dismiss: (id) => set((s) => ({ notices: s.notices.filter((n) => n.id !== id) })),
       selectAsset: (selectedAsset) => {
-        set((s) => ({ selectedAsset, selection: null, compare: null, bulk: [], pendingDelete: null, assetDetail: null, view: s.view === "loupe" ? "flat" : s.view }));
+        set((s) => ({ selectedAsset, selection: null, compare: null, bulk: [], pendingDelete: null, assetDetail: null, previewJobId: null, view: s.view === "loupe" || s.view === "captions" ? "flat" : s.view }));
         void get().refreshAsset();
       },
       refreshAsset: async () => {
@@ -218,6 +231,14 @@ export const useApp = create<AppState>()(
       addStep: async (body) => set({ stacks: await addPostprocStep(body) }),
       queueStep: async (stepId, requesterId, stage) => set({ stacks: await queuePostprocStep(stepId, requesterId, stage) }),
       removeStep: async (stepId) => set({ stacks: await removePostprocStep(stepId) }),
+      refreshStaged: async () => {
+        if (!get().project) { if (get().staged.length) set({ staged: [] }); return; }
+        try {
+          const staged = (await getStagedTraining()).staged;
+          if (JSON.stringify(staged) !== JSON.stringify(get().staged)) set({ staged });
+        } catch { /* refetched on the next action */ }
+      },
+      setPreviewJob: (previewJobId) => set({ previewJobId }),
       select: (selection) => set({ selection, pendingDelete: null }),
       setCompare: (compare) => set({ compare }),
       toggleBulk: (key) => set((s) => ({ bulk: s.bulk.includes(key) ? s.bulk.filter((k) => k !== key) : [...s.bulk, key] })),
@@ -236,7 +257,7 @@ export const useApp = create<AppState>()(
         workspace: s.workspace, stage: s.stage, view: s.view,
         panelOpen: s.panelOpen, panelWidth: s.panelWidth, panelTab: s.panelTab,
         inspectorOpen: s.inspectorOpen, inspectorWidth: s.inspectorWidth, inspectorTab: s.inspectorTab,
-        dockOpen: s.dockOpen, dockHeight: s.dockHeight, zoom: s.zoom, fit: s.fit,
+        dockOpen: s.dockOpen, dockHeight: s.dockHeight, dockFilter: s.dockFilter, zoom: s.zoom, fit: s.fit,
       }),
     },
   ),

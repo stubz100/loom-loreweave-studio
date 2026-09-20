@@ -297,3 +297,31 @@ button.on { color: var(--amber); }
 .loupe-pane img { flex: 1; min-height: 0; width: 100%; height: 100%; object-fit: contain; }
 .loupe-pane.one img { flex: none; width: auto; height: auto; max-width: none; object-fit: none; }
 .loupe-pane figcaption { flex: none; padding: 6px 10px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+
+/* ---- train: captions view, readiness tab, dock pane (migration step 6) ------------------- */
+.captions { display: flex; flex-direction: column; gap: 8px; max-width: 1100px; }
+.captions-head { display: flex; align-items: center; gap: 10px; font-size: 12px; flex-wrap: wrap; }
+.cap-row { display: grid; grid-template-columns: 96px 1fr auto; gap: 10px; align-items: start; background: var(--panel); border-radius: var(--radius); padding: 8px; }
+.cap-row.edited { border-left: 3px solid var(--amber); }
+.cap-row img { width: 96px; height: 96px; object-fit: cover; border-radius: var(--radius); background: var(--bg); }
+.cap-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cap-main textarea { width: 100%; color: var(--fg); }
+.cap-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; flex-wrap: wrap; }
+.cap-acts { display: flex; flex-direction: column; gap: 4px; }
+.pill.amber { color: var(--amber); }
+.pill.warn { color: var(--warn); }
+.ready-verdict { font-size: 12px; padding: 6px 8px; border-radius: var(--radius); background: var(--raised); border-left: 3px solid var(--ok); }
+.ready-verdict.warn { border-left-color: var(--warn); }
+.ready-row { padding: 8px 0; border-top: 1px solid var(--line); font-size: 12px; }
+.ready-row.s-warn .pill { color: var(--warn); }
+.ready-row.s-ok .pill { color: var(--ok); }
+.ready-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.ready-thumbs { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0; }
+.ready-thumbs img { width: 48px; height: 48px; object-fit: cover; border-radius: var(--radius); background: var(--bg); }
+.ready-group { padding: 4px 0; border-top: 1px dashed var(--line); }
+.chips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: 2px 0; }
+.dock-tabs { padding: 0 0 6px; }
+.dock-tabs .faint { align-self: center; margin-left: 8px; }
+.job-acts { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.job-acts button { font-size: 11px; padding: 2px 8px; }
+.job-row.s-staged .dot { background: var(--amber); }

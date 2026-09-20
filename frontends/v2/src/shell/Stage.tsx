@@ -5,6 +5,7 @@
 import { useMemo } from "react";
 
 import { tileActions } from "../canvas/actions";
+import { Captions } from "../canvas/Captions";
 import { Grid } from "../canvas/Grid";
 import { Grouped } from "../canvas/Grouped";
 import { Loupe } from "../canvas/Loupe";
@@ -98,13 +99,13 @@ function AssetsStage() {
           {VIEWS.map((v) => (
             <button key={v.id} role="tab" aria-selected={view === v.id} className={`verb${view === v.id ? " active" : ""}`}
                     onClick={() => setView(v.id)}
-                    disabled={(v.id === "captions") || (v.id === "loupe" && !selection)}
-                    title={v.id === "captions" ? "Captions view arrives with step 6" : v.id === "loupe" ? (selection ? "Loupe (Enter)" : "Loupe needs a selected tile") : v.label}>
+                    disabled={(v.id === "captions" && !(selectedAsset && stage === "train")) || (v.id === "loupe" && !selection)}
+                    title={v.id === "captions" ? "the curated refs with their captions (Train)" : v.id === "loupe" ? (selection ? "Loupe (Enter)" : "Loupe needs a selected tile") : v.label}>
               {v.label}
             </button>
           ))}
         </div>
-        {curating && bulk.length === 0 && (
+        {(curating || (view === "captions" && stage === "train")) && bulk.length === 0 && (
           <div className="filters" aria-label="Curate filters">
             <select value={filters.shot} onChange={(e) => setFilters({ shot: e.target.value })} title="shot size"><option value="">any shot</option>{SHOTS.map((s) => <option key={s} value={s}>{nice(s)}</option>)}</select>
             <select value={filters.angle} onChange={(e) => setFilters({ angle: e.target.value })} title="angle"><option value="">any angle</option>{ANGLES.map((s) => <option key={s} value={s}>{nice(s)}</option>)}</select>
@@ -134,6 +135,8 @@ function AssetsStage() {
       <div className="canvas">
         {!project ? (
           <Start />
+        ) : view === "captions" && stage === "train" ? (
+          <Captions />
         ) : view === "loupe" ? (
           <Loupe model={model} assetId={selectedAsset} versionId={versionId} />
         ) : model.tiles.length === 0 ? (

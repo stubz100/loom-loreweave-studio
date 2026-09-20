@@ -4532,3 +4532,17 @@ Preview, Generate dataset; Train tab → Stage the run.
 
 **Next:** step 4 — Inspector tabs (Post = the stack tree with tombstones, Version), then step 5
 (canvas actions: star/anchor/keep/reject on the tile, loupe, keyboard).
+
+
+**Pushed:** step 3b = `280c772` (code + tests + plan §6 row 3 + README tree line + this entry).
+Ledger for the earlier M2.14 steps, which their entries did not carry: step 1 `7cc2982`,
+step 2 `86e158f`, step 3a `b964980` + `7a11979` (the heredoc-escaping fix to its test).
+
+**⚠ Erratum — the M2.14 clock stamps.** The windows written into the step 1, 2, 3a and 3b
+headings were estimated, not read from the clock, and the commit times prove them wrong
+(the step 2 and 3a windows lie *after* their own commits). The real sequence, from
+`git log --format=%ci` on 2026-09-20 CEDT: CORS fix `0ca07a0` 20:15 → **step 1 ≈ 20:16–20:28**
+(`7cc2982`) → **step 2 ≈ 20:29–20:52** (`86e158f`) → **step 3a ≈ 20:53–21:04** (`b964980`,
+`7a11979`) → **step 3b ≈ 21:05–21:20** (`280c772`). The heading text above stays as written
+(append-only journal); read these as the times of record. Rule re-learned: run `date` before
+writing a stamp, never extrapolate from the previous entry.

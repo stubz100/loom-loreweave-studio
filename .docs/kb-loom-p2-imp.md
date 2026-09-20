@@ -4308,3 +4308,10 @@ Shape, fitted to the adapter contract the runner already has (`adapters/base.py`
 - **Decisions for the author:** (a) build M2.16 now, before v2's frame, or after; (b) default tier
   Q8 (recommended) vs Q4 for dev; (c) Z-Image via the GGUF in flight (recommended) vs the Comfy
   bf16 file.
+
+
+*Addendum 19:20 CEDT — the Z-Image number landed* (the GGUF finished once it was the only
+download; the link recovered to normal speed). **Z-Image-Turbo Q8 GGUF, 512², 8 steps: text
+encode 5.8 s · sampling 87 s (10.9 s/step) · decode 5.4 s · total 98.5 s · 10.5 GB RAM** — image
+on-prompt and clean. That makes the CPU ladder at 512²: **klein 54 s < Z-Image-Turbo 99 s <
+SD3.5 120 s ≪ dev 27.5 min**. Reproduce: `tools\sdcpp\bench-cpu.ps1 zimage`.

@@ -4730,3 +4730,6 @@ went with this step). Not click-tested.
 eraser · lasso · invert · feather · from-matte), the mask as an overlay, a PNG mask into `out/`,
 and the **Inpaint** postproc preset (sd35 / zimage inpaint modes today) with the Post tab
 holding the step; dry-run verified.
+
+
+**Pushed:** step 6 = `5f327a8` (code + tests + plan §6 row 6 + this entry).

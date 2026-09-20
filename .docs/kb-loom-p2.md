@@ -1456,6 +1456,16 @@ author's visual sign-off.
    edge is still three partial mechanisms — that half stays P4's. **Rig-owed:** the visible result
    of the flux2 schedule fix, and a look at the grouped view against the full library.)*
 
+3j. **M2.15 — CPU / ggml spike ✅ (2026-09-20, GPU on RMA).** *Can loom generate on the CPU at
+   all, and how fast?* stable-diffusion.cpp (ggml, AVX-512), no torch: **klein-4B ≈ 1 min, SD3.5
+   Medium ≈ 2 min t2i / 1.2 min Clean pass, FLUX.2-dev ≈ 27 min at 20 steps** (all 512², Q8 at load,
+   32 threads; 1024² = 4.6×; Z-Image pending its GGUF). Q8 at load is visually lossless and −45 % RAM;
+   128 GB holds dev with room to spare. Three of four families ran with **zero downloads** (the
+   Comfy scaled-fp8 dev files are read directly; the Qwen3 text encoder is merged from the cached
+   shards). **Verdict: GO for a `ggml` backend** — proposed **M2.16 — `sdcpp` adapter + a catalog
+   `backend` axis** (torch-rocm · ggml-cpu · ggml-vulkan); design + numbers in the journal
+   "🧪 CPU / ggml spike". Reusable tools in `tools/sdcpp/`.
+
 ### Phase B — Thicken (all VLM-free)
 
 4. **M3 — caption review/edit (the override layer).** *Re-scoped 2026-07-12: deterministic

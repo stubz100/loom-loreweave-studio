@@ -4213,3 +4213,98 @@ sidecar itself (the old one-command path). Settings follow the orchestrator's pr
 
 Smoke-tested end to end: orchestrator + v1 up in 4 s (project `stubz001`), a second launcher
 for v2 reused it (1 s), teardown left :8765/:1420/:1421 free.
+
+
+## 🧪 CPU / ggml spike — stable-diffusion.cpp on the Ryzen 9 9950X, no GPU (started 2026-09-20 17:45, finished 19:10 CEDT)
+
+**Question (author):** *"how efficient would it be to infer images from a CPU/integrated GPU only,
+as I have a high amount of system memory (128G)"* — and the author's stated order: UI plan →
+**this spike** → v2. Tool: **stable-diffusion.cpp** (ggml) release `master-881-17860c0`, CPU
+build (per-µarch kernels; this box loads `ggml-cpu-cascadelake` = AVX-512 + VNNI), unpacked at
+`<monorepo>/.tmp/sdcpp/cpu/` (+ the Vulkan build kept beside it — a ROCm-free GPU path for when
+the card returns). No torch anywhere in the loop. Reusable pieces landed in `tools/sdcpp/`
+(`bench-cpu.ps1`, `merge_safetensors.py`, README); artefacts (8 PNGs + logs) in
+`.tmp/sdcpp/bench/`. The iGPU (2 CU RDNA2, no ROCm) was not tried: it is slower than the CPU.
+
+### Weights — almost everything came from the cache
+
+- **SD3.5 Medium**: the cached single file holds only the VAE *decoder*, and the runtime validates
+  the full autoencoder → the diffusers `vae/diffusion_pytorch_model.safetensors` from the same
+  repo is passed as `--vae`; clip_l / clip_g / t5xxl_fp16 from `text_encoders/`.
+- **klein-4B**: the cached BFL single file + the Comfy `flux2-vae.safetensors` + **Qwen3-4B merged
+  locally from the cached HF shards** (`merge_safetensors.py`: byte copy, 8.04 GB in 17 s — the
+  runtime reads the HF key layout as-is). Replaced an 8 GB download.
+- **FLUX.2-dev**: the cached **Comfy scaled-fp8** transformer (F8_E4M3 + `weight_scale` /
+  `input_scale`) and the cached bf16 Mistral-Small split file are **read directly**; `--type q8_0`
+  requantises both at load (TE 17.6 GB + transformer 32.9 GB in RAM). **The Unsloth GGUF is not
+  needed for dev** (that 34 GB download was stopped at 2.6 GB; the link gave ~1 MB/s all evening —
+  a direct curl to the HF CDN confirmed it was the network, not CPU contention).
+- **Z-Image-Turbo**: the diffusers transformer merged the same way is *recognised*
+  ("Version: Z-Image") but refused at load — split q/k/v vs the fused `attention.qkv` the runtime
+  expects. Needs the Comfy/original single file or a GGUF; `leejet/Z-Image-Turbo-GGUF` Q8_0
+  (6.7 GB) was 1.0 GB in at the time of writing → **its number is pending**; run
+  `tools\sdcpp\bench-cpu.ps1 zimage` when the file is there (the script finds it in the cache).
+
+### Measurements (512² unless noted · 32 threads · flash attention · same prompt & seed)
+
+| run | steps | text encode | sampling | total | RAM (params) |
+| --- | --- | --- | --- | --- | --- |
+| sd3.5-medium bf16, 16 threads | 28 + CFG | 14.5 s | 141 s | 161 s | 16.0 GB |
+| sd3.5-medium bf16, 32 threads | 28 + CFG | 5.6 s | 129 s | 140 s | 16.0 GB |
+| sd3.5-medium **Q8 at load** | 28 + CFG | 7.1 s | **107 s** | **120 s** | **9.1 GB** |
+| sd3.5-medium Q8 **img2img 0.5** (a Clean pass) | 14 eff. | 7.3 s | 58 s | **74 s** | 9.1 GB |
+| sd3.5-medium Q8 **1024²** | 28 + CFG | 7.4 s | 496 s | **528 s** | 9.1 GB (+6.7 GB VAE buffer) |
+| flux2 klein-4B bf16 | 4 | 4.6 s | 64 s | 75 s | 15.2 GB |
+| flux2 klein-4B **Q8** | 4 | 5.9 s | **42 s** | **54 s** | **8.2 GB** |
+| **flux2-dev Q8** (from the Comfy fp8 files) | 20 | 46.7 s | **1 599 s** | **1 651 s (27.5 min)** | **50.6 GB** |
+| zimage-turbo Q8 | 8 | — | *pending (GGUF download)* | est. 60–90 s | — |
+
+Per-forward cost: SD3.5 ≈ 1.9 s (3.8 s per CFG step), klein-4B ≈ 10.5 s, dev ≈ **80 s per step**.
+VAE decode 5.5 s at 512², 25 s at 1024². Model load 5–45 s from NVMe (warm OS cache after the
+first run). **1024² costs 4.6× 512²** (tokens ×4 plus attention).
+
+### Findings
+
+1. **32 threads beat 16** by ~9 % on sampling (SMT helps ggml's GEMMs here); use 32.
+2. **Q8_0 at load is free quality** — SD3.5 and klein outputs are visually identical to bf16 —
+   and buys **−17 % time, −45 % RAM**. The GGUF tiers matter *for the CPU*, not the GPU (see the
+   2026-09-20 model-stack assessment); Q4 tiers were not tested (dev is the only candidate).
+3. **Usable today, on the CPU:** klein-4B ≈ 1 min/image, SD3.5 t2i ≈ 2 min, an SD3.5 Clean/Refine
+   pass ≈ 1.2 min, Z-Image-Turbo expected ≈ 1–1.5 min. All 512²; 1024² is 4–5× that.
+4. **FLUX.2-dev is a batch tool on the CPU**: 27 min per 512² image at 20 steps; with the Turbo
+   LoRA at 4–8 steps ≈ 7–12 min (LoRA loading is supported — `--lora-model-dir` + the
+   `<lora:name:w>` prompt syntax — but was not run). At 1024² ≈ 2 h: not a CPU workload. The
+   author's "author at 512² with dev, then upscale" loop maps to: **klein / SD3.5 interactively,
+   dev as a queued overnight sweep, SD3.5 i2i + inpaint as the cleanup loop** — and the ONNX
+   passes (identity, restore) already run on the CPU.
+5. **RAM is not the constraint** — 128 GB holds dev at Q8 with 67 GB to spare; even bf16 dev
+   (≈100 GB) would fit. **The network is**: at ~1 MB/s the GGUF route is a day per model; the
+   cache-plus-merge route made three of four families runnable with zero downloads.
+6. **Quality across the board is real** (all eight images viewed): SD3.5 512²/1024² sharp and
+   on-prompt, klein coherent, dev the best of the set.
+7. `sd-server.exe` ships in the same build → a **warm-serving** mode exists for the adapter
+   (model loaded once per sweep, the M2.7 shape), avoiding the 5–45 s load per job.
+
+### Verdict + the adapter (proposed **M2.16 — `sdcpp` adapter / backend axis**)
+
+**GO for a ggml backend.** It is the only path that is genuinely usable on this CPU, it removes
+the ROCm dependency for the GPU later (Vulkan build), and it is where GGUF tiers belong.
+Shape, fitted to the adapter contract the runner already has (`adapters/base.py`):
+
+- `pipelines/sdcpp/run_pipeline.py` — a torch-free worker: maps loom's catalog params to sd-cli
+  flags (`-p/-n`, `-W/-H`, `--steps`, `--cfg-scale` / `--guidance`, `--seed`, `-i --strength`,
+  `--mask`, `-r` reference images for flux2 multi-ref, `--lora-model-dir`), spawns `sd-cli`
+  (or talks to `sd-server` under a `warm_group`), streams its log (progress from the step lines),
+  and emits the `[image]` lines + the manifest the runner's batch parser expects.
+- `orchestrator/adapters/sdcpp.py` — `present()` = binary configured (`LOOM_SDCPP_BIN`) and the
+  family's single files resolvable; `capabilities()` per family; `vram_estimate_gb = 0` with a
+  `cpu` lane flag (during the RMA the single queue simply runs CPU jobs; a parallel CPU lane is a
+  later refinement); defaults `-t 32 --diffusion-fa --type q8_0`.
+- `model_catalog`: a **`backend` axis** per variant — `torch-rocm` (today's workers) ·
+  `ggml-cpu` · `ggml-vulkan` — each with its **single-file weight sources** and quant tier; the
+  weight gate is file presence, and `merge_safetensors.py` is the "build from the cache" step for
+  the Qwen3 text encoder. The M0d JSON prompt tree serialises to text already, so dev prompts
+  pass through unchanged.
+- **Decisions for the author:** (a) build M2.16 now, before v2's frame, or after; (b) default tier
+  Q8 (recommended) vs Q4 for dev; (c) Z-Image via the GGUF in flight (recommended) vs the Comfy
+  bf16 file.

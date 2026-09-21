@@ -4841,3 +4841,8 @@ the rig loop.
 **Next:** the author's launch. Then, by the author's call: the three owed step-5 items, the
 M2.16 `sdcpp` adapter decisions, the docs-drift pass (README:118 / spec §12 hardware
 statements, the stray `99` file), and — once the GPU is back — the P2 rig stamps.
+
+
+**Pushed:** step 8 = `45049a8` (code + tests + plan §6 row 8 + the close-out note + README + this entry).
+
+**⚠ Erratum, the clock again.** Commit times of record (`git log --format=%ci`): step 7 committed 2026-09-21 07:35 (its heading says finished 07:42, a guess); step 8 ran about 07:36 to 07:43 (its heading says 07:43 to 07:43 because the start was guessed and the finish read from the clock). Rule, once more: read the clock at the START of an entry too.

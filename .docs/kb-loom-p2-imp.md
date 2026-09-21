@@ -5088,3 +5088,6 @@ acceptance of both M2.14 and M2.17. On this box `.env` pins the location, so the
 show *set by .env* until that line is removed; the flux.2-dev row reads *ok, extras* after the
 repair, and a prune dry run lists the August VAE-only revision, two empty repos and four
 orphan blobs.
+
+
+**Pushed:** step d = `6111367` (the frontend + the loaders robust pin import + tests + plan row d + README + this entry). Ledger of M2.17: a `9171e30` · b `5d98509` · c `36dbbdd` · d `6111367`. The whole backend suite under the torch guard before the commit: **515 passed, 2 skipped, 36 torch-bound deselected**. The first full run caught the loaders pin import dying on a file-path load (the zimage LoRA loader tests load the worker by path): now a three-way import (package · sys.path · beside the file).

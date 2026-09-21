@@ -13,6 +13,8 @@ import { Loupe } from "../canvas/Loupe";
 import { deriveCanvas, scopedJobs } from "../canvas/tiles";
 import { ANGLES, EXPRESSIONS, SHOTS, nice } from "../lib/coverage";
 import { STAGE_LETTER, useApp, type Stage as StageId, type View } from "../store";
+import { World } from "../world/World";
+import { LaterCanvas } from "./Later";
 import { Start } from "./Start";
 
 const VERBS: { id: StageId; label: string }[] = [
@@ -26,20 +28,8 @@ export function Stage() {
   const workspace = useApp((s) => s.workspace);
   return (
     <main className="stage">
-      {workspace === "assets" ? <AssetsStage /> : <WorldStage />}
+      {workspace === "assets" ? <AssetsStage /> : workspace === "world" ? <World /> : <LaterCanvas />}
     </main>
-  );
-}
-
-function WorldStage() {
-  return (
-    <div className="canvas">
-      <div className="empty">
-        <h2>World</h2>
-        <p>The style editor, the world text, the story spine and the pose sets open here, listed from the panel on the left.</p>
-        <p className="faint">Arrives with migration step 8 of the UI plan.</p>
-      </div>
-    </div>
   );
 }
 

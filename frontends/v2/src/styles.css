@@ -338,3 +338,32 @@ button.on { color: var(--amber); }
 .edit-stage img { width: 100%; height: 100%; display: block; user-select: none; }
 .edit-overlay { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
 .edit-overlay.tool-lasso { cursor: cell; }
+
+/* ---- world workspace + later placeholders (migration step 8) ----------------------------- */
+.ws-tab.later { color: var(--faint); }
+.ws-phase { font-size: 10px; margin-left: 4px; padding: 0 4px; border-radius: 8px; background: var(--raised); color: var(--muted); }
+.world-tabs { padding: 0 0 8px; }
+.style-row-item { display: flex; align-items: center; gap: 8px; }
+.style-row-item img { width: 28px; height: 28px; object-fit: cover; border-radius: var(--radius); background: var(--bg); }
+.style-ph { width: 28px; height: 28px; display: grid; place-items: center; color: var(--faint); }
+.style-row-item .grow { flex: 1; text-align: left; }
+.outline-row { font-size: 12px; padding: 4px 8px; color: var(--muted); }
+.canvas.world { padding: 14px 18px; }
+.editor { max-width: 900px; display: flex; flex-direction: column; gap: 8px; }
+.editor-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.editor-head h2 { font-size: 16px; font-weight: 600; margin: 0; }
+.editor-title { font-size: 15px; font-weight: 600; min-width: 220px; color: var(--fg); }
+.editor textarea { width: 100%; color: var(--fg); }
+.editor textarea.prose { min-height: 60vh; font-size: 13px; line-height: 1.5; }
+.sample { display: flex; gap: 14px; align-items: flex-start; }
+.sample-img img { width: 200px; height: 200px; object-fit: cover; border-radius: var(--radius); background: var(--bg); }
+.sample-form { flex: 1; min-width: 0; }
+.spine-row { background: var(--panel); border-radius: var(--radius); padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.pose-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.pose-wrap .cell { width: 100%; opacity: 1; position: relative; }
+.pose-wrap.busy .cell { opacity: .5; }
+.pose-wrap .cap { position: absolute; left: 4px; bottom: 4px; font-size: 10px; padding: 1px 5px; border-radius: 8px; background: rgba(27, 29, 34, .8); color: var(--muted); }
+.pose-acts { display: flex; gap: 4px; margin-top: 4px; }
+.pose-acts button { font-size: 11px; padding: 2px 8px; }
+.later-card { max-width: 560px; margin: 12vh auto 0; background: var(--panel); border-radius: var(--radius); padding: 18px 22px; }
+.later-card h2 { font-size: 18px; font-weight: 600; margin: 0 0 12px; display: flex; align-items: center; gap: 10px; }

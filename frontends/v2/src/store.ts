@@ -5,9 +5,9 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 import {
-  addPostprocStep, getAsset, getPostprocStacks, getStagedTraining, queuePostprocStep, removePostprocStep,
-  type AssetDetail, type DiskStatus, type Health, type Job, type JobStatus, type JobsResponse, type PauseReason,
-  type PostprocStack, type PostprocStep, type ProjectInfo, type StagedTraining,
+  addPostprocStep, getAsset, getBible, getPostprocStacks, getStagedTraining, queuePostprocStep, removePostprocStep,
+  type AssetDetail, type BibleInfo, type DiskStatus, type Health, type Job, type JobStatus, type JobsResponse,
+  type PauseReason, type PostprocStack, type PostprocStep, type ProjectInfo, type StagedTraining,
 } from "@loom/shared/api/orchestrator";
 
 export type Workspace = "world" | "assets" | "shots" | "flow" | "episode";
@@ -17,6 +17,7 @@ export type PanelTab = "library" | "compose" | "train";
 export type InspectorTab = "info" | "post" | "readiness" | "version" | "muse";
 export type NoticeKind = "info" | "ok" | "warn" | "err";
 export type DockFilter = "active" | "training" | "recent";
+export type WorldTab = "styles" | "world" | "spine" | "poses";
 
 export interface Notice { id: number; kind: NoticeKind; text: string; at: number }
 /** A tile: a job output, a job placeholder (no output yet), or a durable curated ref. */
@@ -42,6 +43,8 @@ interface LayoutSlice {
   dockOpen: boolean;
   dockHeight: number;
   dockFilter: DockFilter;
+  worldTab: WorldTab;
+  poseSet: string;                       // the recipe whose pose icons the World shows
   zoom: number;
   fit: "fit" | "fill";
 }
@@ -67,6 +70,8 @@ interface LiveSlice {
   pendingDelete: string | null;          // a tile key (or "__bulk__") awaiting its second click
   staged: StagedTraining[];              // staged (not queued) training runs, project-wide
   masks: Record<string, string[]>;       // image → masks painted for it this session (newest last)
+  bible: BibleInfo | null;               // the L1 record: world prose, spine
+  styleSel: string | null;               // the style the World editor shows (null = the project default)
   previewJobId: string | null;           // a done trainer job whose preview form is open in the Train tab
   viewBeforeLoupe: View;
   helpOpen: boolean;
@@ -85,6 +90,10 @@ interface Actions {
   toggleDock: () => void;
   openDock: (filter?: DockFilter) => void;
   setDockFilter: (f: DockFilter) => void;
+  setWorldTab: (t: WorldTab) => void;
+  setPoseSet: (p: string) => void;
+  setStyleSel: (id: string | null) => void;
+  refreshBible: () => Promise<void>;
   setDockHeight: (h: number) => void;
   setZoom: (z: number) => void;
   setFit: (f: "fit" | "fill") => void;
@@ -140,6 +149,8 @@ export const useApp = create<AppState>()(
       dockOpen: false,
       dockHeight: 220,
       dockFilter: "active",
+      worldTab: "styles",
+      poseSet: "full_coverage",
       zoom: 180,
       fit: "fit",
       // live
@@ -164,6 +175,8 @@ export const useApp = create<AppState>()(
       viewBeforeLoupe: "flat",
       staged: [],
       masks: {},
+      bible: null,
+      styleSel: null,
       previewJobId: null,
       helpOpen: false,
       menuOpen: false,
@@ -188,6 +201,16 @@ export const useApp = create<AppState>()(
       toggleDock: () => set((s) => ({ dockOpen: !s.dockOpen })),
       openDock: (filter) => set((s) => ({ dockOpen: true, dockFilter: filter ?? s.dockFilter })),
       setDockFilter: (dockFilter) => set({ dockFilter }),
+      setWorldTab: (worldTab) => set({ worldTab }),
+      setPoseSet: (poseSet) => set({ poseSet }),
+      setStyleSel: (styleSel) => set({ styleSel }),
+      refreshBible: async () => {
+        if (!get().project) { if (get().bible) set({ bible: null }); return; }
+        try {
+          const bible = await getBible();
+          if (JSON.stringify(bible) !== JSON.stringify(get().bible)) set({ bible });
+        } catch { /* refetched on the next action */ }
+      },
       setDockHeight: (h) => set({ dockHeight: clamp(h, 120, 480) }),
       setZoom: (z) => set({ zoom: clamp(z, 120, 360) }),
       setFit: (fit) => set({ fit }),
@@ -203,7 +226,7 @@ export const useApp = create<AppState>()(
       setProject: (project) => set((s) => {
         // a project change resets what depends on it
         const changed = (project?.id ?? null) !== (s.project?.id ?? null);
-        return changed ? { project, selectedAsset: null, assetDetail: null, stacks: [], staged: [], previewJobId: null, selection: null, compare: null, bulk: [], pendingDelete: null } : { project };
+        return changed ? { project, selectedAsset: null, assetDetail: null, stacks: [], staged: [], previewJobId: null, selection: null, compare: null, bulk: [], pendingDelete: null, bible: null, styleSel: null } : { project };
       }),
       applyJobs: (r) => set({
         jobs: r.jobs, counts: r.counts, paused: r.paused,
@@ -265,7 +288,7 @@ export const useApp = create<AppState>()(
         workspace: s.workspace, stage: s.stage, view: s.view,
         panelOpen: s.panelOpen, panelWidth: s.panelWidth, panelTab: s.panelTab,
         inspectorOpen: s.inspectorOpen, inspectorWidth: s.inspectorWidth, inspectorTab: s.inspectorTab,
-        dockOpen: s.dockOpen, dockHeight: s.dockHeight, dockFilter: s.dockFilter, zoom: s.zoom, fit: s.fit,
+        dockOpen: s.dockOpen, dockHeight: s.dockHeight, dockFilter: s.dockFilter, worldTab: s.worldTab, poseSet: s.poseSet, zoom: s.zoom, fit: s.fit,
       }),
     },
   ),

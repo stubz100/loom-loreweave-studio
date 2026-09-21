@@ -26,6 +26,7 @@ export function Inspector() {
   const project = useApp((s) => s.project);
   const job = useApp((s) => (selection?.jobId ? s.jobs[selection.jobId] : undefined));
   const current = TABS.find((t) => t.id === tab)!;
+  const workspace = useApp((s) => s.workspace);
   const image = selection && job ? selection.output ?? job.result?.output_name ?? null : null;
   const postable = !!image && job?.status === "done" && !/\.(mp4|webm|mov)$/i.test(image);
 
@@ -39,7 +40,10 @@ export function Inspector() {
         ))}
       </div>
       <div className="panel-body">
-        {current.later && (
+        {workspace !== "assets" && !current.later && (
+          <p className="muted">{workspace === "world" ? "The World editors are on the canvas; this inspector reads the Assets workspace." : "This workspace arrives later; the card on the canvas says what the inspector will hold."}</p>
+        )}
+        {workspace === "assets" && current.later && (
           <>
             <div className="section-title">{current.label}</div>
             <p className="muted">
@@ -48,15 +52,15 @@ export function Inspector() {
             <p className="faint">Arrives with {current.later}.</p>
           </>
         )}
-        {tab === "info" && (!selection ? <VersionTab /> : job ? <InfoTab selection={selection} job={job} /> : selection.refId ? <RefInfo refId={selection.refId} /> : <p className="muted">That job is no longer in the queue.</p>)}
-        {tab === "post" && (
+        {workspace === "assets" && tab === "info" && (!selection ? <VersionTab /> : job ? <InfoTab selection={selection} job={job} /> : selection.refId ? <RefInfo refId={selection.refId} /> : <p className="muted">That job is no longer in the queue.</p>)}
+        {workspace === "assets" && tab === "post" && (
           !project ? <p className="muted">Open a project first.</p>
           : !selection ? <><div className="section-title">Post</div><p className="muted">Select a finished image on the canvas. Its stack of passes shows here as a tree, with the add form under it.</p></>
           : !postable ? <p className="muted">{selection.refId ? "A curated copy has no generation behind it; postprocess its source tile instead." : "Postprocess works on a finished image, not a video or a running job."}</p>
           : <PostTab image={image!} />
         )}
-        {tab === "version" && <VersionTab />}
-        {tab === "readiness" && <ReadinessTab />}
+        {workspace === "assets" && tab === "version" && <VersionTab />}
+        {workspace === "assets" && tab === "readiness" && <ReadinessTab />}
       </div>
     </aside>
   );

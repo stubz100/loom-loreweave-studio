@@ -1,4 +1,4 @@
-// Top bar: workspace tabs (L1–L5, later layers present but disabled), the project, and the
+// Top bar: workspace tabs (L1–L5; the later layers open on a placeholder card), the project, and the
 // status cluster — orchestrator, queue, disk. Global things only (kb-loom-ui.md §3.1).
 import { useEffect, useState } from "react";
 
@@ -43,10 +43,10 @@ export function TopBar() {
       {menuOpen && <FileMenu onClose={() => setMenuOpen(false)} />}
       <nav className="ws-tabs" aria-label="Workspaces">
         {WORKSPACES.map((w) => (
-          <button key={w.id} className={`ws-tab${workspace === w.id ? " active" : ""}`}
-                  disabled={!!w.phase} onClick={() => setWorkspace(w.id)}
-                  title={w.phase ? `${w.label} arrives with ${w.phase}` : w.label}>
-            {w.label}
+          <button key={w.id} className={`ws-tab${workspace === w.id ? " active" : ""}${w.phase ? " later" : ""}`}
+                  onClick={() => setWorkspace(w.id)}
+                  title={w.phase ? `${w.label} arrives with ${w.phase}; the card says what it will hold` : w.label}>
+            {w.label}{w.phase && <span className="ws-phase">{w.phase}</span>}
           </button>
         ))}
       </nav>

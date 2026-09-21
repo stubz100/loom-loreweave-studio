@@ -66,11 +66,20 @@ def test_orchestrator_admits_the_v2_dev_origin():
     assert "http://localhost:1421" in cfg._resolve_cors_origins() or True   # env-driven on this box
 
 
-def test_later_layers_are_present_but_disabled():
+def test_later_layers_are_present_and_open_on_a_card():
+    """The frame shows the whole tool: the later workspaces are tabs (badged with their phase)
+    that open on a card saying what each zone will hold (plan §3.10, step 8)."""
     top = _read(V2 / "shell" / "TopBar.tsx")
     for ws, phase in (("shots", "P3"), ("flow", "P4"), ("episode", "P5")):
         assert f'id: "{ws}"' in top and phase in top
-    assert "disabled={!!w.phase}" in top
+    assert "disabled={!!w.phase}" not in top and '<span className="ws-phase">{w.phase}</span>' in top
+    later = _read(V2 / "shell" / "Later.tsx")
+    for ws in ("shots", "flow", "episode"):
+        assert f"  {ws}: {{" in later, ws
+    for zone in ("panel", "canvas", "inspector", "dock"):
+        assert later.count(f"    {zone}: " + chr(34)) == 3, zone           # one value line per workspace
+    assert "<LaterCanvas />" in _read(V2 / "shell" / "Stage.tsx")
+    assert "LATER[workspace]" in _read(V2 / "shell" / "Panel.tsx")
 
 
 # --- migration step 2: project dialogs ------------------------------------------------------
@@ -533,3 +542,52 @@ def test_inpaint_preset_reaches_the_server_with_its_mask():
     api = _read(SHARED / "orchestrator.ts")
     assert "export async function saveMask(" in api and '| "inpaint";' in api
     assert "atomic_write_bytes" in _read(ROOT / "orchestrator" / "workspace.py")
+
+
+# --- migration step 8: the World workspace ------------------------------------------------------
+
+WORLD = V2 / "world"
+
+
+def test_world_editors_live_on_the_canvas_and_the_panel_lists():
+    for name in ("World", "StyleEditor", "WorldText", "Spine", "Poses"):
+        assert (WORLD / f"{name}.tsx").is_file(), name
+    stage = _read(V2 / "shell" / "Stage.tsx")
+    assert 'workspace === "world" ? <World />' in stage and "function WorldStage" not in stage
+    panel = _read(V2 / "shell" / "Panel.tsx")
+    assert "function WorldList()" in panel and 'if (workspace === "world") return <WorldList />;' in panel
+    for row in ('id: "styles"', 'id: "world"', 'id: "spine"', 'id: "poses"'):
+        assert row in panel, row
+    assert "styleSampleUrl(st.id" in panel and "addStyle(name)" in panel          # styles with thumbnails, + Style
+    assert "headings" in panel and "recipePresets.map" in panel                   # the prose outline; the pose sets
+    world = _read(WORLD / "World.tsx")
+    for mount in ("<StyleEditor />", "<WorldText />", "<Spine />", "<Poses />"):
+        assert mount in world, mount
+
+
+def test_world_reaches_every_bible_call_and_closes_jobs_through_the_poller():
+    style = _read(WORLD / "StyleEditor.tsx")
+    for call in ("updateStyle(", "deleteStyle(", "setActiveStyle(", "setStyle(undefined,", "setStyleSample(", "clearStyleSample(", "generate({", "cancelJob("):
+        assert call in style, call
+    assert "const j = jobs[sampleJob.jobId];" in style and "setInterval" not in style
+    assert 'className={confirm === key ? "danger" : ""}' in style                # delete = second click
+    text = _read(WORLD / "WorldText.tsx")
+    assert "setWorld(draft)" in text and "refreshBible()" in text
+    spine = _read(WORLD / "Spine.tsx")
+    for call in ("setPremise(", "upsertSpineCharacter(", "removeSpineCharacter(", "createSpineStub(", "resyncSpineStub("):
+        assert call in spine, call
+    assert 'selectAsset(ch.linked_asset_id!); setWorkspace("assets");' in spine  # a linked character opens its profile
+    poses = _read(WORLD / "Poses.tsx")
+    for call in ("getPoseCells(", "generatePoseIcons(", "setPoseIcon(", "deletePoseIcon(", "poseIconUrl("):
+        assert call in poses, call
+    assert "setInterval" not in poses and "const j = jobs[p.job_id];" in poses
+    assert "seed: Math.floor(Math.random() * 2 ** 31)" in poses                  # redo one icon with a fresh seed
+
+
+def test_world_state_is_in_the_store():
+    store = _read(V2 / "store.ts")
+    for key in ('worldTab: "styles"', 'poseSet: "full_coverage"', "bible: BibleInfo | null", "styleSel: string | null", "refreshBible: async"):
+        assert key in store, key
+    assert "worldTab: s.worldTab, poseSet: s.poseSet" in store                    # remembered per machine
+    insp = _read(V2 / "shell" / "Inspector.tsx")
+    assert 'workspace !== "assets" && !current.later' in insp                     # the inspector says what it reads

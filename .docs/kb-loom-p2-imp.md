@@ -4795,3 +4795,49 @@ close-out (v1 deletion criteria, docs, memory).
 
 
 **Pushed:** step 7 = `3113f30` (backend + frontend + tests + plan §6 row 7 + this entry).
+
+
+## 🌍 M2.14 step 8 — the World workspace and the later-layer placeholders (2026-09-21, 07:43–07:43 CEDT)
+
+Author: *"continue"* → step 8, the last row of the plan's migration table.
+
+**Built in `frontends/v2/src/`:**
+- `world/World.tsx` — the World canvas routes on the Panel's sub-tab: **StyleEditor ·
+  WorldText · Spine · Poses**. The Panel's `WorldList` (in `shell/Panel.tsx`) is the navigator:
+  **Styles** (thumbnail · name · *default* pill; **+ Style** adds and selects the new one),
+  **World** (the prose outline: its `#` headings), **Spine** (the characters with a dot for a
+  linked profile), **Poses** (the five recipe pose sets). `store.ts` gains `worldTab` +
+  `poseSet` (persisted), `bible` + `refreshBible`, `styleSel`.
+- `world/StyleEditor.tsx` — name · Set as default · Revert · Save · **Delete on a second click**
+  (never the last style); the **apply-by-default gate** (R104) moved here with the rest of style
+  authoring; the style prompt and the global negative as readable textareas; the **sample**
+  (preview prompt · model sd3.5-medium / zimage-turbo · Generate → a project-scoped t2i with the
+  style applied, **watched through the one poller**, pinned as the thumbnail on done · Cancel ·
+  Delete sample on a second click). v1 polled the sample job with its own timer.
+- `world/WorldText.tsx` — the markdown prose with Revert / Save (never injected into a prompt).
+- `world/Spine.tsx` — the premise with Revert / Save; one row per character (name · snippet ·
+  Save · **Make profile** (R55 stub) or **Re-sync** + **Open profile** when linked · Remove on a
+  second click); Add a character.
+- `world/Poses.tsx` — v1's PosesPanel ported: recipe · subject · turbo · **Generate missing** ·
+  **Redo all** (second click) · per-icon **Redo** (fresh seed) / **Delete** (second click); the
+  generation jobs close through the poller and pin their outputs as icons.
+- `shell/Later.tsx` + `shell/TopBar.tsx` — the **Shots · Flow · Episode** tabs are present,
+  badged with their phase, and open on a **card** (from plan §3.10) naming what the panel, the
+  canvas, the inspector and the dock will hold; the Panel and the Inspector say the same in a
+  line. Muse stays a disabled Inspector tab (P4).
+- `shell/Inspector.tsx` — outside the Assets workspace it says what it reads instead of showing
+  Assets state.
+
+**Verified:** v2 `tsc` + `vite build`; **+3 tests (and the later-layers test re-pointed) → 52**
+in `test_v2_frame.py`: the editors on the canvas and the lists in the Panel; every bible call
+reached (styles · world · spine · poses) with the sample and icon jobs closing through the
+poller and every delete a second click; the World state in the store; the later tabs badged
+and their cards complete. Not click-tested.
+
+**The migration table is complete (rows 0–8).** The plan carries a close-out note with the
+v1 retirement criteria; v1 stays frozen as the fallback until the author's click-through and
+the rig loop.
+
+**Next:** the author's launch. Then, by the author's call: the three owed step-5 items, the
+M2.16 `sdcpp` adapter decisions, the docs-drift pass (README:118 / spec §12 hardware
+statements, the stray `99` file), and — once the GPU is back — the P2 rig stamps.

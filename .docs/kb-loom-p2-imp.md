@@ -5167,3 +5167,6 @@ NSFW classifier, audio models); M2.16 will refetch what it needs.
 ⚠ Trap for the record: `git checkout -- <file>` on this box (core.autocrlf=true) rewrites an
 LF file as CRLF, which broke a scripted edit's exact-match asserts until the file was
 normalised back.
+
+
+**Pushed:** step e = `2831af7` (the backend + the worker + the manifest + the v2 page + the tests + the plan rows e / D8 / D9 + README + spec §12 + this entry). Ledger of M2.17: a `9171e30` · b `5d98509` · c `36dbbdd` · d `6111367` · e `2831af7`. The whole backend suite under the torch guard before the commit: **528 passed, 2 skipped, 36 torch-bound left out** (13 new). The v2 build (`tsc` + `vite`) clean. Next: restart `loom-dev` so the running orchestrator serves this code, then the click-through (Models: the by-model list, Fetch on `Qwen/Qwen3-8B`, the token row).

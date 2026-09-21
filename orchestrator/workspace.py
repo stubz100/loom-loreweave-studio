@@ -123,6 +123,23 @@ def atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Bytes twin of `atomic_write_text` (the same temp → fsync → replace contract). Step 7
+    (2026-09-20): a painted inpaint mask lands in out/masks/ through this, so a power cut
+    never leaves a half-written PNG under the name a step already references."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _tmp_for(path)
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def atomic_copy(src: Path, dst: Path) -> None:
     """Copy `src` over `dst` atomically: full copy to a temp beside `dst`, fsync, replace.
     Review 2026-09-20: re-promoting a LoRA copied straight over the LIVE adapter, so a power

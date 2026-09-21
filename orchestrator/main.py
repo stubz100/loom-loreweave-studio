@@ -15,6 +15,8 @@ PNG-master footprint to suggest a size cap.
 
 from __future__ import annotations
 
+import io
+
 import os
 import random
 import re
@@ -577,11 +579,22 @@ class AddPostprocStepRequest(BaseModel):
     # any FINISHED step's output in the same stack. Omitted = continue from the newest
     # finished output (the previous chain behaviour), so nothing existing changes.
     source: str | None = None
-    preset: Literal["clean", "refine", "restore", "upscale", "stylelock", "resize"] = "clean"
+    preset: Literal["clean", "refine", "restore", "upscale", "stylelock", "resize", "inpaint"] = "clean"
     backend: str | None = None
     params: dict = Field(default_factory=dict)
     mask: str | None = None
     requires_mask: bool = False
+
+
+class SaveMaskRequest(BaseModel):
+    """M2.14 step 7 — a mask painted in the UI's Edit mode, saved as a PNG under
+    out/masks/ so a postproc `inpaint` step (or /generate inpaint) can name it. `source`
+    is the out/-relative image the mask was painted over (names the file, checks the
+    dims); `png_base64` is the PNG bytes (white = repaint, black = preserve)."""
+
+    model_config = ConfigDict(extra="forbid")
+    source: str
+    png_base64: str = Field(min_length=8, max_length=24_000_000)
 
 
 class QueuePostprocStepRequest(BaseModel):
@@ -2830,6 +2843,12 @@ def create_app() -> FastAPI:
         # re-renders its source (the tile-CN "downscale" that motivated this smeared lines
         # and shapes); Lanczos keeps the pixels. Default ×0.5; scale/W×H = the Part B resolver.
         "resize": {"backend": "resize", "mode": "resize", "params": {"scale": 0.5}},
+        # M2.14 step 7 (2026-09-20) — masked inpaint over a mask painted in Edit mode (or a
+        # matte): repaint ONLY the white area. sd35 default (the stronger inpainter), zimage
+        # allowed; flux2 has no wired inpaint mode (its masked-denoise branch is rig-owed).
+        # Strength 0.95 = the Stage-B mixed-realize inpaint default. Source dims are kept:
+        # a mask is pixel-aligned to its image, so this preset never resizes.
+        "inpaint": {"backend": "sd35", "mode": "inpaint", "params": {"strength": 0.95}},
     }
 
     def _producing_job(src: str):
@@ -2884,7 +2903,8 @@ def create_app() -> FastAPI:
         PROJECT-level stack (any image, any origin). Clean/Refine = img2img presets (backend
         zimage|sd35); restore = GFPGAN. A separate queue call fires the job. Token-gated."""
         spec = _PP_PRESETS[req.preset]
-        is_i2i = spec["mode"] == "img2img"
+        is_inpaint = spec["mode"] == "inpaint"    # M2.14 step 7 — mask-driven img2img
+        is_i2i = spec["mode"] == "img2img" or is_inpaint
         is_upscale = spec["mode"] == "cn-inpaint"   # M0e Part C — sd35 tile-CN creative upscale
         backend = (req.backend or spec["backend"]) if is_i2i else spec["backend"]
         # M0d Part C — flux2 joins zimage/sd35 as an i2i backend (structured-JSON i2i on
@@ -2892,6 +2912,20 @@ def create_app() -> FastAPI:
         # worker's batch path is t2i/ref only) — handled in the queue endpoint.
         if is_i2i and backend not in ("zimage", "sd35", "flux2"):
             raise HTTPException(422, f"img2img backend must be zimage|sd35|flux2, got {backend!r}")
+        if is_inpaint and backend == "flux2":
+            raise HTTPException(422, "inpaint runs on zimage or sd35 (flux2 has no wired inpaint mode)")
+        mask_name = req.mask
+        if is_inpaint:
+            if not mask_name:
+                raise HTTPException(422, "an inpaint step needs a mask — paint one in Edit mode "
+                                         "(POST /outputs/masks) or name a matte output")
+            if ".." in mask_name or "\\" in mask_name:
+                raise HTTPException(400, f"invalid mask {mask_name!r}")
+            _mws = _require_ws()
+            _mbase = _mws.out_dir.resolve()
+            _mp = (_mbase / mask_name).resolve()
+            if not _mp.is_relative_to(_mbase) or not _mp.is_file():
+                raise HTTPException(404, f"mask {mask_name!r} not found in out/")
         if req.preset == "stylelock" and backend == "flux2":
             raise HTTPException(422, "StyleLock re-imposes the L1 style — flux2 is the drift "
                                      "source (M2.10); use zimage or sd35")
@@ -2907,7 +2941,7 @@ def create_app() -> FastAPI:
             # M0e Part B — an optional OUTPUT SIZE (scale factor + explicit W×H) so a Clean/Refine
             # step can re-diffuse larger = an i2i creative upscale. zimage/sd35 only: flux2 i2i
             # (the M0d dev-JSON re-pose) keeps source dims — its job is edit-in-place, not enlarge.
-            if backend != "flux2":
+            if backend != "flux2" and not is_inpaint:   # inpaint keeps the source dims (mask-aligned)
                 allowed |= {"width", "height", "scale"}
         elif is_upscale:
             # M0e Part C — tile-CN upscale: prompt (defaults to source), the output size (Part B
@@ -2937,7 +2971,7 @@ def create_app() -> FastAPI:
         try:
             return postproc.add_step(_require_ws(), base=req.base, preset=req.preset,
                                      backend=backend, mode=spec["mode"], params=params,
-                                     mask=req.mask, requires_mask=req.requires_mask,
+                                     mask=mask_name, requires_mask=req.requires_mask or is_inpaint,
                                      source=req.source)
         except ws_mod.WorkspaceError as e:
             raise HTTPException(409, str(e))
@@ -3019,7 +3053,7 @@ def create_app() -> FastAPI:
         # source's producing job, or — for a chained step — the previous step's per-output meta
         # prompt; else an author-typed prompt; else 422.
         parent = _producing_job(src) or {}
-        needs_prompt = mode in ("img2img", "cn-inpaint")
+        needs_prompt = mode in ("img2img", "cn-inpaint", "inpaint")
         is_io = mode == "restore"
         item_prompt = ""
         # Bound here, not inside the branch: an io-only preset (restore/resize) never touches
@@ -3064,7 +3098,7 @@ def create_app() -> FastAPI:
         # started this — `job_724798a6`/`job_4064f0f9` — were a flux2 SCHEDULE bug, fixed in
         # the worker; the budget was never the cure for those. See the journal, 2026-08-09.)
         i2i_steps = None
-        if mode == "img2img":
+        if mode in ("img2img", "inpaint"):
             i2i_steps, _eff = model_catalog.i2i_step_budget(
                 backend, params_in.get("model_name"), params_in.get("strength"))
         if is_flux2:
@@ -3092,6 +3126,27 @@ def create_app() -> FastAPI:
                           "width": tw, "height": th}
             if params_in.get("cn_scale") is not None:
                 job_params["cn_scale"] = params_in["cn_scale"]
+            if params_in.get("model_name"):
+                job_params["model_name"] = params_in["model_name"]
+        elif mode == "inpaint":
+            # M2.14 step 7 — masked inpaint (zimage/sd35): a batch job over the source with the
+            # painted mask; the worker merges shared + item, so init/mask ride the item like the
+            # img2img branch. Source dims are kept: the mask is pixel-aligned to the image.
+            mname = step.get("mask") or ""
+            if not mname or ".." in mname or "\\" in mname:
+                raise HTTPException(422, "this inpaint step has no usable mask")
+            mask_abs = (obase / mname).resolve()
+            if not mask_abs.is_relative_to(obase) or not mask_abs.is_file():
+                raise HTTPException(404, f"mask {mname!r} not found in out/ (deleted? paint it again)")
+            job_params = {"prompt": f"[inpaint postproc of {src}]",
+                          "batch_items": [{"prompt": item_prompt, "init_image": str(src_abs),
+                                           "mask_image": str(mask_abs)}],
+                          "width": w, "height": h,
+                          "strength": params_in.get("strength", 0.95)}
+            if i2i_steps:
+                job_params["num_steps"] = i2i_steps
+            if params_in.get("negative_prompt"):
+                job_params["negative_prompt"] = params_in["negative_prompt"]
             if params_in.get("model_name"):
                 job_params["model_name"] = params_in["model_name"]
         elif mode == "resize":
@@ -3438,6 +3493,52 @@ def create_app() -> FastAPI:
         controls; `/generate` validates a request's tunables against it. Unauth read."""
         return {"catalog_version": model_catalog.CATALOG_VERSION,
                 "models": model_catalog.catalog_for_api()}
+
+    @app.post("/outputs/masks")
+    def save_mask(req: SaveMaskRequest, _auth: None = Depends(require_token)) -> dict:
+        """M2.14 step 7 — store a mask painted in Edit mode as `out/masks/<source>_<id>.png`.
+        Validated: the source exists in out/ (traversal-guarded), the bytes are a PNG the
+        image library can open, and its size matches the source when the source is
+        readable (a mask is pixel-aligned to its image). Written atomically. Token-gated."""
+        import base64
+        import binascii
+        ws = _require_ws()
+        src = req.source
+        if ".." in src or "\\" in src:
+            raise HTTPException(400, f"invalid source {src!r}")
+        obase = ws.out_dir.resolve()
+        src_abs = (obase / src).resolve()
+        if not src_abs.is_relative_to(obase) or not src_abs.is_file():
+            raise HTTPException(404, f"source image {src!r} not found in out/")
+        try:
+            data = base64.b64decode(req.png_base64, validate=True)
+        except (binascii.Error, ValueError):
+            raise HTTPException(400, "png_base64 is not valid base64")
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise HTTPException(400, "the mask must be a PNG")
+        if len(data) > 16 * 1024 * 1024:
+            raise HTTPException(413, "mask larger than 16 MB")
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(data)) as im:
+                im.verify()
+            with Image.open(io.BytesIO(data)) as im:
+                mw, mh = im.size
+        except Exception as e:  # noqa: BLE001 - any decode failure = not a usable mask
+            raise HTTPException(400, f"the mask PNG could not be decoded: {e}")
+        try:
+            with Image.open(src_abs) as im:
+                sw, sh = im.size
+        except Exception:  # noqa: BLE001 - an unreadable source skips the alignment check
+            sw = sh = None
+        if sw is not None and (mw, mh) != (sw, sh):
+            raise HTTPException(422, f"mask is {mw}x{mh} but the image is {sw}x{sh}; a mask "
+                                     "must match its image pixel for pixel")
+        stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(src).stem)[:48] or "mask"
+        name = f"masks/{stem}_{uuid.uuid4().hex[:8]}.png"
+        ws_mod.atomic_write_bytes(obase / name, data)
+        LOG.info("mask saved: %s (%d bytes, %dx%d) for %s", name, len(data), mw, mh, src)
+        return {"mask": name, "bytes": len(data), "width": mw, "height": mh, "source": src}
 
     @app.get("/outputs/{name:path}")
     def get_output(name: str) -> FileResponse:

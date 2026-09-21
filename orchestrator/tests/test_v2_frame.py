@@ -259,7 +259,7 @@ def test_post_tab_sends_only_fields_the_server_accepts_and_mirrors_v1():
     add = _server_fields("AddPostprocStepRequest(BaseModel)")
     for key in ("base", "preset", "backend", "params", "source"):
         assert key in add, key
-    assert "addStep({ base, preset, backend: isI2i ? backend : undefined, params, source: effectiveSource || undefined })" in post
+    assert "addStep({ base, preset, backend: isI2i ? backend : undefined, params, source: effectiveSource || undefined, ...(isInpaint ? { mask: mask.trim(), requires_mask: true } : {}) })" in post
     queue = _server_fields("QueuePostprocStepRequest(BaseModel)")
     assert {"requester_id", "stage"} <= queue
     # the preset list is the server's Literal, no more and no less
@@ -275,7 +275,7 @@ def test_post_tab_sends_only_fields_the_server_accepts_and_mirrors_v1():
     assert 'stage === "cast" ? "A" : stage === "train" ? "D" : "B"' in post
     assert 'stage === "A" ? "A" : stage === "D" ? "D" : "B"' in v1
     # StyleLock never runs on flux2 (the drift source; 422 server-side)
-    assert 'if (p === "stylelock" && backend === "flux2") setBackend("sd35");' in post
+    assert 'if ((p === "stylelock" || p === "inpaint") && backend === "flux2") setBackend("sd35");' in post
 
 
 def test_post_tab_draws_a_tree_with_tombstones():
@@ -484,3 +484,52 @@ def test_no_native_dialogs_anywhere_in_v2():
     for p in list(V2.rglob("*.ts")) + list(V2.rglob("*.tsx")):
         src = _read(p)
         assert "window.confirm" not in src and "window.prompt" not in src and "window.alert" not in src, p.name
+
+
+# --- migration step 7: Edit mode + the Inpaint pass -----------------------------------------------
+
+
+def test_edit_mode_is_a_canvas_view_with_its_tools():
+    assert (CANVAS / "Edit.tsx").is_file() and (CANVAS / "editState.ts").is_file()
+    stage = _read(V2 / "shell" / "Stage.tsx")
+    assert '{ id: "edit", label: "Edit" }' in stage and "<Edit image={editImage!} />" in stage
+    assert 'v.id === "edit" && !editable' in stage                          # needs a finished still with a job
+    edit = _read(CANVAS / "Edit.tsx")
+    for tool in ('setTool("brush")', 'setTool("eraser")', 'setTool("lasso")', "invert", "fromMatte", "Feather"):
+        assert tool in edit, tool
+    assert 'o.fillStyle = "#000"' in edit and "blur(${feather}px)" in edit    # black = keep, white = repaint, feathered on export
+    assert "saveMask(image, b64)" in edit and "addMask(image, r.mask)" in edit
+    assert 'toggleInspector("post")' in edit                               # saving hands over to the Post tab
+    assert 'crossOrigin="anonymous"' in edit                               # the matte is read across the loopback origin
+    assert 'role === "bgmask"' in edit                                     # the matte source
+
+
+def test_edit_mode_keys_and_state():
+    keys = _read(V2 / "shell" / "Shortcuts.tsx")
+    assert 'if (s.view === "edit") { if (!editEscape()) s.closeEdit();' in keys   # a lasso eats the first Escape
+    assert 'if (s.view === "edit") return;' in keys                            # the painter owns the keys
+    assert 'e.key === "e"' in keys and "<dt>e</dt>" in keys
+    store = _read(V2 / "store.ts")
+    assert '"edit"' in store and "openEdit:" in store and "closeEdit:" in store and "addMask:" in store
+    assert "masks: Record<string, string[]>" in store
+    state = _read(CANVAS / "editState.ts")
+    assert "export function getWork(" in state and "export function editEscape(" in state   # strokes survive leaving the view
+
+
+def test_inpaint_preset_reaches_the_server_with_its_mask():
+    """The Post tab sends preset + mask + requires_mask; the server model admits inpaint; the
+    store schema admits it too (the 409 that the first run of the backend tests caught)."""
+    post = _read(INSPECT / "PostTab.tsx")
+    assert '{ id: "inpaint", label: "Inpaint (masked)"' in post
+    assert "mask: mask.trim(), requires_mask: true" in post
+    assert "isInpaint ? 0.95" in post                                        # the preset's strength
+    assert "!isInpaint" in post and "no resize" in post                       # a mask is pixel-aligned
+    assert 'Paint a mask' in post and "openEdit" in post
+    main = _read(ROOT / "orchestrator" / "main.py")
+    assert '"inpaint": {"backend": "sd35", "mode": "inpaint", "params": {"strength": 0.95}}' in main
+    import json
+    schema = json.loads(_read(ROOT / "orchestrator" / "schemas" / "postproc_store.schema.json"))
+    assert "inpaint" in schema["properties"]["stacks"]["items"]["properties"]["steps"]["items"]["properties"]["preset"]["enum"]
+    api = _read(SHARED / "orchestrator.ts")
+    assert "export async function saveMask(" in api and '| "inpaint";' in api
+    assert "atomic_write_bytes" in _read(ROOT / "orchestrator" / "workspace.py")

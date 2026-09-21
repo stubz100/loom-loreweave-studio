@@ -6,6 +6,7 @@
 import { useEffect } from "react";
 
 import { tileActions } from "../canvas/actions";
+import { editEscape } from "../canvas/editState";
 import { loupeStep } from "../canvas/Loupe";
 import { getCanvas } from "../canvas/registry";
 import { selectionOf, tileKey } from "../canvas/tiles";
@@ -32,12 +33,14 @@ export function Shortcuts() {
         if (s.helpOpen) { s.setHelpOpen(false); e.preventDefault(); return; }
         if (s.menuOpen) { s.setMenuOpen(false); e.preventDefault(); return; }
         if (s.pendingDelete) { s.setPendingDelete(null); e.preventDefault(); return; }
+        if (s.view === "edit") { if (!editEscape()) s.closeEdit(); e.preventDefault(); return; }
         if (s.view === "loupe") { s.closeLoupe(); e.preventDefault(); return; }
         if (s.bulk.length) { s.setBulk([]); e.preventDefault(); return; }
         if (s.selection) { s.select(null); e.preventDefault(); return; }
         return;
       }
       if (inField(e.target)) return;
+      if (s.view === "edit") return;      // the painter owns the keys while it is open
       if (e.key === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) { s.hideAllPanels(); e.preventDefault(); return; }
       if (e.key === "?") { s.setHelpOpen(!s.helpOpen); e.preventDefault(); return; }
       if (STAGE_KEYS[e.key] && s.workspace === "assets" && s.selectedAsset) { s.setStage(STAGE_KEYS[e.key]); e.preventDefault(); return; }
@@ -73,6 +76,7 @@ export function Shortcuts() {
       const version = s.assetDetail?.versions.find((v) => v.id === s.assetDetail?.profile.active_version);
       const locked = !!version?.finalized;
       if (e.key === "Enter" && s.view !== "loupe") { s.openLoupe(); e.preventDefault(); return; }
+      if (e.key === "e" && cur.job?.status === "done" && !cur.ref) { s.openEdit(); e.preventDefault(); return; }
       if (e.key === " " && curable) { s.toggleBulk(cur.key); e.preventDefault(); return; }
       if (locked) return;
       if (e.key === "k" && (curable || cur.ref)) {
@@ -105,11 +109,12 @@ export function Shortcuts() {
           <dt>← → ↑ ↓</dt><dd>move the selection by tile and by row; Home, End</dd>
           <dt>Enter</dt><dd>open the selected tile in the loupe, and back</dd>
           <dt>c</dt><dd>in the loupe: pin this image to compare against the others</dd>
+          <dt>e</dt><dd>open the selected image in Edit mode to paint an inpaint mask</dd>
           <dt>k</dt><dd>keep the selected tile into the curated set, or remove it (Curate)</dd>
           <dt>x</dt><dd>reject the selected tile, or un-reject it (Curate)</dd>
           <dt>space</dt><dd>mark the selected tile for a bulk action (Curate)</dd>
           <dt>Del</dt><dd>delete the selected image: press twice</dd>
-          <dt>Esc</dt><dd>close what is open: a dialog, this list, a pending delete, the loupe, the marks, the selection</dd>
+          <dt>Esc</dt><dd>close what is open: a dialog, this list, a pending delete, Edit mode, the loupe, the marks, the selection</dd>
           <dt>?</dt><dd>this list</dd>
         </dl>
       </div>

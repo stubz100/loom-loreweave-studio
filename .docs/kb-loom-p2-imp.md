@@ -4733,3 +4733,62 @@ holding the step; dry-run verified.
 
 
 **Pushed:** step 6 = `5f327a8` (code + tests + plan §6 row 6 + this entry).
+
+
+## 🎨 M2.14 step 7 — Edit mode: the mask painter and the Inpaint pass (started 2026-09-20 22:01, resumed 2026-09-21 07:31, finished 07:42 CEDT)
+
+Author: *"Let's continue"* → step 7 of the plan's migration table, the tool the author asked
+for first (a masked inpaint over a real canvas).
+
+**Backend (the step contract carried a `mask` since M0c; nothing consumed it):**
+- `POST /outputs/masks` (token) — `{source, png_base64}` → `out/masks/<source-stem>_<id>.png`.
+  Traversal-guarded source that must exist, base64 + PNG-signature checks, the image library
+  decodes it, **the mask must match the image pixel for pixel** (422 otherwise; skipped only
+  when the source itself is unreadable), ≤ 16 MB, written through the new
+  `workspace.atomic_write_bytes` (temp → fsync → replace). Served like any output.
+- `_PP_PRESETS["inpaint"]` = sd35 · mode inpaint · strength 0.95 (the Stage-B mixed default);
+  zimage allowed, **flux2 refused** (no wired inpaint mode — its masked-denoise branch stays
+  rig-owed). Add-step: the mask is **required** (422 with the hint) and must exist in out/
+  (404); size params are refused (a mask is pixel-aligned, the preset never resizes);
+  `requires_mask` is forced true. Queue: the prompt inherits from the source like clean/refine,
+  the effective-step floor applies, the batch item carries `init_image` + `mask_image` (the
+  worker merges shared + item), source dims kept; a mask deleted after staging → 404 "paint it
+  again". The store schema's preset enum admits `inpaint` — the first backend run 409'd on
+  exactly that, which is why the tests drive the real endpoints, not the model.
+- `AddPostprocStepRequest.preset` Literal + the shared client's `PostprocStep.preset` union
+  gain `inpaint`; `saveMask()` added to the client.
+
+**Frontend (`frontends/v2/src/`):**
+- `canvas/Edit.tsx` — Edit mode (strip: **Edit**, or `e` on a finished still): the image fills
+  the canvas at fit scale, a `<canvas>` overlay draws the working mask tinted amber; tool rail:
+  **Brush · Eraser · Lasso** (click corners, double-click or *Close* to fill) · size · feather
+  · **Invert** · **Clear** · **From matte** (the image's BiRefNet `bgmask`, read across the
+  loopback origin with CORS, alpha ← luminance; "Invert to mask the subject") · **Save mask** ·
+  Back. Save exports white-on-black at natural size (feather = a blur on export), posts it,
+  remembers it on the store (`masks[image]`), leaves Edit mode and opens the **Post tab**.
+- `canvas/editState.ts` — the working mask lives outside React: leaving the view (Escape, a
+  stage switch) and coming back keeps the strokes; a lasso in progress eats the first Escape.
+- `inspect/PostTab.tsx` — preset **Inpaint (masked)**: backend zimage/sd35, the mask picker
+  (this session's masks for the image, else a typed out-relative name), *Paint a mask* /
+  *Paint another*, strength default 0.95, no size row; a freshly saved mask selects the preset
+  and itself. Sends `mask` + `requires_mask: true`.
+- `shell/Stage.tsx` (the Edit view, enabled for a finished still with a job behind it),
+  `shell/Shortcuts.tsx` (`e`; Escape order gains Edit; the painter owns the keys while open),
+  `store.ts` (`view: "edit"`, `openEdit` / `closeEdit`, `masks` + `addMask`).
+
+**Verified:** v2 `tsc` + `vite build`; **`test_inpaint_mask.py` (+6, TestClient, no GPU)**: the
+upload lands atomically and is served; bad source / traversal / base64 / non-PNG / wrong size /
+wrong token refused; an inpaint step needs an existing mask, refuses flux2 and a resize;
+**the queue dry run carries the mask into the planned job** (item `init_image` + `mask_image`,
+strength, source dims) with sd35 and zimage; a deleted mask → 404. **`test_v2_frame.py` +3 →
+48**: the Edit view and its tools, the keys and state, the preset wired through the Post tab,
+the server model, the store schema and the client. Postproc, hardening, resize and style-
+provenance suites still green. Not click-tested: the painter's pointer handling and the CORS
+read of the matte are exercised only by the author's launch.
+
+**Owed / rig:** the flux2 masked-denoise branch; a SAM-style "select subject" mask source;
+the `Paint a mask` flow for a curated ref (a durable copy has no job → not editable today).
+
+**Next:** step 8 — World (L1): the Panel's World list, the style editor / world text / story
+spine / pose-set editors on the canvas, plus the placeholders' final sweep; then the plan's
+close-out (v1 deletion criteria, docs, memory).

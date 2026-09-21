@@ -569,7 +569,7 @@ export interface AnchorInfo {
 /** M0c: one persisted postprocess step in a base image's stack (source/output lineage). */
 export interface PostprocStep {
   id: string;
-  preset: "clean" | "refine" | "custom" | "restore" | "upscale" | "stylelock" | "resize";
+  preset: "clean" | "refine" | "custom" | "restore" | "upscale" | "stylelock" | "resize" | "inpaint";
   backend: string;
   mode: string;
   params: Record<string, unknown>;
@@ -815,6 +815,20 @@ export async function matteHero(assetId: string, versionId?: string, params?: Re
     body: JSON.stringify({ version_id: versionId ?? null, params: params ?? {} }),
   });
   if (!res.ok) throw new Error(`matte ${res.status}: ${await res.text()}`);
+  return await res.json();
+}
+
+/** M2.14 step 7: store a mask painted in Edit mode as a PNG under out/masks/ (white = repaint,
+ * black = preserve). `source` is the out/-relative image it was painted over; the server
+ * checks the dims match. The returned `mask` name goes into an inpaint step's `mask`. */
+export async function saveMask(source: string, pngBase64: string):
+    Promise<{ mask: string; bytes: number; width: number; height: number; source: string }> {
+  const res = await fetch(`${orchestratorUrl()}/outputs/masks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: JSON.stringify({ source, png_base64: pngBase64 }),
+  });
+  if (!res.ok) throw new Error(`mask ${res.status}: ${await res.text()}`);
   return await res.json();
 }
 

@@ -12,7 +12,7 @@ import {
 
 export type Workspace = "world" | "assets" | "shots" | "flow" | "episode";
 export type Stage = "cast" | "expand" | "curate" | "train";
-export type View = "flat" | "grouped" | "captions" | "loupe";
+export type View = "flat" | "grouped" | "captions" | "loupe" | "edit";
 export type PanelTab = "library" | "compose" | "train";
 export type InspectorTab = "info" | "post" | "readiness" | "version" | "muse";
 export type NoticeKind = "info" | "ok" | "warn" | "err";
@@ -66,6 +66,7 @@ interface LiveSlice {
   filters: Filters;                      // the Curate filters
   pendingDelete: string | null;          // a tile key (or "__bulk__") awaiting its second click
   staged: StagedTraining[];              // staged (not queued) training runs, project-wide
+  masks: Record<string, string[]>;       // image → masks painted for it this session (newest last)
   previewJobId: string | null;           // a done trainer job whose preview form is open in the Train tab
   viewBeforeLoupe: View;
   helpOpen: boolean;
@@ -97,7 +98,7 @@ interface Actions {
   selectAsset: (id: string | null) => void;
   refreshAsset: () => Promise<void>;
   refreshStacks: () => Promise<void>;
-  addStep: (body: { base: string; preset?: PostprocStep["preset"]; backend?: string; params?: Record<string, unknown>; source?: string }) => Promise<void>;
+  addStep: (body: { base: string; preset?: PostprocStep["preset"]; backend?: string; params?: Record<string, unknown>; source?: string; mask?: string; requires_mask?: boolean }) => Promise<void>;
   queueStep: (stepId: string, requesterId?: string, stage?: string) => Promise<void>;
   removeStep: (stepId: string) => Promise<void>;
   refreshStaged: () => Promise<void>;
@@ -110,6 +111,9 @@ interface Actions {
   setPendingDelete: (key: string | null) => void;
   openLoupe: () => void;
   closeLoupe: () => void;
+  openEdit: () => void;
+  closeEdit: () => void;
+  addMask: (image: string, mask: string) => void;
   setHelpOpen: (open: boolean) => void;
   setMenuOpen: (open: boolean) => void;
   setDialog: (d: Dialog) => void;
@@ -159,6 +163,7 @@ export const useApp = create<AppState>()(
       pendingDelete: null,
       viewBeforeLoupe: "flat",
       staged: [],
+      masks: {},
       previewJobId: null,
       helpOpen: false,
       menuOpen: false,
@@ -167,9 +172,9 @@ export const useApp = create<AppState>()(
       setWorkspace: (workspace) => set({ workspace, selection: null }),
       setStage: (stage) => set((s) => ({
         stage, selection: null, compare: null, bulk: [], pendingDelete: null,
-        view: s.view === "loupe" || (s.view === "captions" && stage !== "train") ? "flat" : s.view,
+        view: s.view === "loupe" || s.view === "edit" || (s.view === "captions" && stage !== "train") ? "flat" : s.view,
       })),
-      setView: (view) => { if (view === "loupe") get().openLoupe(); else set({ view, compare: null }); },
+      setView: (view) => { if (view === "loupe") get().openLoupe(); else if (view === "edit") get().openEdit(); else set({ view, compare: null }); },
       togglePanel: (tab) => set((s) => {
         if (tab && tab !== s.panelTab) return { panelTab: tab, panelOpen: true };
         return { panelOpen: !s.panelOpen };
@@ -209,7 +214,7 @@ export const useApp = create<AppState>()(
       })),
       dismiss: (id) => set((s) => ({ notices: s.notices.filter((n) => n.id !== id) })),
       selectAsset: (selectedAsset) => {
-        set((s) => ({ selectedAsset, selection: null, compare: null, bulk: [], pendingDelete: null, assetDetail: null, previewJobId: null, view: s.view === "loupe" || s.view === "captions" ? "flat" : s.view }));
+        set((s) => ({ selectedAsset, selection: null, compare: null, bulk: [], pendingDelete: null, assetDetail: null, previewJobId: null, view: s.view === "loupe" || s.view === "edit" || s.view === "captions" ? "flat" : s.view }));
         void get().refreshAsset();
       },
       refreshAsset: async () => {
@@ -246,7 +251,10 @@ export const useApp = create<AppState>()(
       setFilters: (p) => set((s) => ({ filters: { ...s.filters, ...p } })),
       setPendingDelete: (pendingDelete) => set({ pendingDelete }),
       openLoupe: () => set((s) => (s.selection && s.view !== "loupe" ? { view: "loupe", viewBeforeLoupe: s.view } : {})),
-      closeLoupe: () => set((s) => (s.view === "loupe" ? { view: s.viewBeforeLoupe === "loupe" ? "flat" : s.viewBeforeLoupe, compare: null } : {})),
+      closeLoupe: () => set((s) => (s.view === "loupe" ? { view: s.viewBeforeLoupe === "loupe" || s.viewBeforeLoupe === "edit" ? "flat" : s.viewBeforeLoupe, compare: null } : {})),
+      openEdit: () => set((s) => (s.selection && s.view !== "edit" ? { view: "edit", viewBeforeLoupe: s.view === "loupe" ? s.viewBeforeLoupe : s.view, compare: null } : {})),
+      closeEdit: () => set((s) => (s.view === "edit" ? { view: s.viewBeforeLoupe === "loupe" || s.viewBeforeLoupe === "edit" ? "flat" : s.viewBeforeLoupe } : {})),
+      addMask: (image, mask) => set((s) => ({ masks: { ...s.masks, [image]: [...(s.masks[image] ?? []).filter((m) => m !== mask), mask] } })),
       setHelpOpen: (helpOpen) => set({ helpOpen }),
       setMenuOpen: (menuOpen) => set({ menuOpen }),
       setDialog: (dialog) => set({ dialog, menuOpen: false }),

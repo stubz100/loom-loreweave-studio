@@ -29,6 +29,7 @@ const PRESETS: { id: Preset; label: string; hint: string }[] = [
   { id: "upscale", label: "Scale (SD3.5 tile)", hint: "tile-ControlNet re-render at a new size; structure-preserving" },
   { id: "resize", label: "Resize (Lanczos)", hint: "pure resample, no model: the way to downscale without a re-render" },
   { id: "restore", label: "Restore (GFPGAN)", hint: "face restoration blended over the source" },
+  { id: "inpaint", label: "Inpaint (masked)", hint: "repaint only the white area of a mask painted in Edit mode; the rest is kept pixel for pixel" },
 ];
 
 /** Live status: the persisted step status lags the queue; a vanished job means canceled. */
@@ -88,6 +89,8 @@ export function PostTab({ image }: { image: string }) {
   const addStep = useApp((s) => s.addStep);
   const queueStep = useApp((s) => s.queueStep);
   const removeStep = useApp((s) => s.removeStep);
+  const masks = useApp((s) => s.masks[image] ?? []);
+  const openEdit = useApp((s) => s.openEdit);
   const catalog = useCompose((s) => s.catalog);
   const styles = useCompose((s) => s.styles);
   const loadCatalog = useCompose((s) => s.loadCatalog);
@@ -122,15 +125,19 @@ export function PostTab({ image }: { image: string }) {
   const [outH, setOutH] = useState("");
   const [cnScale, setCnScale] = useState("");
   const [tree, setTree] = useState<Flux2PromptTree>(emptyFlux2PromptTree);
+  const [mask, setMask] = useState("");
+  // A freshly saved mask makes Inpaint the obvious next pass: pick it, and the preset.
+  useEffect(() => { if (masks.length) { setMask(masks[masks.length - 1]); setPreset("inpaint"); if (backend === "flux2") setBackend("sd35"); } }, [masks.length]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isI2i = preset === "clean" || preset === "refine" || preset === "stylelock";
+  const isInpaint = preset === "inpaint";
+  const isI2i = preset === "clean" || preset === "refine" || preset === "stylelock" || isInpaint;
   const isUpscale = preset === "upscale";
   const isResize = preset === "resize";
   const isFlux2 = isI2i && backend === "flux2";
   const devJson = isFlux2 && model === "flux.2-dev";
-  const sizeable = (isI2i && !isFlux2) || isUpscale || isResize;
+  const sizeable = (isI2i && !isFlux2 && !isInpaint) || isUpscale || isResize;   // a mask is pixel-aligned: no resize
   const variants = catalog?.[backend]?.variants ?? [];
-  const defaultStrength = preset === "clean" ? 0.5 : preset === "stylelock" ? 0.3 : 0.25;
+  const defaultStrength = preset === "clean" ? 0.5 : preset === "stylelock" ? 0.3 : isInpaint ? 0.95 : 0.25;
 
   const budget = (() => {
     if (!isI2i) return null;
@@ -154,7 +161,7 @@ export function PostTab({ image }: { image: string }) {
 
   const onPickPreset = (p: Preset) => {
     setPreset(p);
-    if (p === "stylelock" && backend === "flux2") setBackend("sd35");   // flux2 is the drift source (422 server-side)
+    if ((p === "stylelock" || p === "inpaint") && backend === "flux2") setBackend("sd35");   // flux2: the drift source / no inpaint mode (422 server-side)
     setScale(p === "resize" ? "0.5" : "");
   };
   const reset = () => {
@@ -181,9 +188,10 @@ export function PostTab({ image }: { image: string }) {
       if (outW.trim() && outH.trim()) { params.width = Number(outW); params.height = Number(outH); }
       else if (scale.trim() && Number(scale) !== 1) params.scale = Number(scale);
     }
+    if (isInpaint && !mask.trim()) { setProblem("Paint a mask in Edit mode first, or name a matte output."); return; }
     setBusy("add"); setProblem(null);
     try {
-      await addStep({ base, preset, backend: isI2i ? backend : undefined, params, source: effectiveSource || undefined });
+      await addStep({ base, preset, backend: isI2i ? backend : undefined, params, source: effectiveSource || undefined, ...(isInpaint ? { mask: mask.trim(), requires_mask: true } : {}) });
       reset();
     } catch (e) { setProblem(reasonOf(e)); } finally { setBusy(null); }
   };
@@ -263,7 +271,7 @@ export function PostTab({ image }: { image: string }) {
           <select value={backend} onChange={(e) => { setBackend(e.target.value); setModel(""); }}>
             <option value="zimage">zimage</option>
             <option value="sd35">sd35</option>
-            {preset !== "stylelock" && <option value="flux2">flux2 (JSON prompting on flux.2-dev)</option>}
+            {preset !== "stylelock" && !isInpaint && <option value="flux2">flux2 (JSON prompting on flux.2-dev)</option>}
           </select>
         </label>
       )}
@@ -277,6 +285,25 @@ export function PostTab({ image }: { image: string }) {
             })}
           </select>
         </label>
+      )}
+      {isInpaint && (
+        <>
+          <label className="p-field">Mask
+            {masks.length > 0 ? (
+              <select value={mask} onChange={(e) => setMask(e.target.value)}>
+                <option value="">choose a mask</option>
+                {masks.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            ) : (
+              <input type="text" value={mask} placeholder="out-relative mask name, or paint one" onChange={(e) => setMask(e.target.value)} />
+            )}
+          </label>
+          <div className="jt-row">
+            <span className="faint">White repaints, black keeps.</span>
+            <span className="spacer" />
+            <button onClick={openEdit} title="open the selected image in Edit mode (e)">{masks.length ? "Paint another" : "Paint a mask"}</button>
+          </div>
+        </>
       )}
       {isI2i && (
         <>

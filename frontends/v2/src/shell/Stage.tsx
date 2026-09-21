@@ -6,6 +6,7 @@ import { useMemo } from "react";
 
 import { tileActions } from "../canvas/actions";
 import { Captions } from "../canvas/Captions";
+import { Edit } from "../canvas/Edit";
 import { Grid } from "../canvas/Grid";
 import { Grouped } from "../canvas/Grouped";
 import { Loupe } from "../canvas/Loupe";
@@ -18,7 +19,7 @@ const VERBS: { id: StageId; label: string }[] = [
   { id: "cast", label: "Cast" }, { id: "expand", label: "Expand" }, { id: "curate", label: "Curate" }, { id: "train", label: "Train" },
 ];
 const VIEWS: { id: View; label: string }[] = [
-  { id: "flat", label: "Flat" }, { id: "grouped", label: "Grouped" }, { id: "captions", label: "Captions" }, { id: "loupe", label: "Loupe" },
+  { id: "flat", label: "Flat" }, { id: "grouped", label: "Grouped" }, { id: "captions", label: "Captions" }, { id: "loupe", label: "Loupe" }, { id: "edit", label: "Edit" },
 ];
 
 export function Stage() {
@@ -71,6 +72,10 @@ function AssetsStage() {
   const scoped = useMemo(() => scopedJobs(jobs, projectId, versionId, stage), [jobs, projectId, versionId, stage]);
   const marked = useMemo(() => model.tiles.filter((t) => bulk.includes(t.key)), [model.tiles, bulk]);
   const curating = !!selectedAsset && stage === "curate";
+  // Edit mode needs a finished still with a job behind it (a curated copy or a video cannot be masked).
+  const selJob = selection?.jobId ? jobs[selection.jobId] : undefined;
+  const editImage = selJob && selJob.status === "done" ? (selection?.output ?? selJob.result?.output_name ?? null) : null;
+  const editable = !!editImage && !/\.(mp4|webm|mov)$/i.test(editImage);
   const letter = STAGE_LETTER[stage];
 
   return (
@@ -99,8 +104,8 @@ function AssetsStage() {
           {VIEWS.map((v) => (
             <button key={v.id} role="tab" aria-selected={view === v.id} className={`verb${view === v.id ? " active" : ""}`}
                     onClick={() => setView(v.id)}
-                    disabled={(v.id === "captions" && !(selectedAsset && stage === "train")) || (v.id === "loupe" && !selection)}
-                    title={v.id === "captions" ? "the curated refs with their captions (Train)" : v.id === "loupe" ? (selection ? "Loupe (Enter)" : "Loupe needs a selected tile") : v.label}>
+                    disabled={(v.id === "captions" && !(selectedAsset && stage === "train")) || (v.id === "loupe" && !selection) || (v.id === "edit" && !editable)}
+                    title={v.id === "captions" ? "the curated refs with their captions (Train)" : v.id === "loupe" ? (selection ? "Loupe (Enter)" : "Loupe needs a selected tile") : v.id === "edit" ? (editable ? "paint an inpaint mask on the selected image (e)" : "Edit needs a selected finished image") : v.label}>
               {v.label}
             </button>
           ))}
@@ -135,6 +140,8 @@ function AssetsStage() {
       <div className="canvas">
         {!project ? (
           <Start />
+        ) : view === "edit" && editable ? (
+          <Edit image={editImage!} />
         ) : view === "captions" && stage === "train" ? (
           <Captions />
         ) : view === "loupe" ? (

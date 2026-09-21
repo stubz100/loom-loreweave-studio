@@ -1,6 +1,6 @@
 # kb-loom-flux2-weights — the FLUX.2-dev weights spike: off the Comfy repackaging
 
-*Started 2026-09-21 by Claude Code at the author's request, after the M2.17 cache work: "Comfy-Org/flux2-dev is a ComfyUI-compatible quantized model; it should be replaced with something official, like unsloth's GGUF. Can we create a spike for this?" A spike, not a build: the facts that can be settled without the card are settled here (the candidates, their formats, what loom's own ggml path does with them on the CPU); the card decides the rest. Related: M2.15 CPU / ggml spike (journal "🧪 CPU / ggml spike"), M2.16 sdcpp adapter (spec §12 3j), M2.17 model cache (kb-loom-cache.md).*
+*Started 2026-09-21 by Claude Code at the author's request, after the M2.17 cache work; the CPU half measured the same day (§4, 15:45 CEDT): "Comfy-Org/flux2-dev is a ComfyUI-compatible quantized model; it should be replaced with something official, like unsloth's GGUF. Can we create a spike for this?" A spike, not a build: the facts that can be settled without the card are settled here (the candidates, their formats, what loom's own ggml path does with them on the CPU); the card decides the rest. Related: M2.15 CPU / ggml spike (journal "🧪 CPU / ggml spike"), M2.16 sdcpp adapter (spec §12 3j), M2.17 model cache (kb-loom-cache.md).*
 
 ---
 
@@ -53,10 +53,12 @@ So: unsloth's GGUF is not "official" (nothing quantized is), but it is a **stand
 
 | run | steps | text encode | sampling | total | RAM | image |
 | --- | --- | --- | --- | --- | --- | --- |
-| Comfy fp8 transformer + bf16 Mistral, Q8 at load (M2.15 baseline) | 20 | 46.7 s | 1 599 s | **1 651 s** | 50.6 GB | `.tmp/sdcpp/bench/flux2dev_512_20.png` |
-| **unsloth Q4_K_M + Mistral Q4_K_M GGUF + BFL ae** | 20 | 🟡 pending | 🟡 | 🟡 | 🟡 | `.tmp/sdcpp/bench/flux2dev-gguf_512_20.png` |
+| Comfy fp8 transformer + bf16 Mistral, Q8 at load (M2.15 baseline) | 20 | 46.7 s | 1 599 s | **1 651 s** | 50.6 GB | `.tmp/sdcpp/bench/flux2dev_512_20_q8.png` (JSON prompt: `…_q8_json.png`) |
+| **unsloth Q4_K_M + Mistral Q4_K_M GGUF + BFL ae** | 20 | 3.4 (JSON prompt 6.6) s | 1 364 (JSON 1 354) s | **1 373 (JSON 1 366) s** | 32.3 GB | `.tmp/sdcpp/bench/flux2dev-gguf_512_20.png` |
 
-*(filled in the same session once the 34 GB are in — see the journal entry "🧪 FLUX.2-dev weights spike".)*
+**Verdict (Q1–Q3):** Q1 yes: the standard stack runs unchanged in loom's ggml path (sd.cpp reads the GGUF transformer, the llama-layout Mistral GGUF and BFL's ae with no loom-side plumbing). Q2 faster and lighter than the Comfy files: text encode 3.4 s vs 46.7 s (14×), sampling −15 % (68 s/step vs 80), total −17 %, RAM 32.3 GB vs 50.6 GB (−36 %: encoder 13.1 + transformer 19.0 + VAE 0.16). Q3 no visible quantization cost at Q4_K_M: the plain-prompt image keeps the composition (ranger, cloak, path, dawn through pines) with a more weathered face and natural hands, no artefacts.
+
+**Q4 (the JSON prompt through the Mistral GGUF):** the same directives followed as with the 35 GB bf16 Comfy encoder — the over-the-shoulder look, the hand on the sword hilt at the hip, the brass compass and the leather satchel (both clearer than in the baseline), mist between pines, rim light from behind, the emerald / rust / cream palette; the same soft miss (the low angle reads as eye level); encode 6.6 s vs 45 s, sampling 1 354 s. The 13 GB Mistral Q4_K_M GGUF conditions dev as well as the bf16 file.
 
 Run it: `.\tools\sdcpp\bench-cpu.ps1 flux2dev-gguf -Steps 20` (`-Quant Q3_K_M`, `-LlmQuant Q6_K` to vary).
 

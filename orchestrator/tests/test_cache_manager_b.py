@@ -53,6 +53,8 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_HOME", str(home))
     monkeypatch.setenv("LOOM_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.delenv("LOOM_MODELS_DIR", raising=False)
+    from orchestrator import config as config_mod
+    monkeypatch.delitem(config_mod._FILE_ENV, "LOOM_MODELS_DIR", raising=False)   # the repo .env must not win here
     monkeypatch.delenv("LOOM_WORKERS_ONLINE", raising=False)
     return hub
 

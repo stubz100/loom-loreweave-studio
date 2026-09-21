@@ -61,10 +61,38 @@ class Resolved:
 
 # --- the cache on disk ---------------------------------------------------------------------
 
+def location_source() -> str:
+    """Where the cache location comes from, in precedence order: a real `LOOM_MODELS_DIR` env
+    var (`env`), the same key in `.env` / `.env.local` (`dotenv`), the app setting
+    `settings.models_dir` (`setting`), an inherited `HF_HOME` (`hf_home`), else the default."""
+    if os.environ.get("LOOM_MODELS_DIR"):
+        return "env"
+    if getattr(config_mod, "_FILE_ENV", {}).get("LOOM_MODELS_DIR"):
+        return "dotenv"
+    if app_settings().get("models_dir"):
+        return "setting"
+    if os.environ.get("HF_HOME"):
+        return "hf_home"
+    return "default"
+
+
+def effective_home() -> Path:
+    """The cache home in force right now (step c): env > dotenv > setting > HF_HOME > default.
+    Read on every call, so a setting change applies to the next scan and the next job with
+    no restart; the env sources still win, and the UI says so."""
+    src = location_source()
+    if src in ("env", "dotenv"):
+        return Path(CONFIG.hf_home)
+    if src == "setting":
+        return Path(app_settings()["models_dir"]).resolve()
+    if src == "hf_home":
+        return Path(os.environ["HF_HOME"])
+    return Path(CONFIG.hf_home)
+
+
 def hub_dir(cache_home: str | os.PathLike | None = None) -> Path:
-    """The hub cache root (`<HF_HOME>/hub`). The orchestrator sets HF_HOME at startup from
-    `CONFIG.hf_home`; an explicit `cache_home` wins (tests, and the step-c location setting)."""
-    home = Path(cache_home) if cache_home else Path(os.environ.get("HF_HOME") or CONFIG.hf_home)
+    """The hub cache root (`<home>/hub`); an explicit `cache_home` wins, else `effective_home()`."""
+    home = Path(cache_home) if cache_home else effective_home()
     return home / "hub"
 
 
@@ -245,12 +273,7 @@ def _health(need: Need | None, ref: str | None, revs: list[dict]) -> tuple[str, 
 
 def _location(hub: Path) -> dict:
     home = hub.parent
-    if os.environ.get("LOOM_MODELS_DIR"):
-        source = "env"
-    elif getattr(config_mod, "_FILE_ENV", {}).get("LOOM_MODELS_DIR"):
-        source = "dotenv"
-    else:
-        source = "default"
+    source = location_source()
     free_gb = total_gb = None
     try:
         probe = home if home.exists() else home.anchor or home
@@ -258,7 +281,13 @@ def _location(hub: Path) -> dict:
         free_gb, total_gb = round(du.free / 1e9, 1), round(du.total / 1e9, 1)
     except OSError:
         pass
-    return {"path": str(home), "exists": home.is_dir(), "free_gb": free_gb, "total_gb": total_gb, "source": source}
+    prev = app_settings().get("previous_models_dir")
+    previous = None
+    if prev and Path(prev).resolve() != home.resolve():
+        ph = Path(prev) / "hub"
+        previous = {"path": prev, "exists": ph.is_dir(), "size_gb": round(_dir_size(ph) / 1e9, 1) if ph.is_dir() else 0.0}
+    return {"path": str(home), "exists": home.is_dir(), "free_gb": free_gb, "total_gb": total_gb, "source": source,
+            "managed": source in ("setting", "hf_home", "default"), "previous": previous}
 
 
 def inventory(hub: Path | None = None) -> dict:
@@ -354,7 +383,8 @@ def worker_env(hub: Path | None = None) -> dict[str, str]:
     """What a worker's environment gains: the pinned revisions, and the hub forced offline
     (R163: fetches are explicit loom actions; a stale ref must never start a download mid-job).
     `LOOM_WORKERS_ONLINE=1` restores the old online behaviour."""
-    env = {"LOOM_HF_REVISIONS": json.dumps(pins(hub), separators=(",", ":"))}
+    env = {"LOOM_HF_REVISIONS": json.dumps(pins(hub), separators=(",", ":")),
+           "HF_HOME": str((hub or hub_dir()).parent)}       # step c: the location in force, per job
     if not CONFIG.workers_online:
         env["HF_HUB_OFFLINE"] = "1"
     return env
@@ -541,3 +571,93 @@ def prune(hub: Path | None = None) -> dict:
             pass
     done["freed_gb"] = round(done["freed_gb"], 2)
     return done
+
+
+# --- the location as a setting, and the move (step c) ----------------------------------------
+
+def _check_target(path: str) -> Path:
+    if not path or not path.strip():
+        raise CacheError(400, "give an absolute folder path")
+    p = Path(path.strip())
+    if not p.is_absolute():
+        raise CacheError(400, f"{path!r} is not an absolute path")
+    if p.exists() and not p.is_dir():
+        raise CacheError(400, f"{path!r} exists and is not a folder")
+    return p
+
+
+def set_location(path: str) -> dict:
+    """Make `path` the cache home (`settings.models_dir`). Refused while an env source is in
+    force — that line must go first, and the response names it. The folder is created; the
+    hub tree is NOT moved (that is `plan_move`)."""
+    src = location_source()
+    if src in ("env", "dotenv"):
+        raise CacheError(409, f"the cache location is set by {'the LOOM_MODELS_DIR environment variable' if src == 'env' else 'LOOM_MODELS_DIR in .env or .env.local'}; "
+                              "remove it there to manage the location from loom")
+    p = _check_target(path)
+    try:
+        (p / "hub").mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise CacheError(400, f"cannot create {p}: {e}")
+    current = effective_home()
+    set_app_setting("models_dir", str(p))
+    if current.resolve() != p.resolve() and (current / "hub").is_dir():
+        set_app_setting("previous_models_dir", str(current))
+    return {"path": str(p), "source": location_source(), "applies_to": "the next scan and the next job"}
+
+
+def plan_move(to: str) -> dict:
+    """Validate a move of the hub tree to `to`: not the current home or inside it, enough free
+    space for the tree. Returns what the job will carry."""
+    src = location_source()
+    if src in ("env", "dotenv"):
+        raise CacheError(409, "the cache location is set by LOOM_MODELS_DIR (env or .env); remove it there before moving from loom")
+    dst = _check_target(to)
+    cur = effective_home()
+    hub = cur / "hub"
+    if not hub.is_dir():
+        raise CacheError(404, f"no hub cache at {hub}")
+    if dst.resolve() == cur.resolve() or cur.resolve() in dst.resolve().parents:
+        raise CacheError(409, "the destination must not be the current location or inside it")
+    size = _dir_size(hub)
+    try:
+        probe = dst if dst.exists() else (dst.parent if dst.parent.exists() else Path(dst.anchor))
+        free = shutil.disk_usage(probe).free
+    except OSError:
+        free = None
+    if free is not None and free < size:
+        raise CacheError(409, f"not enough free space at {dst}: {free / 1e9:.1f} GB free, the cache is {size / 1e9:.1f} GB")
+    return {"from": str(cur), "to": str(dst), "size_gb": round(size / 1e9, 1), "free_gb": round(free / 1e9, 1) if free is not None else None}
+
+
+def finish_move(job: dict) -> bool:
+    """Completion observer: a done `hf_cache` move job switches the setting to its destination
+    and remembers the old home as `previous_models_dir` (kept until deleted)."""
+    if job.get("pipeline") != "hf_cache" or job.get("mode") != "move":
+        return False
+    if not (job.get("result") or {}).get("ok"):
+        return False
+    params = job.get("params") or {}
+    to, frm = params.get("to"), params.get("cache_home")
+    if not to:
+        return False
+    if location_source() in ("env", "dotenv"):
+        return False                                   # an env source still wins; nothing to switch
+    set_app_setting("models_dir", str(Path(to)))
+    if frm and Path(frm).resolve() != Path(to).resolve():
+        set_app_setting("previous_models_dir", str(frm))
+    return True
+
+
+def delete_previous() -> dict:
+    prev = app_settings().get("previous_models_dir")
+    if not prev:
+        raise CacheError(404, "no previous cache location is recorded")
+    if Path(prev).resolve() == effective_home().resolve():
+        set_app_setting("previous_models_dir", None)
+        raise CacheError(409, "the previous location is the current one; nothing to delete")
+    hub = Path(prev) / "hub"
+    size = _dir_size(hub) if hub.is_dir() else 0
+    shutil.rmtree(hub, ignore_errors=True)
+    set_app_setting("previous_models_dir", None)
+    return {"deleted": str(hub), "freed_gb": round(size / 1e9, 1)}

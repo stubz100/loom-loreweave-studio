@@ -5002,3 +5002,44 @@ health {'stale_extra': 1, 'unused': 9, 'ok': 17, 'empty': 2, 'missing': 5}; stil
 explicit `cache_dir` everywhere = no restart), `PUT /cache/location`, `POST /cache/move` as the
 `hf_cache` move job with the switch on completion, `DELETE /cache/previous`; then step d, the v2
 Models page.
+
+
+## 🧰 M2.17 step c — the cache location as a loom setting, and the move (2026-09-21, 09:34–09:41 CEDT)
+
+**Pushed before this entry:** step b = `5d98509`.
+
+**Built:**
+- `weights.location_source()` / `effective_home()` — the precedence the plan fixed (D1): a real
+  `LOOM_MODELS_DIR` (`env`) > the same key in `.env` / `.env.local` (`dotenv`) > the app setting
+  `settings.models_dir` (`setting`) > an inherited `HF_HOME` (`hf_home`) > the default. Read on
+  every call: `hub_dir()`, the probe, the inventory and `worker_env` (which now also carries
+  `HF_HOME`) follow a setting change with **no restart**; the orchestrator's startup `HF_HOME` and
+  `/version` (`hf_home` + `hf_home_source`) read the same function.
+- `set_location(path)` — absolute path only, creates `<path>/hub`, **refused while an env source
+  is in force** (409 naming the source: "remove it there to manage the location from loom"),
+  records the old home as `previous_models_dir` when it holds a hub tree. `plan_move(to)` — not
+  the current home or inside it (409), a hub tree must exist (404), free space at the
+  destination ≥ the tree (409 with both numbers). `finish_move(job)` — the completion observer
+  switches the setting when an `hf_cache` **move** job finishes OK and keeps the old home as
+  *previous* (never while an env source wins). `delete_previous()` — removes the previous hub
+  tree and clears the record. The inventory's `location` gained `managed` and `previous` (path ·
+  exists · size).
+- `main.py` — `PUT /cache/location`, `POST /cache/move` (validated, then the move job; the
+  response carries the plan), `DELETE /cache/previous` (registered BEFORE the `{repo_id:path}`
+  deletes — the path convertor had swallowed "previous" as a repo id, which the endpoint test
+  caught); all three 409 while a job runs; `_on_job_complete` fans out to `_finish_cache_move`.
+- ⚠ On this box `.env` carries `LOOM_MODELS_DIR=F:\HF_HOME`, so the UI will show the location as
+  *set by .env* and refuse changes until that line is removed — as designed (D1). The tests
+  neutralise the repo's own `.env` value in their fixtures, or they would have read the real cache.
+
+**Verified:** `test_cache_manager_c.py` (+6): all five precedence sources in turn; the change
+validated and the previous recorded, the inventory saying `setting` / `managed` / `previous`, the
+next worker's `HF_HOME`; the refusal under `.env`; the move plan's three checks with the free
+space mocked; the observer switching only on a done move and the previous deletable once; the
+endpoints end to end (`/version` before and after the switch, 409s while running, 404 after the
+previous is gone). 159 green across the cache and touched suites.
+
+**Next:** step d — the v2 Models page (location row with Change… / Move… · the roster with
+health, used-by, size and Fetch / Repair / Verify / Pin / Delete · other repos · prune dry run →
+confirm · the previous location), the drift/missing banner with Repair / Fetch, Fetch / Repair on
+the composer's 412, and the variant's weight status under the model picker.

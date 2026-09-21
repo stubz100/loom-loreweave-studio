@@ -616,6 +616,20 @@ class CachePinRequest(BaseModel):
     commit: str | None = None
 
 
+class CacheLocationRequest(BaseModel):
+    """M2.17 step c — the cache home as a loom setting (env and .env still win)."""
+
+    model_config = ConfigDict(extra="forbid")
+    path: str
+
+
+class CacheMoveRequest(BaseModel):
+    """M2.17 step c — move the hub tree; the setting switches when the job completes."""
+
+    model_config = ConfigDict(extra="forbid")
+    to: str
+
+
 class CachePruneRequest(BaseModel):
     """M2.17 step b — a prune lists by default; `dry_run: false` removes."""
 
@@ -692,10 +706,21 @@ def _record_postproc_output(job: dict) -> None:
         logsetup.get_logger().warning("postproc result persist failed: %s", e)
 
 
+def _finish_cache_move(job: dict) -> None:
+    """Completion observer (M2.17 step c): a done cache move switches the location setting."""
+    try:
+        if weights.finish_move(job):
+            logsetup.get_logger().info("cache move done: location is now %s (previous kept at %s)",
+                                       (job.get("params") or {}).get("to"), (job.get("params") or {}).get("cache_home"))
+    except Exception as e:  # noqa: BLE001 - observer is best-effort, never fail the job
+        logsetup.get_logger().warning("cache move switch failed: %s", e)
+
+
 def _on_job_complete(job: dict) -> None:
     """The single runner completion observer — fans out to the per-feature persisters."""
     _persist_anchor_verification(job)
     _record_postproc_output(job)
+    _finish_cache_move(job)
 
 
 def _image_dims(path, default: tuple[int, int] = (1024, 1024)) -> tuple[int, int]:
@@ -769,7 +794,7 @@ async def lifespan(app: FastAPI):
     if not os.environ.get("HF_HOME"):
         try:
             CONFIG.hf_home.mkdir(parents=True, exist_ok=True)
-            os.environ["HF_HOME"] = str(CONFIG.hf_home)
+            os.environ["HF_HOME"] = str(weights.effective_home())   # M2.17 step c: the setting counts
             log.info("HF cache → %s (shared across projects)", CONFIG.hf_home)
         except OSError as e:
             log.warning("could not create HF cache dir %s: %s", CONFIG.hf_home, e)
@@ -915,7 +940,8 @@ def create_app() -> FastAPI:
                                "POST /components/fetch", "POST /shutdown"],
             "worker_reap": WORKER_REAP,
             "work_disk_root": str(CONFIG.work_disk_root),
-            "hf_home": os.environ.get("HF_HOME") or str(CONFIG.hf_home),
+            "hf_home": str(weights.effective_home()),
+            "hf_home_source": weights.location_source(),
             "active_project": (str(RUNNER.workspace.path) if RUNNER.workspace else None),
             "log_level": CONFIG.log_level,
             "log_file": str(CONFIG.log_dir / "orchestrator.log"),
@@ -3405,6 +3431,19 @@ def create_app() -> FastAPI:
         except weights.CacheError as e:
             raise HTTPException(e.status, str(e))
 
+    # DELETE /cache/previous must be registered BEFORE the `{repo_id:path}` deletes, or the
+    # path convertor swallows "previous" as a repo id (the step-c test caught it).
+    @app.delete("/cache/previous")
+    def cache_delete_previous(_auth: None = Depends(require_token)) -> dict:
+        """Delete the hub tree at the previous location after a move."""
+        _cache_idle()
+        try:
+            r = weights.delete_previous()
+        except weights.CacheError as e:
+            raise HTTPException(e.status, str(e))
+        LOG.info("previous cache location deleted: %s (%.1f GB)", r["deleted"], r["freed_gb"])
+        return r
+
     @app.delete("/cache/{repo_id:path}/revisions/{commit}")
     def cache_delete_revision(repo_id: str, commit: str, _auth: None = Depends(require_token)) -> dict:
         """Delete one cached revision (blobs go only when nothing else links them). Refused
@@ -3442,6 +3481,31 @@ def create_app() -> FastAPI:
         LOG.info("cache prune: %d revision(s), %d empty repo(s), %d blob(s), %.2f GB", len(r["revisions"]),
                  len(r["empty_repos"]), len(r["orphan_blobs"]), r["freed_gb"])
         return {"dry_run": False, **r}
+
+    @app.put("/cache/location")
+    def cache_set_location(req: CacheLocationRequest, _auth: None = Depends(require_token)) -> dict:
+        """Point loom at another cache home (a setting in .loom_state/app.json). Refused while
+        LOOM_MODELS_DIR is in force (env or .env). Applies to the next scan and the next job;
+        the old tree stays where it is (move it with POST /cache/move)."""
+        _cache_idle()
+        try:
+            r = weights.set_location(req.path)
+        except weights.CacheError as e:
+            raise HTTPException(e.status, str(e))
+        LOG.info("cache location set to %s (%s)", r["path"], r["source"])
+        return r
+
+    @app.post("/cache/move")
+    def cache_move(req: CacheMoveRequest, _auth: None = Depends(require_token)) -> dict:
+        """Copy the hub tree to `to` as a queued io job (resumable, symlink-preserving, verified);
+        on completion the location switches and the old tree is kept as the previous location
+        until DELETE /cache/previous. Refused while a job runs."""
+        _cache_idle()
+        try:
+            plan = weights.plan_move(req.to)
+        except weights.CacheError as e:
+            raise HTTPException(e.status, str(e))
+        return {**_cache_job("move", {"to": plan["to"]}), "plan": plan}
 
     @app.get("/components")
     def get_components() -> dict:

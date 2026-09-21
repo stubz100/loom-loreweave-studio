@@ -54,6 +54,8 @@ def hub(tmp_path, monkeypatch):
     hub.mkdir(parents=True)
     monkeypatch.setenv("HF_HOME", str(home))
     monkeypatch.delenv("LOOM_MODELS_DIR", raising=False)
+    from orchestrator import config as config_mod
+    monkeypatch.delitem(config_mod._FILE_ENV, "LOOM_MODELS_DIR", raising=False)   # the repo .env must not win here
     monkeypatch.delenv("LOOM_WORKERS_ONLINE", raising=False)
     return hub
 
@@ -115,7 +117,7 @@ def test_inventory_health_and_detail(hub):
     klein = by["black-forest-labs/FLUX.2-klein-4B"]                                # a roster repo absent from the cache
     assert klein["health"] == "missing" and klein["revisions"] == [] and klein["needed"] is True
     assert any(n["repo_id"] == "stabilityai/stable-diffusion-3.5-medium" for n in inv["needs_missing"])
-    assert inv["location"]["path"] == str(hub.parent) and inv["location"]["source"] in ("default", "dotenv")
+    assert inv["location"]["path"] == str(hub.parent) and inv["location"]["source"] == "hf_home"   # the fixture sets HF_HOME, nothing else
     assert inv["size_gb"] >= 0 and inv["scanned_at"]
 
 

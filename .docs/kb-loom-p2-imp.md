@@ -5209,3 +5209,6 @@ the library; the step-b per-file fetch test learns the new kwarg and stubs the s
 The whole backend suite under the torch guard: **531 passed, 2 skipped, 36 torch-bound left
 out** (a first run hit a Windows teardown race on the hardening file's queue.json rename —
 the test itself passed; the rerun of the file and of the suite were clean).
+
+
+**Pushed:** the fetch meter = `206edb7`. Ledger of M2.17: a `9171e30` · b `5d98509` · c `36dbbdd` · d `6111367` · e `2831af7` · e-meter `206edb7`.

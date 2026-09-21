@@ -4846,3 +4846,39 @@ statements, the stray `99` file), and — once the GPU is back — the P2 rig st
 **Pushed:** step 8 = `45049a8` (code + tests + plan §6 row 8 + the close-out note + README + this entry).
 
 **⚠ Erratum, the clock again.** Commit times of record (`git log --format=%ci`): step 7 committed 2026-09-21 07:35 (its heading says finished 07:42, a guess); step 8 ran about 07:36 to 07:43 (its heading says 07:43 to 07:43 because the start was guessed and the finish read from the clock). Rule, once more: read the clock at the START of an entry too.
+
+
+## 📐 Model-cache plan drafted — `kb-loom-cache.md` (2026-09-21, from about 08:10 (after the author's 08:07 launch in the log) to 08:32 CEDT)
+
+Author: after the flux.2-dev refusal (*"model weights missing — fetch them first"*) and my
+diagnosis, the author asked to **manage the whole HF cache from loom, including its location
+on disk**, extending the "fix it for good" remedy. This entry records the diagnosis and the plan.
+
+**Diagnosis (read-only, nothing touched):** `F:\HF_HOME\hub\models--Comfy-Org--flux2-dev` holds
+two snapshots — `03d6521e` (June 25; all nine files, 107.2 GB, **no ref**) and `06029c96`
+(2026-08-15 15:30; the VAE only, linked to the same blob) — and `refs/main` names the August
+one. `components._hf_cache_probe` (`try_to_load_from_cache`, no revision) and the flux2
+worker's `resolve_hf_file` (`hf_hub_download(local_files_only=True)`, no revision) both
+resolve through the ref, so the transformer and the text encoder read as absent → 412.
+Upstream moved again on 2026-08-17 (`ab905562`), so "fetch it first" would pull ~50 GB over the
+slow link. **Trap:** a standard hub prune would delete the unreferenced June snapshot — the
+one that works. The cache is shared with the monorepo's other tools (29 repos, 744.7 GB;
+`scan_cache_dir` takes 0.3 s). Immediate unblock offered, not applied: rewrite `refs/main` to
+`03d6521e…` (40 bytes). ⚠ This box has no GPU: after any fix the job still fails at model load
+until the card is back or the sdcpp adapter exists.
+
+**Plan (`.docs/kb-loom-cache.md`, proposed M2.17 — model cache manager):** one roster
+(`weights.py`) over the four scattered sources · a **resolver** that reads the ref's snapshot,
+then any cached snapshot, never the network, and hands workers the chosen **revision**
+(`LOOM_HF_REVISIONS`, `HF_HUB_OFFLINE=1`) · `GET /cache` inventory + health (`ok · ref_drift ·
+partial · missing · empty · unused · stale_extra`) · actions as token-gated endpoints (Repair
+ref · Fetch **as an io job in the queue** with resume and dock progress · Delete · Prune with
+a dry run that never removes a complete-for-loom revision · Verify · Pin) · the **location as a
+loom setting** in `.loom_state/app.json` (env still wins, the UI says so; explicit `cache_dir`
+everywhere so no restart) · **Move** as a resumable symlink-preserving copy → verify → switch →
+keep the old tree · a v2 **Models page**, a drift/missing banner with Repair/Fetch, and
+Fetch/Repair on the composer's 412. Milestones a–d (resolver+repair · fetch/delete/prune/verify ·
+location+move · UI), 4.5 days, every step testable on a fake cache without a GPU. Seven
+decisions listed for the author (D1–D7); recommendation: **a first** (closes the live bug and
+the prune trap), b–d after the v2 click-through and before M2.16, since the sdcpp GGUF files
+will live in the same cache.

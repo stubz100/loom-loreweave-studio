@@ -295,13 +295,17 @@ def weights_ok() -> tuple[bool, list[str]]:
 
 def _hf_cache_probe(repo_id: str, probe: str) -> bool:
     """Best-effort presence: is `probe` (a representative file) cached for `repo_id`?
-    A cache hit means the repo was at least fetched; not a deep integrity check."""
+    A cache hit means the repo was at least fetched; not a deep integrity check.
+
+    M2.17 step a (2026-09-21): resolved through `weights.resolve`, which reads the ref'd
+    revision first and then ANY cached revision — the hub library's own lookup follows
+    `refs/main` only, and a ref that drifted to a one-file snapshot made 107 GB of
+    flux.2-dev read as "not in cache"."""
     if not repo_id:
         return False
     try:
-        from huggingface_hub import try_to_load_from_cache
-        hit = try_to_load_from_cache(repo_id, probe or "config.json")
-        return isinstance(hit, str) and os.path.exists(hit)
+        from . import weights
+        return weights.resolve(repo_id, probe or "config.json") is not None
     except Exception:  # noqa: BLE001
         return False
 

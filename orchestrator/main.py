@@ -52,6 +52,7 @@ try:
     from . import projects
     from . import workspace as ws_mod
     from . import components
+    from . import weights
     from .diskguard import DiskGuard
     from . import logsetup
     from . import bible
@@ -82,6 +83,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     import projects  # type: ignore
     import workspace as ws_mod  # type: ignore
     import components  # type: ignore
+    import weights  # type: ignore
     from diskguard import DiskGuard  # type: ignore
     import logsetup  # type: ignore
     import bible  # type: ignore
@@ -3307,6 +3309,29 @@ def create_app() -> FastAPI:
     def disk() -> dict:
         """Live disk-guard status (two measures × two thresholds, §9). Unauthenticated read."""
         return GUARD.status()
+
+    # --- M2.17 step a (kb-loom-cache.md): the model cache seen from loom -----------------
+    @app.get("/cache")
+    def get_cache() -> dict:
+        """The hub cache inventory: the location, every repo with its revisions and a health
+        verdict (ok · ref_drift · partial · missing · empty · unused · stale_extra) and what
+        loom needs it for. Read-only; the scan is metadata only (0.3 s for 745 GB)."""
+        return weights.inventory()
+
+    @app.post("/cache/{repo_id:path}/repair")
+    def repair_cache_ref(repo_id: str, _auth: None = Depends(require_token)) -> dict:
+        """Rewrite the repo's `refs/main` to the newest cached revision that is complete for
+        loom (the ref-drift cure). Refused while a job runs; the previous value is returned
+        and logged. Token-gated."""
+        if any(j.get("status") == "running" for j in RUNNER.snapshot().values()):
+            raise HTTPException(409, "a job is running; repair the ref when the queue is idle")
+        try:
+            r = weights.repair_ref(repo_id)
+        except weights.CacheError as e:
+            raise HTTPException(e.status, str(e))
+        LOG.info("cache repair: %s refs/main %s -> %s (%s)", repo_id, r["previous"], r["now"],
+                 "changed" if r["changed"] else "already complete")
+        return r
 
     @app.get("/components")
     def get_components() -> dict:

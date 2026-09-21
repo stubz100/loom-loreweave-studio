@@ -49,9 +49,23 @@ FP8_MATMUL_MODES = ("auto", "native", "dequant")
 VENDORED_MISTRAL_TE = Path(__file__).resolve().parent / "assets" / "mistral_te"
 
 
-def resolve_hf_file(repo_id: str, filename: str, local_files_only: bool = True) -> str:
-    """Resolve a single HF file, defaulting to the local cache to avoid surprise downloads."""
-    return hf_hub_download(repo_id=repo_id, filename=filename, local_files_only=local_files_only)
+try:
+    from .hf_pins import pinned_revision
+except ImportError:                              # file-path invocation: the flux2 dir is sys.path[0]
+    from hf_pins import pinned_revision
+
+
+def resolve_hf_file(repo_id: str, filename: str, local_files_only: bool = True,
+                    revision: str | None = None) -> str:
+    """Resolve a single HF file, defaulting to the local cache to avoid surprise downloads.
+
+    M2.17 step a (2026-09-21): the orchestrator pins the revision it judged complete
+    (`LOOM_HF_REVISIONS`), so a `refs/main` that drifted to a one-file snapshot no longer
+    hides the bytes; an explicit `revision` still wins."""
+    if revision is None:
+        revision = pinned_revision(repo_id)
+    return hf_hub_download(repo_id=repo_id, filename=filename, local_files_only=local_files_only,
+                           revision=revision)
 
 
 def resolve_dtype(dtype: str) -> torch.dtype:

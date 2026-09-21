@@ -4882,3 +4882,56 @@ location+move · UI), 4.5 days, every step testable on a fake cache without a GP
 decisions listed for the author (D1–D7); recommendation: **a first** (closes the live bug and
 the prune trap), b–d after the v2 click-through and before M2.16, since the sdcpp GGUF files
 will live in the same cache.
+
+
+## 🧰 M2.17 step a — the cache resolver, inventory and repair (2026-09-21, 08:34–08:53 CEDT)
+
+Author: *"ok, I accept your recommendations, let's go with your proposed plan"* → M2.17 adopted
+with D1–D7 as recommended; step a first. Adoption sweep done in this entry's commit: spec §12
+entry 3k, the plan's header + step-a row, README, memory.
+
+**Built:**
+- `orchestrator/weights.py` — the **roster** (`roster()` / `roster_map()`: one `Need` per repo,
+  files and users merged from the phase manifest, the `multi` presets, the catalog variants with
+  their `probe_files` and VAE repos, and the postproc tools; `file`-target weights are not hub
+  repos and stay out); the **resolver** (`resolve(repo, file)`: the ref'd revision first, then
+  any cached revision newest first, never the network; follows symlinks, a dangling one is
+  absent); the **inventory** (`inventory()`: location with its source env / dotenv / default and
+  free space, every `models--*` repo with its revisions — files, size, needed-present of
+  needed-total, complete-for-loom, ref — a health verdict and a one-line detail; roster repos
+  absent from the cache listed as missing; `needs_missing`); **`pin_for` / `pins` / `worker_env`**
+  (the revision a worker should read per roster repo, as `LOOM_HF_REVISIONS` JSON, plus
+  `HF_HUB_OFFLINE=1` unless `LOOM_WORKERS_ONLINE=1`); **`repair_ref`** (atomic rewrite of
+  `refs/main` to the newest complete revision; 404 unknown repo, 409 nothing complete;
+  idempotent).
+- `components._hf_cache_probe` now resolves through `weights.resolve` — so `variant_weights_present`,
+  `multi_weights_status`, `postproc_weights_status` and `weights_ok` all survive ref drift with
+  no other change. `config.workers_online` added.
+- `runner.py` — both spawn sites (cold job, warm worker) merge `weights.worker_env()` into the
+  worker's environment.
+- `main.py` — `GET /cache` and `POST /cache/{repo_id}/repair` (token; 409 while a job runs; the
+  previous ref logged).
+- `pipelines/multistack/src/pipeline/flux2/hf_pins.py` (torch-free) + `scaled_fp8.resolve_hf_file`
+  passes `revision=` (the pin unless the caller gives one) to `hf_hub_download` — the transformer,
+  the text encoder, the VAE and the Turbo LoRA all go through it.
+
+**Verified:** `test_cache_manager.py` (+9): a fake hub in tmp reproducing the real drift
+(June complete, August VAE-only, main → August) — the resolver returns June's transformer and
+the ref'd VAE; the probe and the flux.2-dev variant gate pass; the inventory says `ref_drift`
+with the repair hint, `ok`, `unused`, `empty`, `missing` (a needed repo without its
+`model_index.json`, and a roster repo absent from the cache); repair rewrites the ref
+atomically and is idempotent, refuses an unknown repo (404) and a repo with nothing complete
+(409); the worker env pins June and forces offline, `LOOM_WORKERS_ONLINE` lifts it; the
+worker's pin reader works without torch and the resolver passes `revision=`; both runner
+spawn sites carry the env; the endpoints via TestClient (401 · 404 · 409 while running · 200
+→ `stale_extra` after). Plus the suites the change touches (components, generate pre-flight,
+postproc, v2 contracts) under the torch guard.
+
+**The real cache:** `POST /cache/Comfy-Org/flux2-dev/repair` needs the new orchestrator; the
+running one (started 08:07) is the old code. The 40-byte repoint was applied directly with the
+same atomic writer and verified: the hub library now resolves the transformer through
+`refs/main`. The orchestrator will pick up step a on its next start (`loom-dev`).
+
+**Next:** step b (fetch as an io job with resume and dock progress · delete · prune with a dry
+run that never removes a complete-for-loom revision · verify · pin; the diffusers loaders'
+`revision=`), after the author's v2 click-through.

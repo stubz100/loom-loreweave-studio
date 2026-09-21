@@ -182,6 +182,7 @@ loom-loreweave-studio/
 │   ├── shared/api/    #   the typed orchestrator client + logger, imported by every frontend
 │   ├── v1/            #   the current React/TS frontend — frozen reference (Vite :1420)
 │   └── v2/            #   the new frontend, built from scratch on the same API (Vite :1421) — M2.14 steps 1–8 built (frame · composer · inspector · canvas · train · edit mode · world); the author's click-through is owed
+│                      #   model cache: `GET /cache` lists the HF hub cache with a health verdict per repo; `POST /cache/<repo>/repair` cures a drifted ref (.docs/kb-loom-cache.md, M2.17)
 │   ├── src/           #   React UI (three-pane shell + job-queue dock + batch grid + project bar)
 │   └── src-tauri/     #   Rust: single-instance, orchestrator sidecar spawn + kill, READY handshake
 └── orchestrator/      # Python FastAPI service (127.0.0.1)

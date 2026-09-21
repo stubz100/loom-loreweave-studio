@@ -1058,6 +1058,8 @@ class JobRunner:
             raise RuntimeError(f"{pipeline} worker not found in any pipeline root")
         argv = adapter.serve_argv(CONFIG.venv_python, script, "cuda", str(self._ws.out_dir))
         env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+        from . import weights   # M2.17 step a: the pinned cache revisions + HF_HUB_OFFLINE
+        env.update(weights.worker_env())
         proc = subprocess.Popen(
             argv, cwd=str(script.parents[2]), env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1259,6 +1261,8 @@ class JobRunner:
         # as utf-8/replace below so the two sides agree and a stray byte never fells the read
         # loop. Both env keys are inherited by sub-subprocesses (multi's stage_runner).
         env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+        from . import weights   # M2.17 step a: the pinned cache revisions + HF_HUB_OFFLINE
+        env.update(weights.worker_env())
         # M6 preview fix (user-found on the rig 2026-07-13, job_af29227d): a job carrying
         # `runtime_overlay` gets it PREPENDED to the worker's PYTHONPATH. LoRA-loaded
         # inference needs PEFT, which lives ONLY in the isolated trainer overlay (R103 —

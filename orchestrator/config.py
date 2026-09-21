@@ -213,6 +213,13 @@ class Config:
                 or _get("HUGGINGFACE_HUB_TOKEN"))
 
     @property
+    def workers_online(self) -> bool:
+        """`LOOM_WORKERS_ONLINE` — M2.17 step a: workers run with `HF_HUB_OFFLINE=1` so a stale
+        cache ref can never start a surprise download mid-job (fetches are explicit loom
+        actions, R163). Set to 1/true to restore the old online behaviour."""
+        return (_get("LOOM_WORKERS_ONLINE", "") or "").strip().lower() in ("1", "true", "yes")
+
+    @property
     def trainer_overlay(self) -> str | None:
         """`LOOM_TRAINER_OVERLAY` — the isolated trainer dependency-overlay dir the wrapper
         prepends to the worker's PYTHONPATH (M1/M2: the shared inference venv deliberately

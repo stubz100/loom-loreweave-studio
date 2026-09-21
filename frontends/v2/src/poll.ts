@@ -16,6 +16,7 @@ export function usePolling(): void {
     let stopped = false;
     let wasOffline: boolean | null = null;
     let lastDiskState: string | null = null;
+    let n = 0;
 
     const tick = async () => {
       if (inflight || stopped) return;
@@ -35,6 +36,9 @@ export function usePolling(): void {
         if (useApp.getState().selectedAsset) await s.refreshAsset();   // hero, anchor, refs stay current
         await s.refreshStacks();                                       // step statuses reconcile on read
         if (useApp.getState().dockOpen && useApp.getState().dockFilter === "training") await s.refreshStaged();
+        n += 1;
+        // the cache inventory: every tick while the Models page is open, else every 30 s for the banner
+        if (useApp.getState().modelsOpen || n % 15 === 1) await s.refreshCache();
         const ds = j.disk?.state ?? null;
         if (ds && lastDiskState && ds !== lastDiskState) {
           if (ds === "hard") s.notify("err", "Disk hard-stop: new jobs are held until space is freed.");

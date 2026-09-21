@@ -47,8 +47,16 @@ VAE_TILE_SAMPLE_MIN_SIZE = 512
 
 try:
     from ..hf_pins import pinned_revision
-except ImportError:                              # file-path invocation: the worker dir is sys.path[0]
-    from hf_pins import pinned_revision
+except ImportError:                              # not a package here: the worker dir, or a file-path load
+    try:
+        from hf_pins import pinned_revision
+    except ImportError:
+        import importlib.util as _ilu
+        import os as _os
+        _spec = _ilu.spec_from_file_location("hf_pins", _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "hf_pins.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        pinned_revision = _mod.pinned_revision
 
 
 def _enable_vae_tiling(vae) -> dict:

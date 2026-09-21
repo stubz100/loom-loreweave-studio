@@ -13,6 +13,7 @@ import { ANGLES, EXPRESSIONS, SHOTS, nice } from "../lib/coverage";
 import { reasonOf } from "../lib/project";
 import { useApp } from "../store";
 import { buildStageB, effectiveModel, useCompose } from "./composeStore";
+import { Problem, VariantWeights } from "../models/cacheUi";
 import { ParamControls } from "./ParamControls";
 
 
@@ -201,6 +202,7 @@ export function ExpandComposer() {
             </select>
           </label>
         )}
+        <VariantWeights pipeline={e.pipeline} model={model} />
         {isFlux2 && pipe?.sampling_presets?.length ? (
           <label className="p-field">Sampling
             <select value={e.sampling} onChange={(ev) => c.setExpandSampling(ev.target.value)}>
@@ -284,7 +286,7 @@ export function ExpandComposer() {
       </div>
 
       <div className="panel-foot">
-        {problem && <span className="form-error" role="alert">{problem}</span>}
+        <Problem text={problem} />
         {blocked && !problem && <span className="faint">{blocked}</span>}
         <span className="spacer" />
         <button onClick={() => void onPreview()} disabled={!!blocked || busy !== null} title="dry-run: planned jobs, the hero, the first cell's prompt">

@@ -5,9 +5,9 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 import {
-  addPostprocStep, getAsset, getBible, getPostprocStacks, getStagedTraining, queuePostprocStep, removePostprocStep,
-  type AssetDetail, type BibleInfo, type DiskStatus, type Health, type Job, type JobStatus, type JobsResponse,
-  type PauseReason, type PostprocStack, type PostprocStep, type ProjectInfo, type StagedTraining,
+  addPostprocStep, getAsset, getBible, getCache, getPostprocStacks, getStagedTraining, queuePostprocStep, removePostprocStep,
+  type AssetDetail, type BibleInfo, type CacheInventory, type DiskStatus, type Health, type Job, type JobStatus,
+  type JobsResponse, type PauseReason, type PostprocStack, type PostprocStep, type ProjectInfo, type StagedTraining,
 } from "@loom/shared/api/orchestrator";
 
 export type Workspace = "world" | "assets" | "shots" | "flow" | "episode";
@@ -71,6 +71,8 @@ interface LiveSlice {
   staged: StagedTraining[];              // staged (not queued) training runs, project-wide
   masks: Record<string, string[]>;       // image → masks painted for it this session (newest last)
   bible: BibleInfo | null;               // the L1 record: world prose, spine
+  cache: CacheInventory | null;          // the model cache inventory (M2.17)
+  modelsOpen: boolean;                   // the Models page covers the workspace
   styleSel: string | null;               // the style the World editor shows (null = the project default)
   previewJobId: string | null;           // a done trainer job whose preview form is open in the Train tab
   viewBeforeLoupe: View;
@@ -94,6 +96,9 @@ interface Actions {
   setPoseSet: (p: string) => void;
   setStyleSel: (id: string | null) => void;
   refreshBible: () => Promise<void>;
+  refreshCache: () => Promise<void>;
+  openModels: () => void;
+  closeModels: () => void;
   setDockHeight: (h: number) => void;
   setZoom: (z: number) => void;
   setFit: (f: "fit" | "fill") => void;
@@ -176,6 +181,8 @@ export const useApp = create<AppState>()(
       staged: [],
       masks: {},
       bible: null,
+      cache: null,
+      modelsOpen: false,
       styleSel: null,
       previewJobId: null,
       helpOpen: false,
@@ -204,6 +211,14 @@ export const useApp = create<AppState>()(
       setWorldTab: (worldTab) => set({ worldTab }),
       setPoseSet: (poseSet) => set({ poseSet }),
       setStyleSel: (styleSel) => set({ styleSel }),
+      refreshCache: async () => {
+        try {
+          const cache = await getCache();
+          if (JSON.stringify(cache) !== JSON.stringify(get().cache)) set({ cache });
+        } catch { /* the poller retries */ }
+      },
+      openModels: () => set({ modelsOpen: true, menuOpen: false }),
+      closeModels: () => set({ modelsOpen: false }),
       refreshBible: async () => {
         if (!get().project) { if (get().bible) set({ bible: null }); return; }
         try {

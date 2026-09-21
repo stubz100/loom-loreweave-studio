@@ -32,6 +32,7 @@ export function Shortcuts() {
         if (s.dialog) { s.setDialog(null); e.preventDefault(); return; }
         if (s.helpOpen) { s.setHelpOpen(false); e.preventDefault(); return; }
         if (s.menuOpen) { s.setMenuOpen(false); e.preventDefault(); return; }
+        if (s.modelsOpen) { s.closeModels(); e.preventDefault(); return; }
         if (s.pendingDelete) { s.setPendingDelete(null); e.preventDefault(); return; }
         if (s.view === "edit") { if (!editEscape()) s.closeEdit(); e.preventDefault(); return; }
         if (s.view === "loupe") { s.closeLoupe(); e.preventDefault(); return; }

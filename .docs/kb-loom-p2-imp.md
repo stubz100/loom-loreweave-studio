@@ -5043,3 +5043,48 @@ previous is gone). 159 green across the cache and touched suites.
 health, used-by, size and Fetch / Repair / Verify / Pin / Delete · other repos · prune dry run →
 confirm · the previous location), the drift/missing banner with Repair / Fetch, Fetch / Repair on
 the composer's 412, and the variant's weight status under the model picker.
+
+
+## 🧰 M2.17 step d — the v2 Models page, the banner, the composers (2026-09-21, 09:38–09:43 CEDT)
+
+**Pushed before this entry:** step c = `36dbbdd`.
+
+**Built in `frontends/`:**
+- `shared/api/orchestrator.ts` — the cache types (`CacheInventory` · `CacheRepo` · `CacheRevision`
+  · `CacheLocation` · `PrunePlan`) and one call per endpoint: `getCache`, `repairCacheRef`,
+  `fetchCache`, `verifyCache`, `pinCache`, `deleteCacheRevision`, `deleteCacheRepo`, `pruneCache`,
+  `setCacheLocation`, `moveCache`, `deletePreviousCache` (repo ids path-encoded per segment).
+- `v2/src/models/Models.tsx` — the page over the workspace (File ▸ **Models…**, the **models**
+  item in the status cluster with a dot that turns warn on drift or a partial repo, **Esc**
+  closes): the **location row** (path · free of total · a pill naming the source · Change… ·
+  Move…; both disabled with the reason while `.env` is in force, per D1) and the **previous
+  location** after a move with its size and a second-click Delete; **Models loom uses** — each
+  repo a row with the health pill, size, the one-line detail and *used by*, with **Repair** on
+  drift, **Fetch** on missing / partial (needs an open project; gated says so), **Verify**,
+  **Delete** on a second click ("Delete? loom needs it" for a roster repo), the revisions folded
+  (ref · files · size · needed n of m · complete pill · **Pin** · Delete revision · Clear pin);
+  **Other repos in this cache** (never touched unless deleted one by one); **Prune** (List what a
+  prune would remove → the list with sizes → *Remove n GB?* on a second click). Long actions are
+  jobs: the toast names the job id and the dock shows it.
+- `v2/src/models/cacheUi.tsx` — `VariantWeights` (under the model picker in Cast and Expand:
+  "Weights: cached / not cached / partly cached / cached, ref drift (repair), gated" from the
+  inventory's `catalog:<pipeline>/<variant>` tag, with a Models link) and `Problem` (the
+  composers' refusal line: when the 412 detail names a repo it shows the repo's status with
+  **Repair** on drift or **Fetch**, and **Models**).
+- `shell/Banners.tsx` — *n cached models have a drifted ref (…)* with **Repair** (all at once),
+  *n models are only partly cached* with **Models**. `store.ts` + `poll.ts` — `cache` +
+  `refreshCache`, `modelsOpen`; the inventory rides the one poller: every tick while the page is
+  open, every 30 s otherwise (0.1 s per scan).
+
+**Verified:** v2 `tsc` + `vite build`; `test_v2_models.py` (+4): every client call names a route
+the server registers (parsed from `main.py`); the page mounted and complete, second-click safe,
+no native dialogs; File ▸ Models… + the status item + Escape + the store keys + the poller
+cadence; the banner's Repair and the composers' `Problem` / `VariantWeights`. The v2 frame
+contracts still green. The whole backend suite under the torch guard is run in this step's
+close-out (see the ledger line).
+
+**M2.17 is built (a–d).** The author's click-through of v2 — now including Models — is the
+acceptance of both M2.14 and M2.17. On this box `.env` pins the location, so the page will
+show *set by .env* until that line is removed; the flux.2-dev row reads *ok, extras* after the
+repair, and a prune dry run lists the August VAE-only revision, two empty repos and four
+orphan blobs.

@@ -13,6 +13,7 @@ import { Loupe } from "../canvas/Loupe";
 import { deriveCanvas, scopedJobs } from "../canvas/tiles";
 import { ANGLES, EXPRESSIONS, SHOTS, nice } from "../lib/coverage";
 import { STAGE_LETTER, useApp, type Stage as StageId, type View } from "../store";
+import { Models } from "../models/Models";
 import { World } from "../world/World";
 import { LaterCanvas } from "./Later";
 import { Start } from "./Start";
@@ -26,9 +27,10 @@ const VIEWS: { id: View; label: string }[] = [
 
 export function Stage() {
   const workspace = useApp((s) => s.workspace);
+  const modelsOpen = useApp((s) => s.modelsOpen);
   return (
     <main className="stage">
-      {workspace === "assets" ? <AssetsStage /> : workspace === "world" ? <World /> : <LaterCanvas />}
+      {modelsOpen ? <Models /> : workspace === "assets" ? <AssetsStage /> : workspace === "world" ? <World /> : <LaterCanvas />}
     </main>
   );
 }

@@ -12,6 +12,7 @@ import { useApp } from "../store";
 import { buildRequest, effectiveModel, isDevSelected, PIPELINES, useCompose } from "./composeStore";
 import { ExpandComposer } from "./Expand";
 import { Flux2JsonTree } from "./Flux2JsonTree";
+import { Problem, VariantWeights } from "../models/cacheUi";
 import { ParamControls } from "./ParamControls";
 
 /** The Composer follows the stage: Cast for the Sandbox or stage A, Expand from B on (a sweep
@@ -106,6 +107,7 @@ function CastComposer() {
             </select>
           </label>
         )}
+        {c.pipeline !== "multi" && <VariantWeights pipeline={c.pipeline} model={model} />}
         {c.pipeline === "flux2" && pipe?.sampling_presets?.length ? (
           <label className="p-field">Sampling
             <select value={c.sampling} onChange={(e) => c.setSampling(e.target.value)}>
@@ -174,7 +176,7 @@ function CastComposer() {
       </div>
 
       <div className="panel-foot">
-        {problem && <span className="form-error" role="alert">{problem}</span>}
+        <Problem text={problem} />
         {blocked && !problem && <span className="faint">{blocked}</span>}
         <span className="spacer" />
         <button onClick={() => void onPreview()} disabled={!!blocked || busy !== null} title="dry-run: see the resolved prompt and the worker command before it runs">

@@ -832,6 +832,59 @@ export async function saveMask(source: string, pngBase64: string):
   return await res.json();
 }
 
+// --- M2.17: the model cache seen from loom (kb-loom-cache.md) ----------------------------
+
+export interface CacheRevision {
+  commit: string; ref: "main" | null; files: number; size_gb: number;
+  needed_present: number; needed_total: number; complete_for_loom: boolean; last_modified: string;
+}
+export interface CacheRepo {
+  repo_id: string; size_gb: number; used_by: string[]; needed: boolean; gated: boolean; ref: string | null;
+  revisions: CacheRevision[];
+  health: "ok" | "ref_drift" | "partial" | "missing" | "empty" | "unused" | "stale_extra";
+  detail: string;
+}
+export interface CacheLocation {
+  path: string; exists: boolean; free_gb: number | null; total_gb: number | null;
+  source: "env" | "dotenv" | "setting" | "hf_home" | "default"; managed: boolean;
+  previous: { path: string; exists: boolean; size_gb: number } | null;
+}
+export interface CacheInventory { location: CacheLocation; scanned_at: string; size_gb: number; repos: CacheRepo[]; needs_missing: unknown[] }
+export interface PrunePlan {
+  dry_run: boolean; total_gb: number;
+  revisions: { repo_id: string; commit: string; size_gb: number; files: number }[];
+  empty_repos: { repo_id: string; size_gb: number }[];
+  orphan_blobs: { repo_id: string; blob: string; size_gb: number }[];
+}
+
+async function cacheCall<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${orchestratorUrl()}${path}`, {
+    method,
+    headers: { "Content-Type": "application/json", "X-Loom-Token": orchestratorToken() },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`${method} ${path} ${res.status}: ${await res.text()}`);
+  return (await res.json()) as T;
+}
+const repoPath = (repoId: string) => repoId.split("/").map(encodeURIComponent).join("/");
+
+/** The inventory: the location, every repo with its revisions and a health verdict. */
+export async function getCache(signal?: AbortSignal): Promise<CacheInventory> {
+  const res = await fetch(`${orchestratorUrl()}/cache`, { signal });
+  if (!res.ok) throw new Error(`cache ${res.status}`);
+  return (await res.json()) as CacheInventory;
+}
+export const repairCacheRef = (repoId: string) => cacheCall<{ repo_id: string; previous: string | null; now: string; changed: boolean }>(`/cache/${repoPath(repoId)}/repair`, "POST");
+export const fetchCache = (body: { repo_id: string; files?: string[]; force?: boolean; revision?: string }) => cacheCall<{ job_id: string | null; mode: string; note?: string }>("/cache/fetch", "POST", body);
+export const verifyCache = (repoId: string) => cacheCall<{ job_id: string; mode: string }>(`/cache/${repoPath(repoId)}/verify`, "POST");
+export const pinCache = (repoId: string, commit: string | null) => cacheCall<{ repo_id: string; pinned: string | null }>(`/cache/${repoPath(repoId)}/pin`, "PUT", { commit });
+export const deleteCacheRevision = (repoId: string, commit: string) => cacheCall<{ repo_id: string; deleted: string[]; freed_gb: number }>(`/cache/${repoPath(repoId)}/revisions/${encodeURIComponent(commit)}`, "DELETE");
+export const deleteCacheRepo = (repoId: string) => cacheCall<{ repo_id: string; deleted: string[]; freed_gb: number; needed: boolean }>(`/cache/${repoPath(repoId)}`, "DELETE");
+export const pruneCache = (dryRun: boolean) => cacheCall<PrunePlan & { freed_gb?: number }>("/cache/prune", "POST", { dry_run: dryRun });
+export const setCacheLocation = (path: string) => cacheCall<{ path: string; source: string; applies_to: string }>("/cache/location", "PUT", { path });
+export const moveCache = (to: string) => cacheCall<{ job_id: string; mode: string; plan: { from: string; to: string; size_gb: number } }>("/cache/move", "POST", { to });
+export const deletePreviousCache = () => cacheCall<{ deleted: string; freed_gb: number }>("/cache/previous", "DELETE");
+
 /** M0c: the project's postprocess stacks (project-level — works on ANY image). */
 export async function getPostprocStacks(): Promise<PostprocStack[]> {
   const res = await fetch(`${orchestratorUrl()}/postproc/stacks`);

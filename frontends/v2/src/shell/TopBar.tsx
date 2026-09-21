@@ -29,6 +29,8 @@ export function TopBar() {
   const toggleDock = useApp((s) => s.toggleDock);
   const menuOpen = useApp((s) => s.menuOpen);
   const setMenuOpen = useApp((s) => s.setMenuOpen);
+  const openModels = useApp((s) => s.openModels);
+  const cache = useApp((s) => s.cache);
 
   const running = counts?.running ?? 0;
   const queued = counts?.queued ?? 0;
@@ -61,6 +63,9 @@ export function TopBar() {
           <span className={`dot ${running ? "amber" : paused ? "warn" : ""}`} />{queueText}
         </button>
         {diskText && <span title={disk?.reason ?? "disk"}><span className={`dot ${diskClass}`} />{diskText}</span>}
+        <button onClick={openModels} title="the model cache: what is cached, its health, where it lives">
+          <span className={`dot ${cache && cache.repos.some((r) => r.needed && (r.health === "ref_drift" || r.health === "partial")) ? "warn" : "ok"}`} />models{cache ? ` ${cache.size_gb} GB` : ""}
+        </button>
       </div>
     </header>
   );
@@ -70,6 +75,7 @@ function FileMenu({ onClose }: { onClose: () => void }) {
   const project = useApp((s) => s.project);
   const notify = useApp((s) => s.notify);
   const setDialog = useApp((s) => s.setDialog);
+  const openModels = useApp((s) => s.openModels);
   const [recent, setRecent] = useState<ProjectListEntry[] | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -106,6 +112,7 @@ function FileMenu({ onClose }: { onClose: () => void }) {
       <button className="menu-item" onClick={() => setDialog("new")} disabled={busy}>New project…</button>
       <button className="menu-item" onClick={() => void onOpenFolder()} disabled={busy}>Open folder…</button>
       <button className="menu-item" onClick={() => void run("Close", closeProject)} disabled={!project || busy}>Close project</button>
+      <button className="menu-item" onClick={() => { openModels(); onClose(); }}>Models…</button>
       <div className="menu-sep" />
       <div className="section-title">Recent</div>
       {recent === null && <div className="faint">Loading…</div>}

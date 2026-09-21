@@ -1,6 +1,6 @@
 // Sticky states under the top bar — reachable from EVERY workspace (v1 showed these only
 // inside the Assets column, so L1 never saw a paused queue or a disk stop).
-import { unpauseQueue } from "@loom/shared/api/orchestrator";
+import { repairCacheRef, unpauseQueue } from "@loom/shared/api/orchestrator";
 
 import { useApp } from "../store";
 
@@ -12,6 +12,9 @@ export function Banners() {
   const counts = useApp((s) => s.counts);
   const disk = useApp((s) => s.disk);
   const notify = useApp((s) => s.notify);
+  const cache = useApp((s) => s.cache);
+  const openModels = useApp((s) => s.openModels);
+  const refreshCache = useApp((s) => s.refreshCache);
 
   const items: { key: string; kind?: "err"; text: string; action?: { label: string; run: () => void } }[] = [];
   if (offline) {
@@ -31,6 +34,20 @@ export function Banners() {
   }
   if (!offline && disk?.state === "hard") {
     items.push({ key: "disk", kind: "err", text: `Disk hard-stop: ${disk.reason ?? "no space left for new jobs"}. Free space or raise the project cap.` });
+  }
+  if (!offline && cache) {
+    const drift = cache.repos.filter((r) => r.needed && r.health === "ref_drift");
+    const broken = cache.repos.filter((r) => r.needed && r.health === "partial");
+    if (drift.length) {
+      items.push({
+        key: "cache-drift",
+        text: `${drift.length} cached model${drift.length === 1 ? " has" : "s have"} a drifted ref (${drift.map((r) => r.repo_id).join(", ")}): the files are there but the hub library cannot see them.`,
+        action: { label: "Repair", run: () => { Promise.all(drift.map((r) => repairCacheRef(r.repo_id))).then(() => refreshCache()).then(() => notify("ok", "Refs repaired.")).catch((e) => notify("err", `Repair failed: ${String(e)}`)); } },
+      });
+    }
+    if (broken.length) {
+      items.push({ key: "cache-partial", text: `${broken.length} model${broken.length === 1 ? " is" : "s are"} only partly cached (${broken.map((r) => r.repo_id).join(", ")}).`, action: { label: "Models", run: openModels } });
+    }
   }
   if (!items.length) return null;
   return (

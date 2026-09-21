@@ -45,6 +45,12 @@ ZIMAGE_MODEL_INFO = {
 VAE_TILE_SAMPLE_MIN_SIZE = 512
 
 
+try:
+    from ..hf_pins import pinned_revision
+except ImportError:                              # file-path invocation: the worker dir is sys.path[0]
+    from hf_pins import pinned_revision
+
+
 def _enable_vae_tiling(vae) -> dict:
     vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
     tile_latent_min_size = VAE_TILE_SAMPLE_MIN_SIZE // vae_scale_factor
@@ -171,6 +177,7 @@ def run(
         repo_id,
         torch_dtype=torch_dtype,
         low_cpu_mem_usage=False,
+        revision=pinned_revision(repo_id),      # M2.17: the orchestrator's pinned cache revision
     )
 
     if load_root is not None:

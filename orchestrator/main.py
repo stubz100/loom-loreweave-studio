@@ -599,6 +599,30 @@ class SaveMaskRequest(BaseModel):
     png_base64: str = Field(min_length=8, max_length=24_000_000)
 
 
+class CacheFetchRequest(BaseModel):
+    """M2.17 step b — fetch a repo's missing roster files (or the named files) as a queued job."""
+
+    model_config = ConfigDict(extra="forbid")
+    repo_id: str
+    files: list[str] | None = None
+    force: bool = False
+    revision: str | None = None
+
+
+class CachePinRequest(BaseModel):
+    """M2.17 step b — pin the revision loom reads for a repo (null clears)."""
+
+    model_config = ConfigDict(extra="forbid")
+    commit: str | None = None
+
+
+class CachePruneRequest(BaseModel):
+    """M2.17 step b — a prune lists by default; `dry_run: false` removes."""
+
+    model_config = ConfigDict(extra="forbid")
+    dry_run: bool = True
+
+
 class QueuePostprocStepRequest(BaseModel):
     """M0c: fire a configured step's job over its source image. `requester_id` + `stage` route
     the produced tile into a specific grid (the UI's current context — a character version +
@@ -3332,6 +3356,92 @@ def create_app() -> FastAPI:
         LOG.info("cache repair: %s refs/main %s -> %s (%s)", repo_id, r["previous"], r["now"],
                  "changed" if r["changed"] else "already complete")
         return r
+
+    def _cache_idle() -> None:
+        if any(j.get("status") == "running" for j in RUNNER.snapshot().values()):
+            raise HTTPException(409, "a job is running; change the cache when the queue is idle")
+
+    def _cache_job(mode: str, params: dict) -> dict:
+        """Queue a cache io job (fetch / verify / move): needs an open project (the queue is
+        workspace-bound), refuses under a disk hard-stop, runs on the CPU with no VRAM."""
+        ws = _require_ws()
+        if GUARD.is_hard_blocked():
+            raise HTTPException(507, f"disk hard-stop — {GUARD.block_reason()}")
+        params = {**params, "cache_home": str(weights.hub_dir().parent)}
+        jid = RUNNER.submit(pipeline="hf_cache", mode=mode, params=params, batch_id="", index=0,
+                            batch_size=1, requester_id=ws.load_project()["id"])
+        LOG.info("cache %s queued as %s: %s", mode, jid, {k: v for k, v in params.items() if k != "cache_home"})
+        return {"job_id": jid, "mode": mode, "params": params}
+
+    @app.post("/cache/fetch")
+    def cache_fetch(req: CacheFetchRequest, _auth: None = Depends(require_token)) -> dict:
+        """Fetch a repo's missing roster files (or the named files) as a queued io job with
+        resume, progress in the dock, pause and cancel. A gated repo needs HF_TOKEN (412)."""
+        try:
+            plan = weights.plan_fetch(req.repo_id, req.files, req.force)
+        except weights.CacheError as e:
+            raise HTTPException(e.status, str(e))
+        if plan["gated"] and not CONFIG.hf_token:
+            raise HTTPException(412, {"error": f"{plan['repo_id']} is gated", "repo_id": plan["repo_id"], "gated": True,
+                                      "hint": "accept the license on huggingface.co and set HF_TOKEN in .env.local"})
+        if not plan["files"] and not req.force and plan["needed"]:
+            return {"job_id": None, "mode": "fetch", "params": plan, "note": "nothing to fetch: every needed file is cached"}
+        return _cache_job("fetch", {"repo_id": plan["repo_id"], "files": plan["files"], "revision": req.revision})
+
+    @app.post("/cache/{repo_id:path}/verify")
+    def cache_verify(repo_id: str, _auth: None = Depends(require_token)) -> dict:
+        """Hash the repo's cached files against the names the hub gave them (an offline
+        integrity check) as a queued io job."""
+        need = next((n for k, n in weights.roster_map().items() if k.lower() == repo_id.lower()), None)
+        if not weights.repo_dir(repo_id).is_dir():
+            raise HTTPException(404, f"{repo_id!r} is not in the cache")
+        return _cache_job("verify", {"repo_id": need.repo_id if need else repo_id, "files": list(need.files) if need else []})
+
+    @app.put("/cache/{repo_id:path}/pin")
+    def cache_pin(repo_id: str, req: CachePinRequest, _auth: None = Depends(require_token)) -> dict:
+        """Pin the revision loom reads for a repo (null clears it). Stored in the app settings."""
+        try:
+            return weights.set_pin(repo_id, req.commit)
+        except weights.CacheError as e:
+            raise HTTPException(e.status, str(e))
+
+    @app.delete("/cache/{repo_id:path}/revisions/{commit}")
+    def cache_delete_revision(repo_id: str, commit: str, _auth: None = Depends(require_token)) -> dict:
+        """Delete one cached revision (blobs go only when nothing else links them). Refused
+        while a job runs. The UI asks twice; this never does."""
+        _cache_idle()
+        try:
+            r = weights.delete_revision(repo_id, commit)
+        except weights.CacheError as e:
+            raise HTTPException(e.status, str(e))
+        LOG.info("cache delete: %s revision %s (%.2f GB)", repo_id, commit, r["freed_gb"])
+        return r
+
+    @app.delete("/cache/{repo_id:path}")
+    def cache_delete_repo(repo_id: str, _auth: None = Depends(require_token)) -> dict:
+        """Delete a whole cached repo. Refused while a job runs; a needed repo is deleted too
+        (the response says so) — the next generation will 412 until it is fetched again."""
+        _cache_idle()
+        needed = any(k.lower() == repo_id.lower() for k in weights.roster_map())
+        try:
+            r = weights.delete_repo(repo_id)
+        except weights.CacheError as e:
+            raise HTTPException(e.status, str(e))
+        LOG.info("cache delete: %s (%d revision(s), %.2f GB, needed=%s)", repo_id, len(r["deleted"]), r["freed_gb"], needed)
+        return {**r, "needed": needed}
+
+    @app.post("/cache/prune")
+    def cache_prune(req: CachePruneRequest, _auth: None = Depends(require_token)) -> dict:
+        """Remove unreferenced revisions of roster repos that are NOT complete for loom, empty
+        repo folders and orphaned blobs — never a complete revision, never another tool's
+        repo. `dry_run` (the default) only lists."""
+        if req.dry_run:
+            return {"dry_run": True, **weights.plan_prune()}
+        _cache_idle()
+        r = weights.prune()
+        LOG.info("cache prune: %d revision(s), %d empty repo(s), %d blob(s), %.2f GB", len(r["revisions"]),
+                 len(r["empty_repos"]), len(r["orphan_blobs"]), r["freed_gb"])
+        return {"dry_run": False, **r}
 
     @app.get("/components")
     def get_components() -> dict:

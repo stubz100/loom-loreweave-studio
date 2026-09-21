@@ -62,6 +62,8 @@ def write_pointer(active_path: Path) -> None:
         "schema_version": POINTER_SCHEMA_VERSION,
         "active_project": p,
         "recent": recent[:_MAX_RECENT],
+        # M2.17: the app-level settings block (cache pins, the cache location) rides along
+        **({"settings": data["settings"]} if data.get("settings") else {}),
     })
 
 

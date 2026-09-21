@@ -47,6 +47,7 @@ try:
     from .adapters import identity as identity_adapter
     from .adapters import face_restore as face_restore_adapter
     from .adapters import resize as resize_adapter
+    from .adapters import hf_cache as hf_cache_adapter
     from .adapters import ltxv as ltxv_adapter
     from .adapters import frame_harvest as frame_harvest_adapter
     from .adapters import zimage_trainer as zimage_trainer_adapter
@@ -67,6 +68,7 @@ except ImportError:  # pragma: no cover - direct-run convenience
     from adapters import identity as identity_adapter  # type: ignore
     from adapters import face_restore as face_restore_adapter  # type: ignore
     from adapters import resize as resize_adapter  # type: ignore
+    from adapters import hf_cache as hf_cache_adapter  # type: ignore
     from adapters import ltxv as ltxv_adapter  # type: ignore
     from adapters import frame_harvest as frame_harvest_adapter  # type: ignore
     from adapters import zimage_trainer as zimage_trainer_adapter  # type: ignore
@@ -80,6 +82,7 @@ ADAPTERS = {"zimage": zimage_adapter, "multi": multi_adapter, "sd35": sd35_adapt
             "flux2": flux2_adapter, "krea2": krea2_adapter,
             "birefnet": birefnet_adapter, "identity": identity_adapter,
             "face_restore": face_restore_adapter, "resize": resize_adapter,
+            "hf_cache": hf_cache_adapter,
             "ltxv": ltxv_adapter,
             "frame_harvest": frame_harvest_adapter,
             "zimage_trainer": zimage_trainer_adapter}
@@ -262,6 +265,7 @@ VRAM_ESTIMATES = {"zimage": 11.0, "multi": 14.0, "sd35": 13.0, "birefnet": 4.0,
                   "krea2": 16.0,                          # Turbo @768 with CPU offload on 16 GB ROCm
                   "identity": 1.0, "face_restore": 1.0,   # onnx CPU — effectively no VRAM
                   "resize": 0.0,                          # PIL CPU Lanczos — no GPU at all
+                  "hf_cache": 0.0,                        # M2.17: cache fetch/verify/move — CPU + disk
                   "ltxv": 12.0,                           # 2B + T5-XXL w/ model offload
                   "frame_harvest": 1.0,                   # OpenCV CPU
                   "zimage_trainer": 15.0}                 # P2 Z-Image LoRA train, qfloat8/low_vram

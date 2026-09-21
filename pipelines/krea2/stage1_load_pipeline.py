@@ -21,6 +21,12 @@ KREA2_MODEL_INFO = {
 }
 
 
+try:
+    from ..hf_pins import pinned_revision
+except ImportError:                              # file-path invocation: the worker dir is sys.path[0]
+    from hf_pins import pinned_revision
+
+
 def run(
     model_name: str = "krea2-turbo",
     device: str = "cuda",
@@ -76,6 +82,7 @@ def run(
         load_kwargs["transformer"] = Krea2Transformer2DModel.from_pretrained(
             repo_id,
             subfolder="transformer",
+            revision=pinned_revision(repo_id),
             quantization_config=quant_config,
             torch_dtype=torch_dtype,
         )
@@ -84,6 +91,7 @@ def run(
     lora = _resolve_lora(lora_path, lora_weight)
 
     t0 = time.time()
+    load_kwargs.setdefault("revision", pinned_revision(repo_id))    # M2.17: the orchestrator's pinned cache revision
     pipe = Krea2Pipeline.from_pretrained(repo_id, **load_kwargs)
 
     if lora is not None:

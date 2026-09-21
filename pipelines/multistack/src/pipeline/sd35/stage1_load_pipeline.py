@@ -97,6 +97,12 @@ CONTROLNET_REGISTRY = {
 }
 
 
+try:
+    from ..hf_pins import pinned_revision
+except ImportError:                              # file-path invocation: the worker dir is sys.path[0]
+    from hf_pins import pinned_revision
+
+
 def _resolve_controlnet_repo(arg: str) -> str:
     """Map short keys ('depth') to full HF repo ids; pass through full repo ids."""
     return CONTROLNET_REGISTRY.get(arg, arg)
@@ -177,6 +183,7 @@ def run(
         lora = {"path": str(lpath), "name": lora_name, "weight": float(lora_weight)}
 
     load_kwargs: dict = {"torch_dtype": torch_dtype}
+    load_kwargs["revision"] = pinned_revision(repo_id)    # M2.17: the orchestrator's pinned cache revision
     if drop_t5:
         load_kwargs["text_encoder_3"] = None
         load_kwargs["tokenizer_3"] = None
@@ -195,7 +202,7 @@ def run(
     elif mode == "cn-inpaint":
         cn_repo = _resolve_controlnet_repo(controlnet)
         cn_t0 = time.time()
-        cn_model = SD3ControlNetModel.from_pretrained(cn_repo, torch_dtype=torch_dtype)
+        cn_model = SD3ControlNetModel.from_pretrained(cn_repo, torch_dtype=torch_dtype, revision=pinned_revision(cn_repo))
         timings["controlnet_load_s"] = round(time.time() - cn_t0, 4)
         pipe = StableDiffusion3ControlNetPipeline.from_pretrained(
             repo_id, controlnet=cn_model, **load_kwargs,
@@ -207,7 +214,7 @@ def run(
         # InstantX CNs default to 0. The from_pretrained call respects each
         # repo's config so we don't pass `extra_conditioning_channels` here.
         cn_models = [
-            SD3ControlNetModel.from_pretrained(r, torch_dtype=torch_dtype)
+            SD3ControlNetModel.from_pretrained(r, torch_dtype=torch_dtype, revision=pinned_revision(r))
             for r in cn_repos
         ]
         # Sanity check: at least one CN must be an inpaint CN

@@ -192,8 +192,10 @@ def test_cache_endpoints(client, hub):
     RUNNER.pause()
     jid = RUNNER.submit(pipeline="zimage", mode="t2i", params={"prompt": "x"}, batch_id="b", index=0, batch_size=1, requester_id="sandbox")
     RUNNER.jobs[jid]["status"] = "running"
-    assert client.post(f"/cache/{DEV}/repair").status_code == 409                 # never while a job runs
-    RUNNER.jobs[jid]["status"] = "canceled"
+    try:
+        assert client.post(f"/cache/{DEV}/repair").status_code == 409             # never while a job runs
+    finally:
+        RUNNER.jobs[jid]["status"] = "canceled"
     r = client.post(f"/cache/{DEV}/repair")
     assert r.status_code == 200 and r.json()["now"] == JUNE and r.json()["changed"] is True
     assert next(x for x in client.get("/cache").json()["repos"] if x["repo_id"] == DEV)["health"] == "stale_extra"

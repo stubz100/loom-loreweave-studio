@@ -33,6 +33,8 @@ from . import workspace as ws_mod
 from .config import CONFIG
 
 DIFFUSERS_PROBE = "model_index.json"
+# Catalog pipelines whose repos are NOT diffusers layouts (no model_index.json): probe config.json.
+NON_DIFFUSERS_PIPELINES = {"birefnet", "identity", "face_restore", "frame_harvest"}
 
 
 class CacheError(RuntimeError):
@@ -67,7 +69,19 @@ def hub_dir(cache_home: str | os.PathLike | None = None) -> Path:
 
 
 def repo_dir(repo_id: str, hub: Path | None = None) -> Path:
-    return (hub or hub_dir()) / f"models--{repo_id.replace('/', '--')}"
+    """The repo's cache folder. The hub is case-insensitive about repo ids but the cache folder
+    is not: a repo downloaded as `…klein-9b-kv` lives in a lower-case folder while the catalog
+    says `…9B-kv`. Match the folder ignoring case; fall back to the exact-case path."""
+    hub = hub or hub_dir()
+    exact = hub / f"models--{repo_id.replace('/', '--')}"
+    if not hub.is_dir():
+        return exact
+    want = exact.name.lower()
+    # one listing, so the on-disk spelling comes back even where the filesystem itself ignores case
+    for d in hub.iterdir():
+        if d.is_dir() and d.name.lower() == want:
+            return d
+    return exact
 
 
 def _repo_id_of(rdir: Path) -> str:
@@ -99,6 +113,9 @@ def resolve(repo_id: str, filename: str, hub: Path | None = None) -> Resolved | 
     rdir = repo_dir(repo_id, hub)
     if not rdir.is_dir():
         return None
+    pinned = pinned_commit(repo_id)
+    if pinned and _has(rdir / "snapshots" / pinned, filename):
+        return Resolved(rdir / "snapshots" / pinned / filename, pinned, pinned == _ref_main(rdir))
     ref = _ref_main(rdir)
     if ref and _has(rdir / "snapshots" / ref, filename):
         return Resolved(rdir / "snapshots" / ref / filename, ref, True)
@@ -146,8 +163,18 @@ def roster() -> list[Need]:
             add(components._entry_resolve_repo(e), "files", [e.get("probe") or "config.json"], f"postproc:{tool}", e.get("gated", False))
     for p in model_catalog.pipelines():
         for v in model_catalog.variants(p):
-            files = list(v.get("probe_files") or [DIFFUSERS_PROBE])
-            add(v.get("repo_id", ""), "files" if v.get("probe_files") else "diffusers", files, f"catalog:{p}/{v['id']}", v.get("gated", False))
+            repo = v.get("repo_id", "")
+            user = f"catalog:{p}/{v['id']}"
+            if v.get("probe_files"):
+                add(repo, "files", list(v["probe_files"]), user, v.get("gated", False))
+            elif repo in needs and needs[repo].files:
+                # a manifest entry already names the file this repo is probed by (BiRefNet is a
+                # transformers-style repo: it has config.json and never model_index.json)
+                add(repo, needs[repo].kind, [], user, v.get("gated", False))
+            elif p in NON_DIFFUSERS_PIPELINES:
+                add(repo, "files", ["config.json"], user, v.get("gated", False))
+            else:
+                add(repo, "diffusers", [DIFFUSERS_PROBE], user, v.get("gated", False))
             ae = v.get("ae_repo_id")
             if ae and ae != v.get("repo_id"):
                 add(ae, "files", [], f"catalog:{p}/{v['id']} (vae)", False)
@@ -237,6 +264,7 @@ def _location(hub: Path) -> dict:
 def inventory(hub: Path | None = None) -> dict:
     hub = hub or hub_dir()
     needs = roster_map()
+    needs_ci = {k.lower(): v for k, v in needs.items()}
     repos: list[dict] = []
     seen: set[str] = set()
     if hub.is_dir():
@@ -244,7 +272,9 @@ def inventory(hub: Path | None = None) -> dict:
             if not rdir.is_dir():
                 continue
             repo_id = _repo_id_of(rdir)
-            need = needs.get(repo_id)
+            need = needs_ci.get(repo_id.lower())
+            if need:
+                repo_id = need.repo_id            # the roster's spelling; the folder may differ in case
             ref = _ref_main(rdir)
             revs = _revisions(rdir, need)
             health, detail = _health(need, ref, revs)
@@ -280,6 +310,9 @@ def pin_for(repo_id: str, files: list[str], hub: Path | None = None) -> str | No
         return None
     ref = _ref_main(rdir)
     ok = lambda s: all(_has(s, f) for f in files) if files else any(p.is_file() for p in s.rglob("*"))  # noqa: E731
+    pinned = pinned_commit(repo_id)
+    if pinned and (rdir / "snapshots" / pinned).is_dir() and ok(rdir / "snapshots" / pinned):
+        return pinned
     if ref and (rdir / "snapshots" / ref).is_dir() and ok(rdir / "snapshots" / ref):
         return ref
     for s in _snapshots(rdir):
@@ -325,3 +358,186 @@ def worker_env(hub: Path | None = None) -> dict[str, str]:
     if not CONFIG.workers_online:
         env["HF_HUB_OFFLINE"] = "1"
     return env
+
+
+# --- the app-level settings block (step b: pins; step c: the cache location) ------------------
+
+def app_settings() -> dict:
+    """The `settings` block of `.loom_state/app.json` (machine-local, next to the recents)."""
+    p = CONFIG.app_pointer_path
+    try:
+        data = ws_mod.read_json(p) if p.is_file() else {}
+    except ws_mod.WorkspaceError:
+        data = {}
+    return dict(data.get("settings") or {})
+
+
+def set_app_setting(key: str, value) -> dict:
+    """Write one setting (None removes it) without touching the pointer's other fields."""
+    p = CONFIG.app_pointer_path
+    try:
+        data = ws_mod.read_json(p) if p.is_file() else {}
+    except ws_mod.WorkspaceError:
+        data = {}
+    data.setdefault("schema_version", 1)
+    data.setdefault("active_project", None)
+    data.setdefault("recent", [])
+    settings = dict(data.get("settings") or {})
+    if value is None:
+        settings.pop(key, None)
+    else:
+        settings[key] = value
+    data["settings"] = settings
+    ws_mod.atomic_write_json(p, data)
+    return settings
+
+
+def pinned_commit(repo_id: str) -> str | None:
+    """A revision the author pinned for a repo (`settings.cache_pins`), matched ignoring case."""
+    pins_ = app_settings().get("cache_pins") or {}
+    want = repo_id.lower()
+    for k, v in pins_.items():
+        if k.lower() == want and v:
+            return str(v)
+    return None
+
+
+def set_pin(repo_id: str, commit: str | None, hub: Path | None = None) -> dict:
+    rdir = repo_dir(repo_id, hub)
+    if commit:
+        if not (rdir / "snapshots" / commit).is_dir():
+            raise CacheError(404, f"{repo_id!r} has no cached revision {commit!r}")
+    pins_ = {k: v for k, v in (app_settings().get("cache_pins") or {}).items() if k.lower() != repo_id.lower()}
+    if commit:
+        pins_[repo_id] = commit
+    set_app_setting("cache_pins", pins_ or None)
+    return {"repo_id": repo_id, "pinned": commit, "pins": pins_}
+
+
+# --- fetch plan, delete, prune (step b) ------------------------------------------------------
+
+def plan_fetch(repo_id: str, files: list[str] | None = None, force: bool = False, hub: Path | None = None) -> dict:
+    """What a fetch job should pull: the given files, else the roster files that do not resolve
+    (all of them with `force`). A repo outside the roster needs explicit files."""
+    need = None
+    for k, n in roster_map().items():
+        if k.lower() == repo_id.lower():
+            need = n
+            break
+    if files:
+        wanted = list(files)
+    elif need is None:
+        raise CacheError(404, f"{repo_id!r} is not in loom's roster; name the files to fetch")
+    elif force:
+        wanted = list(need.files)
+    else:
+        wanted = [f for f in need.files if resolve(need.repo_id, f, hub) is None]
+    return {"repo_id": need.repo_id if need else repo_id, "files": wanted,
+            "gated": bool(need and need.gated), "needed": need is not None,
+            "used_by": list(need.used_by) if need else []}
+
+
+def _scan(hub: Path):
+    from huggingface_hub import scan_cache_dir
+    return scan_cache_dir(hub)
+
+
+def delete_revision(repo_id: str, commit: str, hub: Path | None = None) -> dict:
+    hub = hub or hub_dir()
+    rdir = repo_dir(repo_id, hub)
+    if not (rdir / "snapshots" / commit).is_dir():
+        raise CacheError(404, f"{repo_id!r} has no cached revision {commit!r}")
+    info = _scan(hub)
+    strategy = info.delete_revisions(commit)
+    freed = int(strategy.expected_freed_size)
+    strategy.execute()
+    if not (rdir / "snapshots").is_dir() or not any((rdir / "snapshots").iterdir()):
+        shutil.rmtree(rdir, ignore_errors=True)           # the last revision took the folder with it
+    return {"repo_id": repo_id, "deleted": [commit], "freed_gb": round(freed / 1e9, 2)}
+
+
+def delete_repo(repo_id: str, hub: Path | None = None) -> dict:
+    hub = hub or hub_dir()
+    rdir = repo_dir(repo_id, hub)
+    if not rdir.is_dir():
+        raise CacheError(404, f"{repo_id!r} is not in the cache")
+    commits = [s.name for s in _snapshots(rdir)]
+    freed = 0
+    if commits:
+        strategy = _scan(hub).delete_revisions(*commits)
+        freed = int(strategy.expected_freed_size)
+        strategy.execute()
+    freed += _dir_size(rdir) if rdir.is_dir() else 0
+    shutil.rmtree(rdir, ignore_errors=True)
+    return {"repo_id": repo_id, "deleted": commits, "freed_gb": round(freed / 1e9, 2)}
+
+
+def plan_prune(hub: Path | None = None) -> dict:
+    """What a prune would remove, and nothing else: unreferenced revisions of ROSTER repos that
+    are NOT complete for loom, empty repo folders, and blobs no snapshot links to (only judged
+    where the repo uses symlinks). Never a complete revision, never another tool's repo."""
+    hub = hub or hub_dir()
+    needs_ci = {k.lower(): v for k, v in roster_map().items()}
+    revisions: list[dict] = []
+    empty: list[dict] = []
+    blobs: list[dict] = []
+    if hub.is_dir():
+        for rdir in sorted(hub.glob("models--*")):
+            if not rdir.is_dir():
+                continue
+            repo_id = _repo_id_of(rdir)
+            need = needs_ci.get(repo_id.lower())
+            snaps = _snapshots(rdir)
+            if not snaps or all(not any(p.is_file() for p in s.rglob("*")) for s in snaps):
+                empty.append({"repo_id": repo_id, "size_gb": round(_dir_size(rdir) / 1e9, 3)})
+                continue
+            if need is None:
+                continue                                    # another tool's repo: untouched
+            ref = _ref_main(rdir)
+            for s in snaps:
+                if s.name == ref:
+                    continue
+                complete = all(_has(s, f) for f in need.files) if need.files else any(p.is_file() for p in s.rglob("*"))
+                if not complete:
+                    revisions.append({"repo_id": need.repo_id, "commit": s.name, "size_gb": round(_dir_size(s) / 1e9, 3),
+                                      "files": sum(1 for p in s.rglob("*") if p.is_file())})
+            # orphan blobs: only where snapshots link to blobs (a copied cache links nothing)
+            links = [p for s in snaps for p in s.rglob("*") if p.is_symlink()]
+            if links and (rdir / "blobs").is_dir():
+                referenced = set()
+                for p in links:
+                    try:
+                        referenced.add(p.resolve())
+                    except OSError:
+                        pass
+                for b in (rdir / "blobs").iterdir():
+                    if b.is_file() and b.resolve() not in referenced:
+                        blobs.append({"repo_id": need.repo_id, "blob": b.name, "size_gb": round(b.stat().st_size / 1e9, 3)})
+    total = sum(x["size_gb"] for x in revisions + empty + blobs)
+    return {"revisions": revisions, "empty_repos": empty, "orphan_blobs": blobs, "total_gb": round(total, 2)}
+
+
+def prune(hub: Path | None = None) -> dict:
+    hub = hub or hub_dir()
+    plan = plan_prune(hub)
+    done = {"revisions": [], "empty_repos": [], "orphan_blobs": [], "freed_gb": 0.0}
+    commits = [r["commit"] for r in plan["revisions"]]
+    if commits:
+        strategy = _scan(hub).delete_revisions(*commits)
+        done["freed_gb"] += strategy.expected_freed_size / 1e9
+        strategy.execute()
+        done["revisions"] = plan["revisions"]
+    for e in plan["empty_repos"]:
+        shutil.rmtree(repo_dir(e["repo_id"], hub), ignore_errors=True)
+        done["empty_repos"].append(e)
+    for b in plan["orphan_blobs"]:
+        p = repo_dir(b["repo_id"], hub) / "blobs" / b["blob"]
+        try:
+            size = p.stat().st_size
+            p.unlink()
+            done["freed_gb"] += size / 1e9
+            done["orphan_blobs"].append(b)
+        except OSError:
+            pass
+    done["freed_gb"] = round(done["freed_gb"], 2)
+    return done

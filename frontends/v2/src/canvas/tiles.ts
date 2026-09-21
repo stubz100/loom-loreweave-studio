@@ -42,6 +42,8 @@ export function coverageOf(t: Tile): CoverageCell | undefined {
 
 /** A job that makes an image (Stage D also hosts the trainer and the readiness scan). */
 const makesAnImage = (j: Job) => j.pipeline !== "zimage_trainer" && j.mode !== "score";
+/** Jobs that never produce an image anywhere: the cache fetch / verify / move (M2.17). */
+const NO_TILE = new Set(["hf_cache"]);
 
 /** The jobs in scope: a character's active version at the stage's letter (Curate reviews the
  *  expansion set, B), or the Sandbox = everything the project itself requested. */
@@ -49,6 +51,7 @@ export function scopedJobs(jobs: Record<string, Job>, projectId: string | null, 
   const letter = STAGE_LETTER[stage];
   const gridLetter = letter === "C" ? "B" : letter;
   return Object.values(jobs)
+    .filter((j) => !NO_TILE.has(j.pipeline))
     .filter((j) => (versionId
       ? j.requester_id === versionId && (j.stage ?? "A") === gridLetter && (gridLetter !== "D" || makesAnImage(j))
       : !!projectId && j.requester_id === projectId))

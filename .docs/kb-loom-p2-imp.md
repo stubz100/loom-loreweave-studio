@@ -4938,3 +4938,67 @@ run that never removes a complete-for-loom revision · verify · pin; the diffus
 
 
 **Pushed:** M2.17 step a = `9171e30` (code + tests + spec §12 3k + plan + README + this entry). **Real-cache repair applied through `weights.repair_ref`:** `refs/main` 06029c96 → 03d6521e; the hub library now resolves the transformer through the ref. **Real inventory (0.1 s):** 35 repos listed (29 cached + 6 roster repos absent), 750 GB; health = 15 ok · 10 unused · 6 missing · 2 empty · 1 stale_extra (flux2-dev, after the repair) · 1 partial. Two findings for step b: (1) `ZhengPeng7/BiRefNet` reads *partial* — the roster merged more than one probe file for it and one is absent; check which consumer declares it before trusting the verdict; (2) the catalog names `black-forest-labs/FLUX.2-klein-9B-kv` (capital B) while the cache folder is `…klein-9b-kv` — the hub is case-insensitive, the cache folder is not, so that variant would 412; fix the catalog id or teach the resolver case-insensitive folder matching.
+
+
+## 🧰 M2.17 step b — fetch as a job, verify, delete, prune, pin (2026-09-21, 09:21–09:33 CEDT)
+
+Author: *"flux 2 job still fails, let's do the click though after the cache suite build"*.
+The flux2 job is admitted now (no 412); the worker exits with 3221225477 (a Windows access
+violation) before writing a line — the torch import without the card, as warned. Nothing in the
+cache is in the way; the click-through waits for the suite (steps b–d), per the author.
+
+**Built:**
+- `orchestrator/adapters/hf_cache.py` + `pipelines/hf_cache/run_pipeline.py` — the cache's io
+  jobs, torch-free, through the queue (dock progress, pause, cancel): **fetch** (`hf_hub_download`
+  per needed file, the library's resume; the one worker allowed online; `snapshot_download` when
+  no files are named), **verify** (sha256 of each LFS blob / git-sha1 of each small blob against
+  the name the hub gave it — an offline integrity check), **move** (copy the hub tree preserving
+  the relative symlinks, skip files already there with the same size = resumable, dereference
+  when no symlink privilege, verify counts + bytes). `cache_result.json` is the truth;
+  `[cache] progress` / `[cache] note` lines drive the dock. VRAM 0. Never a canvas tile.
+- `weights.py` — **settings** (`app_settings` / `set_app_setting`: the `settings` block of
+  `.loom_state/app.json`; `projects.write_pointer` now keeps it), **pins** (`cache_pins`; the
+  resolver and `pin_for` honour a complete pinned revision first), `plan_fetch` (the roster
+  files that do not resolve; `force` = all; a repo outside the roster needs named files),
+  `delete_revision` / `delete_repo` (the hub's own delete strategy; the folder goes with the
+  last revision), `plan_prune` / `prune` (unreferenced revisions of roster repos that are NOT
+  complete for loom, empty repo folders, orphan blobs only where the snapshots link to blobs;
+  never a complete revision, never another tool's repo). Two step-a findings fixed:
+  **cache folders are matched ignoring case** (the catalog's `FLUX.2-klein-9B-kv` and the
+  downloaded `…9b-kv` folder are one repo, reported under the roster's spelling) and
+  **non-diffusers catalog repos probe `config.json`** (BiRefNet is a transformers-style repo;
+  a manifest entry's probe wins over the diffusers default) — `NON_DIFFUSERS_PIPELINES`.
+- `main.py` — `POST /cache/fetch` (gated without `HF_TOKEN` → 412; nothing missing → no job),
+  `POST /cache/{repo}/verify`, `PUT /cache/{repo}/pin`, `DELETE /cache/{repo}/revisions/{commit}`,
+  `DELETE /cache/{repo}` (a needed repo is deleted too, the response says so),
+  `POST /cache/prune` (dry run by default); every mutation 409 while a job runs; the io jobs need
+  an open project and refuse under a disk hard-stop (507). The request models had to move to
+  module level: with postponed annotations FastAPI cannot see a function-local pydantic class
+  and reads the body as a query field (the 422 the first run caught).
+- `runner.py` registers `hf_cache` (VRAM 0). The **sd35 · zimage (both copies) · krea2 loaders**
+  pass `revision=pinned_revision(repo)` to `from_pretrained` (and the SD3 ControlNets), via a
+  torch-free `hf_pins.py` beside each (relative import, file-path fallback); `py_compile` clean —
+  the loaders themselves are rig-owed to run. `frontends/v2/src/canvas/tiles.ts` never draws a
+  tile for an `hf_cache` job.
+
+**Verified:** `test_cache_manager_b.py` (+11): the roster probe fix; case-insensitive folders
+(one repo, the roster's spelling, `ok`); settings surviving the pointer and pins winning when
+complete (an incomplete pin ignored); the fetch plan (missing only · force · named · 404 outside
+the roster); prune listing only the junk and never the June snapshot; delete revision / repo;
+the worker by file path — verify hashes (sha256 · git-sha1 · size-only), move + resume + a
+refused self-move, fetch per file with the hub library mocked and the pin passed; the endpoints
+(fetch queues an `hf_cache` job with exactly the missing files and the cache home; verify · pin ·
+404s; delete / prune 409 while running, 200 after, 401 wrong token; a dry run always allowed);
+the adapter's progress / note parsing and the loaders' pins. 137 green across the touched
+suites. One lesson pinned in the tests: a test that marks a runner job *running* resets it in a
+`finally`, or every later app start refuses to rebind and the suites cascade (30 false failures
+in the first run).
+
+**The real cache under the corrected roster (read-only):** 34 repos listed, 750.2 GB;
+health {'stale_extra': 1, 'unused': 9, 'ok': 17, 'empty': 2, 'missing': 5}; still not ok: missing Lightricks/LTX-Video-0.9.5, missing Lightricks/LTX-Video-0.9.7-dev, missing Lightricks/LTX-Video-0.9.7-distilled, missing Lightricks/LTX-Video-0.9.8-13B-distilled, missing ZhengPeng7/BiRefNet_HR. A prune dry run would remove
+5.38 GB (1 revision(s), 2 empty repo(s), 4 orphan blob(s)) — not run.
+
+**Next:** step c — the cache location as a loom setting (`settings.models_dir`, env still wins,
+explicit `cache_dir` everywhere = no restart), `PUT /cache/location`, `POST /cache/move` as the
+`hf_cache` move job with the switch on completion, `DELETE /cache/previous`; then step d, the v2
+Models page.

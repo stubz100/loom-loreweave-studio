@@ -15,6 +15,16 @@ Three things that used to live in four places or nowhere:
   verdict (`ok · ref_drift · partial · missing · empty · unused · stale_extra`) and a sentence
   that says what to press; plus `repair_ref`, which rewrites `refs/main` to the newest
   revision that is complete for loom.
+* **The models view** (step e) — every use of a repo carries a label, a role (model · vae ·
+  text encoder · ControlNet · LoRA · tool weights · base model) and where in loom it is used
+  (Cast · Expand · Post: … · Train · …), and the inventory lists the roster **by model** too:
+  one entry per catalog variant, casting preset, postproc tool and trainer preset with its
+  repos and the worst of their health. A `whole` need (a diffusers or transformers-style
+  repo opened with `from_pretrained`) is complete only when a revision holds weight files,
+  not just the probe, and a fetch of it is a snapshot.
+* **The token** (step e) — `hf_token()` / `token_source()`: a real env var, then `.env.local`,
+  then the loom setting `settings.hf_token` (the location's precedence, D1); workers get it
+  in their environment, the inventory reports only a masked form.
 
 The layout stays the standard hub layout, so `hf` and the monorepo's other tools keep working.
 """
@@ -35,6 +45,32 @@ from .config import CONFIG
 DIFFUSERS_PROBE = "model_index.json"
 # Catalog pipelines whose repos are NOT diffusers layouts (no model_index.json): probe config.json.
 NON_DIFFUSERS_PIPELINES = {"birefnet", "identity", "face_restore", "frame_harvest"}
+# A `whole` need is complete only when a revision holds at least one of these (step e).
+WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".onnx", ".gguf", ".msgpack", ".h5")
+# A snapshot fetch of a diffusers repo skips the formats diffusers never loads when safetensors exist.
+DIFFUSERS_IGNORE = ["*.msgpack", "*.h5", "*.ckpt", "*.onnx", "*.tflite", "*.ot"]
+TOKEN_KEYS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN")
+
+# --- where a repo is used in loom (step e) ---------------------------------------------------
+PIPELINE_LABELS = {"flux2": "FLUX.2", "sd35": "SD3.5", "zimage": "Z-Image", "krea2": "Krea 2", "ltxv": "LTX-Video",
+                   "birefnet": "BiRefNet", "identity": "Identity", "face_restore": "Face restore", "frame_harvest": "Frames"}
+# The v2 stages a catalog pipeline serves (`test_cache_manager_d` keeps this in step with the composers).
+STAGES = {"flux2": ["Cast", "Expand"], "sd35": ["Cast", "Expand"], "zimage": ["Cast", "Expand", "LoRA preview"],
+          "krea2": ["Cast"], "ltxv": ["Video (not in v2 yet)"], "birefnet": ["Expand: matte"],
+          "identity": ["Expand: identity lock"], "face_restore": [], "frame_harvest": ["Frames"]}
+# The manifest's postproc blocks: label, role, where.
+TOOLS = {
+    "birefnet": ("Matte / cutout (BiRefNet)", "tool weights", ["Expand: matte"]),
+    "identity": ("Identity lock (inswapper)", "tool weights", ["Expand: identity lock"]),
+    "face_restore": ("Face restore (GFPGAN)", "tool weights", ["Post: Restore"]),
+    "sd35_tile_cn": ("Scale (SD3.5 Tile ControlNet)", "ControlNet", ["Post: Scale"]),
+    "flux2_turbo_lora": ("FLUX.2 dev Turbo LoRA", "LoRA", ["Cast, Expand: dev turbo sampling"]),
+}
+# The postproc presets by id, as the v2 Post tab names them.
+PRESET_LABELS = {"clean": "Clean", "refine": "Refine", "stylelock": "StyleLock", "upscale": "Scale",
+                 "restore": "Restore", "inpaint": "Inpaint", "resize": "Resize"}
+ROLE_ORDER = {"model": 0, "base model": 0, "text encoder": 1, "vae": 2, "ControlNet": 3, "LoRA": 4, "tool weights": 5}
+SEVERITY = ["missing", "partial", "ref_drift", "empty", "stale_extra", "ok", "unused"]
 
 
 class CacheError(RuntimeError):
@@ -50,6 +86,8 @@ class Need:
     files: list[str] = field(default_factory=list)   # the files a consumer opens ([] = any)
     used_by: list[str] = field(default_factory=list)
     gated: bool = False
+    whole: bool = False                    # opened with from_pretrained: a fetch is a snapshot, complete = weights present
+    uses: list[dict] = field(default_factory=list)   # [{tag, label, role}] — one per used_by entry
 
 
 @dataclass
@@ -156,10 +194,13 @@ def resolve(repo_id: str, filename: str, hub: Path | None = None) -> Resolved | 
 # --- the roster ----------------------------------------------------------------------------
 
 def roster() -> list[Need]:
-    """Every repo loom can need, merged by repo (files and users are unions)."""
+    """Every repo loom can need, merged by repo (files, users and the `whole` flag are unions).
+    Every use names the model it belongs to (`label`) and what the repo is to it (`role`), so the
+    Models page can say which cached folder serves which model in which stage (step e)."""
     needs: dict[str, Need] = {}
 
-    def add(repo: str, kind: str, files: list[str], user: str, gated: bool = False) -> None:
+    def add(repo: str, kind: str, files: list[str], user: str, gated: bool = False, *,
+            label: str = "", role: str = "model", whole: bool = False) -> None:
         if not repo:
             return
         n = needs.get(repo)
@@ -170,7 +211,13 @@ def roster() -> list[Need]:
                 n.files.append(f)
         if user not in n.used_by:
             n.used_by.append(user)
+            n.uses.append({"tag": user, "label": label or user, "role": role})
         n.gated = n.gated or bool(gated)
+        n.whole = n.whole or bool(whole)
+
+    def whole_probe(e: dict) -> bool:
+        # a probe that is the repo's config = the consumer opens the whole repo; a `filename` = one file
+        return not e.get("filename") and (e.get("probe") or "config.json") in ("config.json", DIFFUSERS_PROBE)
 
     try:
         manifest = components._load_models_manifest()
@@ -178,39 +225,109 @@ def roster() -> list[Need]:
         manifest = {}
     for e in manifest.get("models") or []:
         if e.get("type") == "hf_diffusers":                 # `file` weights live outside the hub cache
-            add(e.get("repo_id", ""), "diffusers", [DIFFUSERS_PROBE], f"phase:{e.get('phase', '?')}", e.get("gated", False))
+            phase = e.get("phase", "?")
+            add(e.get("repo_id", ""), "diffusers", [DIFFUSERS_PROBE], f"phase:{phase}", e.get("gated", False),
+                label=f"{e.get('id', '?')} (phase {phase} manifest)", whole=True)
     for preset, entries in (manifest.get("multi_presets") or {}).items():
         for e in entries or []:
             if not isinstance(e, dict) or e.get("insightface_pack"):
                 continue
-            add(components._entry_resolve_repo(e), "files", [e.get("probe") or "config.json"], f"multi:{preset}", e.get("gated", False))
+            eid = str(e.get("id", ""))
+            role = "vae" if eid.endswith("-ae") else "text encoder" if "text-encoder" in eid else "model"
+            add(components._entry_resolve_repo(e), "files", [e.get("probe") or "config.json"], f"multi:{preset}",
+                e.get("gated", False), label=f"Cast preset '{preset}'", role=role, whole=whole_probe(e))
     for tool, entries in (manifest.get("postproc") or {}).items():
+        label, role, _ = TOOLS.get(tool, (f"postproc tool '{tool}'", "tool weights", []))
         for e in entries or []:
             if not isinstance(e, dict) or e.get("insightface_pack"):
                 continue
-            add(components._entry_resolve_repo(e), "files", [e.get("probe") or "config.json"], f"postproc:{tool}", e.get("gated", False))
+            add(components._entry_resolve_repo(e), "files", [e.get("probe") or "config.json"], f"postproc:{tool}",
+                e.get("gated", False), label=label, role=role, whole=whole_probe(e))
     for p in model_catalog.pipelines():
         for v in model_catalog.variants(p):
             repo = v.get("repo_id", "")
             user = f"catalog:{p}/{v['id']}"
+            label = f"{PIPELINE_LABELS.get(p, p)} · {v['id']}"
             if v.get("probe_files"):
-                add(repo, "files", list(v["probe_files"]), user, v.get("gated", False))
+                add(repo, "files", list(v["probe_files"]), user, v.get("gated", False), label=label)
             elif repo in needs and needs[repo].files:
                 # a manifest entry already names the file this repo is probed by (BiRefNet is a
                 # transformers-style repo: it has config.json and never model_index.json)
-                add(repo, needs[repo].kind, [], user, v.get("gated", False))
+                add(repo, needs[repo].kind, [], user, v.get("gated", False), label=label)
             elif p in NON_DIFFUSERS_PIPELINES:
-                add(repo, "files", ["config.json"], user, v.get("gated", False))
+                add(repo, "files", ["config.json"], user, v.get("gated", False), label=label, whole=True)
             else:
-                add(repo, "diffusers", [DIFFUSERS_PROBE], user, v.get("gated", False))
+                add(repo, "diffusers", [DIFFUSERS_PROBE], user, v.get("gated", False), label=label, whole=True)
             ae = v.get("ae_repo_id")
             if ae and ae != v.get("repo_id"):
-                add(ae, "files", [], f"catalog:{p}/{v['id']} (vae)", False)
+                add(ae, "files", [], user, False, label=label, role="vae")
+            te = str(v.get("text_encoder") or "")
+            if "/" in te and " " not in te:
+                # the Klein text encoder: the non-FP8 Qwen3 repo on Windows ROCm, its FP8 twin elsewhere
+                # (flux2 `stage1_load_models._load_text_encoder_safe` / `text_encoder.load_text_encoder`)
+                te_repo = components._entry_resolve_repo({"repo_id": te, "fp8_repo_id": te + "-FP8"})
+                add(te_repo, "files", ["config.json"], user, False, label=label, role="text encoder", whole=True)
+    try:
+        from . import training
+        presets = training.TRAINER_PRESETS
+    except Exception:  # noqa: BLE001 - the trainer module is optional to the roster
+        presets = {}
+    for fam, p in presets.items():
+        settings = p.get("settings") or {}
+        gate = p.get("gate_env")
+        add(str(settings.get("base_model") or ""), "diffusers", [DIFFUSERS_PROBE], f"train:{fam}", False,
+            label=f"Train (LoRA on {settings.get('model_name', fam)}{', behind ' + gate if gate else ''})",
+            role="base model", whole=True)
     return sorted(needs.values(), key=lambda n: n.repo_id.lower())
 
 
 def roster_map() -> dict[str, Need]:
     return {n.repo_id: n for n in roster()}
+
+
+def where_used(tag: str, presets: dict[str, str] | None = None) -> list[str]:
+    """The places in loom a use tag stands for: the v2 stages of a catalog pipeline (plus the
+    postproc presets whose backend is that pipeline, on its default variant), a casting preset,
+    a postproc tool, the trainer, the launch gate. `presets` = {preset id: backend}."""
+    presets = presets or {}
+    if tag.startswith("catalog:"):
+        p, _, vid = tag[len("catalog:"):].partition("/")
+        out = list(STAGES.get(p, []))
+        if p == "flux2" and vid == "flux.2-dev":
+            out.append("Poses")
+        if model_catalog.default_model(p) == vid:
+            post = [PRESET_LABELS.get(k, k) for k, b in presets.items() if b == p]
+            if post:
+                out.append("Post: " + ", ".join(post))
+        return out
+    if tag.startswith("multi:"):
+        return [f"Cast (multi, {tag[len('multi:'):]} preset)"]
+    if tag.startswith("postproc:"):
+        return list(TOOLS.get(tag[len("postproc:"):], ("", "", []))[2])
+    if tag.startswith("train:"):
+        return ["Train"]
+    if tag.startswith("phase:"):
+        return [f"Launch gate ({tag[len('phase:'):]})"]
+    return []
+
+
+def _twin_note(repo_id: str, needs: dict[str, Need]) -> str | None:
+    """An unused repo that is the FP8 / non-FP8 twin of a text encoder loom loads on another
+    platform: the roster names the one this box loads, but the twin is not junk."""
+    low = repo_id.lower()
+    for n in needs.values():
+        if not any(u["role"] == "text encoder" for u in n.uses):
+            continue
+        nid = n.repo_id.lower()
+        twin = nid[:-4] if nid.endswith("-fp8") else nid + "-fp8"
+        if low == twin:
+            which = "non-FP8" if nid.endswith("-fp8") else "FP8"
+            return f"the {which} twin of {n.repo_id}, the text encoder loom loads on another platform, not on this box"
+    return None
+
+
+def _use_kind(tag: str) -> str:
+    return {"catalog": "model", "multi": "preset", "postproc": "tool", "train": "train", "phase": "manifest"}.get(tag.split(":", 1)[0], "other")
 
 
 # --- inventory + health --------------------------------------------------------------------
@@ -237,11 +354,14 @@ def _revisions(rdir: Path, need: Need | None) -> list[dict]:
         files = [str(p.relative_to(s)).replace("\\", "/") for p in s.rglob("*") if p.is_file()]
         needed = need.files if need else []
         present = [f for f in needed if _has(s, f)]
+        weights_present = any(f.lower().endswith(WEIGHT_SUFFIXES) for f in files)
         complete = (len(present) == len(needed)) if needed else bool(files)
+        if need is not None and need.whole:
+            complete = complete and weights_present      # the probe alone is not the model (step e)
         out.append({
             "commit": s.name, "ref": "main" if s.name == ref else None,
             "files": len(files), "size_gb": round(_dir_size(s) / 1e9, 2),
-            "needed_present": len(present), "needed_total": len(needed),
+            "needed_present": len(present), "needed_total": len(needed), "weights": weights_present,
             "complete_for_loom": complete, "last_modified": _iso(s.stat().st_mtime),
         })
     return out
@@ -267,6 +387,8 @@ def _health(need: Need | None, ref: str | None, revs: list[dict]) -> tuple[str, 
                                  f"a complete revision {best['commit'][:7]} exists (repair)")
         return "ref_drift", f"no main ref; a complete revision {best['commit'][:7]} exists (repair)"
     if any(r["needed_present"] for r in revs):
+        if need.whole and any(r["needed_present"] == r["needed_total"] and not r["weights"] for r in revs):
+            return "partial", "the metadata is cached but no weight files are; fetch the whole repo"
         return "partial", "no revision holds every needed file; fetch the missing ones"
     return "missing", "no revision holds the needed files; fetch it"
 
@@ -290,12 +412,19 @@ def _location(hub: Path) -> dict:
             "managed": source in ("setting", "hf_home", "default"), "previous": previous}
 
 
-def inventory(hub: Path | None = None) -> dict:
+def inventory(hub: Path | None = None, presets: dict[str, str] | None = None) -> dict:
+    """The cache seen from loom: the location, the token (masked), every repo with its revisions,
+    health, uses (label · role · where) and, by model, every use with its repos and the worst of
+    their health. `presets` = the postproc presets {id: backend} for the *where* column."""
     hub = hub or hub_dir()
     needs = roster_map()
     needs_ci = {k.lower(): v for k, v in needs.items()}
     repos: list[dict] = []
     seen: set[str] = set()
+
+    def uses_of(need: Need | None) -> list[dict]:
+        return [{**u, "where": where_used(u["tag"], presets)} for u in need.uses] if need else []
+
     if hub.is_dir():
         for rdir in sorted(hub.glob("models--*")):
             if not rdir.is_dir():
@@ -307,38 +436,73 @@ def inventory(hub: Path | None = None) -> dict:
             ref = _ref_main(rdir)
             revs = _revisions(rdir, need)
             health, detail = _health(need, ref, revs)
+            if need is None and health == "unused":
+                detail = _twin_note(repo_id, needs) or detail
             seen.add(repo_id)
             repos.append({
                 "repo_id": repo_id, "size_gb": round(_dir_size(rdir / "blobs") / 1e9, 2) if (rdir / "blobs").is_dir() else round(_dir_size(rdir) / 1e9, 2),
-                "used_by": list(need.used_by) if need else [], "needed": need is not None,
-                "gated": bool(need and need.gated), "ref": ref,
+                "used_by": list(need.used_by) if need else [], "uses": uses_of(need), "needed": need is not None,
+                "gated": bool(need and need.gated), "whole": bool(need and need.whole), "ref": ref,
                 "revisions": revs, "health": health, "detail": detail,
             })
     for n in needs.values():
         if n.repo_id not in seen:
-            repos.append({"repo_id": n.repo_id, "size_gb": 0.0, "used_by": list(n.used_by), "needed": True,
-                          "gated": n.gated, "ref": None, "revisions": [], "health": "missing",
+            repos.append({"repo_id": n.repo_id, "size_gb": 0.0, "used_by": list(n.used_by), "uses": uses_of(n), "needed": True,
+                          "gated": n.gated, "whole": n.whole, "ref": None, "revisions": [], "health": "missing",
                           "detail": "not in the cache; fetch it"})
     repos.sort(key=lambda r: (-r["size_gb"], r["repo_id"].lower()))
     return {
         "location": _location(hub),
+        "token": token_info(),
         "scanned_at": _iso(datetime.now(tz=timezone.utc).timestamp()),
         "size_gb": round(sum(r["size_gb"] for r in repos), 1),
         "repos": repos,
+        "models": _models(repos, needs, presets),
         "needs_missing": [asdict(needs[r["repo_id"]]) for r in repos if r["needed"] and r["health"] in ("missing", "partial")],
     }
 
 
+def _models(repos: list[dict], needs: dict[str, Need], presets: dict[str, str] | None) -> list[dict]:
+    """The roster by model: one entry per use tag (a catalog variant, a casting preset, a postproc
+    tool, a trainer preset, a manifest phase) with its repos, their roles and the worst health."""
+    by_repo = {r["repo_id"]: r for r in repos}
+    catalog_order: dict[str, int] = {}
+    for p in model_catalog.pipelines():
+        for v in model_catalog.variants(p):
+            catalog_order[f"catalog:{p}/{v['id']}"] = len(catalog_order)
+    groups: dict[str, dict] = {}
+    for n in needs.values():
+        r = by_repo.get(n.repo_id)
+        for u in n.uses:
+            g = groups.setdefault(u["tag"], {"tag": u["tag"], "label": u["label"], "kind": _use_kind(u["tag"]),
+                                             "where": where_used(u["tag"], presets), "repos": [], "health": "ok"})
+            g["repos"].append({"repo_id": n.repo_id, "role": u["role"], "health": r["health"] if r else "missing",
+                               "size_gb": r["size_gb"] if r else 0.0, "gated": n.gated})
+    kind_order = {"model": 0, "preset": 1, "tool": 2, "train": 3, "manifest": 4}
+    for g in groups.values():
+        g["repos"].sort(key=lambda x: (ROLE_ORDER.get(x["role"], 9), x["repo_id"].lower()))
+        g["health"] = min((x["health"] for x in g["repos"]), key=lambda h: SEVERITY.index(h) if h in SEVERITY else 9)
+    return sorted(groups.values(), key=lambda g: (kind_order.get(g["kind"], 9), catalog_order.get(g["tag"], 10_000), g["label"].lower()))
+
+
 # --- repair + the worker's pins ------------------------------------------------------------
 
-def pin_for(repo_id: str, files: list[str], hub: Path | None = None) -> str | None:
+def _weights_in(snapshot: Path) -> bool:
+    return any(p.is_file() and p.suffix.lower() in WEIGHT_SUFFIXES for p in snapshot.rglob("*"))
+
+
+def pin_for(repo_id: str, files: list[str], hub: Path | None = None, whole: bool = False) -> str | None:
     """The revision a worker should read: the ref'd one when it holds every needed file, else
-    the newest revision that does. None when nothing complete is cached."""
+    the newest revision that does. None when nothing complete is cached. A `whole` need also
+    wants weight files in the revision, not just the probe."""
     rdir = repo_dir(repo_id, hub)
     if not rdir.is_dir():
         return None
     ref = _ref_main(rdir)
-    ok = lambda s: all(_has(s, f) for f in files) if files else any(p.is_file() for p in s.rglob("*"))  # noqa: E731
+
+    def ok(s: Path) -> bool:
+        have = all(_has(s, f) for f in files) if files else any(p.is_file() for p in s.rglob("*"))
+        return have and (not whole or _weights_in(s))
     pinned = pinned_commit(repo_id)
     if pinned and (rdir / "snapshots" / pinned).is_dir() and ok(rdir / "snapshots" / pinned):
         return pinned
@@ -358,7 +522,7 @@ def repair_ref(repo_id: str, hub: Path | None = None) -> dict:
         raise CacheError(404, f"{repo_id!r} is not in the cache")
     need = roster_map().get(repo_id)
     files = need.files if need else []
-    target = pin_for(repo_id, files, hub)
+    target = pin_for(repo_id, files, hub, whole=bool(need and need.whole))
     if target is None:
         raise CacheError(409, f"no cached revision of {repo_id!r} holds every file loom needs; fetch it instead")
     previous = _ref_main(rdir)
@@ -373,20 +537,24 @@ def pins(hub: Path | None = None) -> dict[str, str]:
     """repo → revision for every roster repo that has a complete cached revision."""
     out: dict[str, str] = {}
     for n in roster():
-        rev = pin_for(n.repo_id, n.files, hub)
+        rev = pin_for(n.repo_id, n.files, hub, whole=n.whole)
         if rev:
             out[n.repo_id] = rev
     return out
 
 
-def worker_env(hub: Path | None = None) -> dict[str, str]:
-    """What a worker's environment gains: the pinned revisions, and the hub forced offline
-    (R163: fetches are explicit loom actions; a stale ref must never start a download mid-job).
-    `LOOM_WORKERS_ONLINE=1` restores the old online behaviour."""
+def worker_env(hub: Path | None = None, online: bool = False) -> dict[str, str]:
+    """What a worker's environment gains: the pinned revisions, the hub forced offline
+    (R163: fetches are explicit loom actions; a stale ref must never start a download mid-job;
+    `LOOM_WORKERS_ONLINE=1` restores the old online behaviour; `online` = the cache worker,
+    the one that may fetch) and the Hugging Face token in force (step e)."""
     env = {"LOOM_HF_REVISIONS": json.dumps(pins(hub), separators=(",", ":")),
            "HF_HOME": str((hub or hub_dir()).parent)}       # step c: the location in force, per job
-    if not CONFIG.workers_online:
+    if not online and not CONFIG.workers_online:
         env["HF_HUB_OFFLINE"] = "1"
+    tok = hf_token()
+    if tok:
+        env["HF_TOKEN"] = tok
     return env
 
 
@@ -444,26 +612,108 @@ def set_pin(repo_id: str, commit: str | None, hub: Path | None = None) -> dict:
     return {"repo_id": repo_id, "pinned": commit, "pins": pins_}
 
 
+# --- the Hugging Face token (step e) -----------------------------------------------------------
+
+def _token_values() -> tuple[str | None, str | None, str | None]:
+    env_val = next((os.environ.get(k) for k in TOKEN_KEYS if os.environ.get(k)), None)
+    file_env = getattr(config_mod, "_FILE_ENV", {})
+    file_val = next((file_env.get(k) for k in TOKEN_KEYS if file_env.get(k)), None)
+    setting = app_settings().get("hf_token")
+    return env_val, file_val, (str(setting) if setting else None)
+
+
+def token_source() -> str | None:
+    """Where the token comes from, the location's precedence (D1): a real env var (`env`; the
+    startup export of `.env.local` into the environment still reads as `dotenv`), `.env` /
+    `.env.local` (`dotenv`), the loom setting (`setting`), else None."""
+    env_val, file_val, setting = _token_values()
+    if env_val and env_val != file_val:
+        return "env"
+    if file_val:
+        return "dotenv"
+    if setting:
+        return "setting"
+    return None
+
+
+def hf_token() -> str | None:
+    """The token in force (never logged, never returned by an endpoint in full)."""
+    env_val, file_val, setting = _token_values()
+    return {"env": env_val, "dotenv": file_val, "setting": setting}.get(token_source() or "", None)
+
+
+def _mask(token: str | None) -> str | None:
+    if not token:
+        return None
+    return f"{token[:3]}…{token[-4:]}" if len(token) >= 10 else "…"
+
+
+def token_info() -> dict:
+    src = token_source()
+    return {"set": src is not None, "source": src, "masked": _mask(hf_token()), "managed": src in (None, "setting")}
+
+
+def set_token(token: str | None) -> dict:
+    """Store the token as `settings.hf_token` (None or blank clears it). Refused while the
+    environment or `.env.local` supplies one, with the reason, because the setting would not
+    take effect (D1)."""
+    src = token_source()
+    if src in ("env", "dotenv"):
+        where = "the environment" if src == "env" else ".env.local"
+        raise CacheError(409, f"the token comes from {where}; remove HF_TOKEN there to manage it here")
+    t = (token or "").strip()
+    if not t:
+        set_app_setting("hf_token", None)
+        return token_info()
+    if any(c.isspace() for c in t) or len(t) < 12:
+        raise CacheError(400, "that does not look like a Hugging Face token (hf_… from huggingface.co/settings/tokens)")
+    set_app_setting("hf_token", t)
+    return token_info()
+
+
+def check_token(token: str | None = None) -> dict:
+    """Ask the hub who the token belongs to: the given candidate, else the one in force. The
+    orchestrator is the one process allowed online for this; the result never echoes the token."""
+    t = (token or "").strip() or hf_token()
+    if not t:
+        return {"ok": False, "error": "no token to check"}
+    try:
+        from huggingface_hub import HfApi
+        me = HfApi(token=t).whoami()
+    except Exception as e:  # noqa: BLE001 - the reason is the answer
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+    return {"ok": True, "user": me.get("name"), "type": me.get("type"),
+            "orgs": [o.get("name") for o in (me.get("orgs") or []) if isinstance(o, dict)]}
+
+
 # --- fetch plan, delete, prune (step b) ------------------------------------------------------
 
 def plan_fetch(repo_id: str, files: list[str] | None = None, force: bool = False, hub: Path | None = None) -> dict:
-    """What a fetch job should pull: the given files, else the roster files that do not resolve
-    (all of them with `force`). A repo outside the roster needs explicit files."""
+    """What a fetch job should pull: the given files; else, for a `whole` need, a snapshot of the
+    repo unless a complete revision (probe + weights) is cached (`force` fetches regardless — the
+    library skips what is there); else the roster files that do not resolve (all of them with
+    `force`). A repo outside the roster needs explicit files. `nothing` = no job to queue."""
     need = None
     for k, n in roster_map().items():
         if k.lower() == repo_id.lower():
             need = n
             break
+    snapshot = False
     if files:
         wanted = list(files)
     elif need is None:
         raise CacheError(404, f"{repo_id!r} is not in loom's roster; name the files to fetch")
+    elif need.whole:
+        wanted = []
+        snapshot = force or pin_for(need.repo_id, need.files, hub, whole=True) is None
     elif force:
         wanted = list(need.files)
     else:
         wanted = [f for f in need.files if resolve(need.repo_id, f, hub) is None]
-    return {"repo_id": need.repo_id if need else repo_id, "files": wanted,
-            "gated": bool(need and need.gated), "needed": need is not None,
+    return {"repo_id": need.repo_id if need else repo_id, "files": wanted, "snapshot": snapshot,
+            "nothing": not wanted and not snapshot,
+            "ignore_patterns": list(DIFFUSERS_IGNORE) if (snapshot and need and need.kind == "diffusers") else None,
+            "gated": bool(need and need.gated), "needed": need is not None, "whole": bool(need and need.whole),
             "used_by": list(need.used_by) if need else []}
 
 

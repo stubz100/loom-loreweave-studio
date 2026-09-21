@@ -5091,3 +5091,79 @@ orphan blobs.
 
 
 **Pushed:** step d = `6111367` (the frontend + the loaders robust pin import + tests + plan row d + README + this entry). Ledger of M2.17: a `9171e30` · b `5d98509` · c `36dbbdd` · d `6111367`. The whole backend suite under the torch guard before the commit: **515 passed, 2 skipped, 36 torch-bound deselected**. The first full run caught the loaders pin import dying on a file-path load (the zimage LoRA loader tests load the worker by path): now a three-way import (package · sys.path · beside the file).
+
+
+## 🧰 M2.17 step e — the roster by model, the token, the fetch fixed (2026-09-21, 12:01–12:48 CEDT)
+
+**Why (the author's first click, this morning):** two asks after the step-d hand-over — *which
+item in the cache is connected to which model used in the process*, and *store/modify my HF
+token in loom* after a fetch of a missing model failed. The morning's log also shows seven
+"other tool" repos deleted from the Models page (46.8 GB), among them `Qwen/Qwen3-8B` (16.4 GB):
+the roster had called it *not used by loom*, but it is the text encoder every FLUX.2 klein-9B
+variant loads on Windows ROCm — the manifest's refined-preset entry named the FP8 twin as its
+`repo_id` (the 4B entry names the non-FP8 one with `fp8_repo_id` beside it), and the catalog's
+`text_encoder` field never reached the roster at all.
+
+**Found and fixed:**
+1. **The fetch failed in offline mode**, not on the network: the worker imported `huggingface_hub`
+   before popping `HF_HUB_OFFLINE`, and the library reads that flag once, at import
+   (`OfflineModeIsEnabled` behind the "check your connection" message; reproduced without the
+   network). Now `go_online()` lifts the flag before the import, and the runner leaves the flag
+   out for `hf_cache` jobs (`worker_env(online=)`).
+2. **A fetch of a whole-repo model pulled only its probe file** (`model_index.json` /
+   `config.json`) and the repo then read *ok* with no weights. A `Need` is now `whole` when its
+   consumer opens the repo with `from_pretrained` (diffusers repos, the Qwen text encoders,
+   BiRefNet, the Tile ControlNet, the trainer bases); its fetch is a `snapshot_download`
+   (diffusers repos skip flax / tf / ckpt / onnx duplicates), and a revision is complete only
+   when it holds weight files. Split-file repos (Comfy flux2-dev, the klein single files, the
+   onnx tools, the LoRA) stay per-file. (D9)
+3. **The manifest's 8B text-encoder entry** now mirrors the 4B one (`repo_id: Qwen/Qwen3-8B`,
+   `fp8_repo_id: …-FP8`), and the roster adds each klein variant's text encoder from the
+   catalog through `components._entry_resolve_repo` (non-FP8 on Windows ROCm, FP8 elsewhere —
+   the flux2 loader's own rule). An unused repo that is the other platform's twin says so
+   instead of *not used by loom*.
+
+**Built:**
+- `weights.py` — every use carries `label` · `role` (model · text encoder · vae · ControlNet ·
+  LoRA · tool weights · base model) · `where` (Cast · Expand · Poses · Post: <the presets whose
+  backend is the pipeline, on its default variant> · LoRA preview · Train · Expand: matte /
+  identity lock · Launch gate); `inventory(presets=)` adds `uses` per repo and a **`models`** list
+  (one entry per catalog variant, casting preset, tool, trainer preset, manifest phase, with its
+  repos and the worst of their health); `STAGES` / `TOOLS` / `PRESET_LABELS` pinned to the v2
+  composers and the Post tab by test. The token: `token_source()` / `hf_token()` /
+  `token_info()` (masked) / `set_token()` / `check_token()` (whoami) with the location's
+  precedence — env > `.env.local` > `settings.hf_token` (D8); `worker_env` carries `HF_TOKEN`;
+  `components` and the fetch gate read it through `weights`.
+- `main.py` — `GET /cache` passes the postproc presets; `PUT /cache/token` (409 with the reason
+  while env / .env.local is in force, 400 on a malformed token, only the masked form in the
+  response and the log); `POST /cache/token/check`; the fetch route returns `snapshot` and the
+  412 hint points at the Models page.
+- v2 — `Models.tsx`: the **Hugging Face token** row (masked · source pill · Set / Change… /
+  Clear on a second click / Check; the field is a password input with *Check first* and *Save
+  token*; *set by .env.local* disables it with the reason, like the location) and **Models loom
+  uses** by model (grouped Catalog models · Casting presets · Tools · Training · Launch gate;
+  each model: label · health · where; each repo: role · id · health · size · Fetch / Repair
+  inline); the repo rows say *used by FLUX.2 · flux.2-klein-4b (vae), Cast preset 'fast' (vae)…*
+  instead of the tags; a whole repo's revision line says *no weight files*. `cacheUi.tsx`:
+  `VariantWeights` reads the by-model view and names the bad repo with its role ("not cached:
+  Qwen/Qwen3-8B (text encoder)").
+
+**Verified:** `test_cache_manager_d.py` (13 tests) on fake hubs + the worker by file path (a
+fresh `huggingface_hub` import after `go_online()` reads the flag lifted; the snapshot branch
+with a stub library); `test_v2_models.py` extended (the token row, the by-model rows, the new
+routes and calls); v2 `tsc` + `vite build` clean; the whole backend suite under the torch guard:
+**528 passed, 2 skipped, 36 torch-bound left out (two files ignored, one test deselected)**. The by-model view was also read against the real cache (the roster read as the rig:
+Windows ROCm, without importing torch) — see below.
+
+**On this box now:** klein-9b · klein-9b-kv · klein-base-9b and the *refined* casting preset read
+**missing** their text encoder `Qwen/Qwen3-8B` (deleted this morning on the roster's word; one
+Fetch, 16 GB, brings it back once `loom-dev` runs this code); `Qwen/Qwen3-8B-FP8` (9.5 GB) now
+reads *the FP8 twin of Qwen/Qwen3-8B … not on this box*; BiRefNet_HR and the four LTX-Video
+repos are the other missing ones (LTX = *Video (not in v2 yet)*). The token reads *set by
+.env.local*, so the page's Set / Change stays disabled until that line moves (D8 = D1's rule).
+The other six deletions were other tools' or the CPU spike's files (Comfy split files, GGUF, an
+NSFW classifier, audio models); M2.16 will refetch what it needs.
+
+⚠ Trap for the record: `git checkout -- <file>` on this box (core.autocrlf=true) rewrites an
+LF file as CRLF, which broke a scripted edit's exact-match asserts until the file was
+normalised back.

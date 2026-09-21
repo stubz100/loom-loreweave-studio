@@ -82,7 +82,7 @@ def test_roster_probes_transformers_style_repos_by_config_json():
 def test_cache_folders_match_ignoring_case(hub):
     """The catalog says FLUX.2-klein-9B-kv; the download made a lower-case folder. One repo."""
     rid = "black-forest-labs/FLUX.2-klein-9B-kv"
-    _repo(hub, rid, {"c1": ["model_index.json"]}, main="c1", folder="models--black-forest-labs--FLUX.2-klein-9b-kv")
+    _repo(hub, rid, {"c1": ["model_index.json", "transformer/diffusion_pytorch_model.safetensors"]}, main="c1", folder="models--black-forest-labs--FLUX.2-klein-9b-kv")
     assert weights.repo_dir(rid).name == "models--black-forest-labs--FLUX.2-klein-9b-kv"
     assert weights.resolve(rid, "model_index.json") is not None
     inv = weights.inventory()

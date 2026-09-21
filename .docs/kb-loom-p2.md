@@ -1468,7 +1468,7 @@ author's visual sign-off.
    `backend` axis** (torch-rocm · ggml-cpu · ggml-vulkan); design + numbers in the journal
    "🧪 CPU / ggml spike". Reusable tools in `tools/sdcpp/`.
 
-3k. **M2.17 — model cache manager (adopted 2026-09-21; step a ✅).** *The 2026-09-21 flux.2-dev
+3k. **M2.17 — model cache manager (adopted 2026-09-21; steps a–e ✅ built the same day, the author's click-through owed).** *The 2026-09-21 flux.2-dev
    refusal ("not in cache") was ref drift in the shared HF cache: `refs/main` named a one-file
    snapshot while the complete 107 GB one sat unreferenced, and both the pre-flight and the worker
    followed the ref.* Plan in `.docs/kb-loom-cache.md`: one weights **roster**, a **resolver** that
@@ -1476,8 +1476,10 @@ author's visual sign-off.
    `GET /cache` inventory + health, Repair · Fetch-as-a-job · Delete · Prune · Verify · Pin, the
    cache **location as a loom setting** with a resumable move, and a v2 Models page. Steps: **a**
    resolver + repair (✅, journal "🧰 M2.17 step a") · b fetch/delete/prune/verify · c location +
-   move · d the UI — b–d after the v2 click-through, before M2.16. Decisions D1–D7 accepted as
-   recommended.
+   move · d the UI · **e** (after the author's first click) the roster **by model** (label · role ·
+   where used), whole-repo needs with snapshot fetches, the HF token as a loom setting (D8), the
+   fetch worker online (the offline flag was read at import). Decisions D1–D9 accepted as
+   recommended; the click-through is the acceptance.
 
 ### Phase B — Thicken (all VLM-free)
 

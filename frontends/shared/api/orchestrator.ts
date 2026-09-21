@@ -836,20 +836,32 @@ export async function saveMask(source: string, pngBase64: string):
 
 export interface CacheRevision {
   commit: string; ref: "main" | null; files: number; size_gb: number;
-  needed_present: number; needed_total: number; complete_for_loom: boolean; last_modified: string;
+  needed_present: number; needed_total: number; weights: boolean; complete_for_loom: boolean; last_modified: string;
 }
+/** One use of a repo (step e): the model it belongs to, what the repo is to it, where in loom it is used. */
+export interface CacheUse { tag: string; label: string; role: string; where: string[] }
 export interface CacheRepo {
-  repo_id: string; size_gb: number; used_by: string[]; needed: boolean; gated: boolean; ref: string | null;
+  repo_id: string; size_gb: number; used_by: string[]; uses: CacheUse[]; needed: boolean; gated: boolean; whole: boolean; ref: string | null;
   revisions: CacheRevision[];
   health: "ok" | "ref_drift" | "partial" | "missing" | "empty" | "unused" | "stale_extra";
   detail: string;
 }
+export type CacheHealth = CacheRepo["health"];
+/** The roster by model: a catalog variant, a casting preset, a postproc tool, a trainer preset, a manifest phase. */
+export interface CacheModel {
+  tag: string; label: string; kind: "model" | "preset" | "tool" | "train" | "manifest" | "other"; where: string[]; health: CacheHealth;
+  repos: { repo_id: string; role: string; health: CacheHealth; size_gb: number; gated: boolean }[];
+}
+/** The Hugging Face token's status: never the token itself. */
+export interface CacheToken { set: boolean; source: "env" | "dotenv" | "setting" | null; masked: string | null; managed: boolean }
 export interface CacheLocation {
   path: string; exists: boolean; free_gb: number | null; total_gb: number | null;
   source: "env" | "dotenv" | "setting" | "hf_home" | "default"; managed: boolean;
   previous: { path: string; exists: boolean; size_gb: number } | null;
 }
-export interface CacheInventory { location: CacheLocation; scanned_at: string; size_gb: number; repos: CacheRepo[]; needs_missing: unknown[] }
+export interface CacheInventory {
+  location: CacheLocation; token: CacheToken; scanned_at: string; size_gb: number; repos: CacheRepo[]; models: CacheModel[]; needs_missing: unknown[];
+}
 export interface PrunePlan {
   dry_run: boolean; total_gb: number;
   revisions: { repo_id: string; commit: string; size_gb: number; files: number }[];
@@ -875,7 +887,11 @@ export async function getCache(signal?: AbortSignal): Promise<CacheInventory> {
   return (await res.json()) as CacheInventory;
 }
 export const repairCacheRef = (repoId: string) => cacheCall<{ repo_id: string; previous: string | null; now: string; changed: boolean }>(`/cache/${repoPath(repoId)}/repair`, "POST");
-export const fetchCache = (body: { repo_id: string; files?: string[]; force?: boolean; revision?: string }) => cacheCall<{ job_id: string | null; mode: string; note?: string }>("/cache/fetch", "POST", body);
+export const fetchCache = (body: { repo_id: string; files?: string[]; force?: boolean; revision?: string }) => cacheCall<{ job_id: string | null; mode: string; note?: string; snapshot?: boolean }>("/cache/fetch", "POST", body);
+/** Store the token as a loom setting (null clears); refused with the reason while the environment or .env.local supplies one. */
+export const setCacheToken = (token: string | null) => cacheCall<CacheToken>("/cache/token", "PUT", { token });
+/** Ask the hub who a token belongs to: a candidate before saving, or (null) the token in force. */
+export const checkCacheToken = (token?: string | null) => cacheCall<{ ok: boolean; user?: string; type?: string; orgs?: string[]; error?: string }>("/cache/token/check", "POST", { token: token ?? null });
 export const verifyCache = (repoId: string) => cacheCall<{ job_id: string; mode: string }>(`/cache/${repoPath(repoId)}/verify`, "POST");
 export const pinCache = (repoId: string, commit: string | null) => cacheCall<{ repo_id: string; pinned: string | null }>(`/cache/${repoPath(repoId)}/pin`, "PUT", { commit });
 export const deleteCacheRevision = (repoId: string, commit: string) => cacheCall<{ repo_id: string; deleted: string[]; freed_gb: number }>(`/cache/${repoPath(repoId)}/revisions/${encodeURIComponent(commit)}`, "DELETE");

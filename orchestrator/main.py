@@ -637,6 +637,15 @@ class CachePruneRequest(BaseModel):
     dry_run: bool = True
 
 
+class CacheTokenRequest(BaseModel):
+    """M2.17 step e — the Hugging Face token as a loom setting (a real env var and `.env.local`
+    still win, D1); null clears. For the check, a candidate to try before saving (null = the
+    token in force)."""
+
+    model_config = ConfigDict(extra="forbid")
+    token: str | None = None
+
+
 class QueuePostprocStepRequest(BaseModel):
     """M0c: fire a configured step's job over its source image. `requester_id` + `stage` route
     the produced tile into a specific grid (the UI's current context — a character version +
@@ -3365,8 +3374,10 @@ def create_app() -> FastAPI:
     def get_cache() -> dict:
         """The hub cache inventory: the location, every repo with its revisions and a health
         verdict (ok · ref_drift · partial · missing · empty · unused · stale_extra) and what
-        loom needs it for. Read-only; the scan is metadata only (0.3 s for 745 GB)."""
-        return weights.inventory()
+        loom needs it for (each use with its label, role and where in loom it is used), the
+        same roster **by model**, and the token's masked status. Read-only; the scan is
+        metadata only (0.3 s for 745 GB)."""
+        return weights.inventory(presets={k: v["backend"] for k, v in _PP_PRESETS.items()})
 
     @app.post("/cache/{repo_id:path}/repair")
     def repair_cache_ref(repo_id: str, _auth: None = Depends(require_token)) -> dict:
@@ -3407,12 +3418,32 @@ def create_app() -> FastAPI:
             plan = weights.plan_fetch(req.repo_id, req.files, req.force)
         except weights.CacheError as e:
             raise HTTPException(e.status, str(e))
-        if plan["gated"] and not CONFIG.hf_token:
+        if plan["gated"] and not weights.hf_token():
             raise HTTPException(412, {"error": f"{plan['repo_id']} is gated", "repo_id": plan["repo_id"], "gated": True,
-                                      "hint": "accept the license on huggingface.co and set HF_TOKEN in .env.local"})
-        if not plan["files"] and not req.force and plan["needed"]:
+                                      "hint": "accept the license on huggingface.co and set the token on the Models page (or HF_TOKEN in .env.local)"})
+        if plan["nothing"]:
             return {"job_id": None, "mode": "fetch", "params": plan, "note": "nothing to fetch: every needed file is cached"}
-        return _cache_job("fetch", {"repo_id": plan["repo_id"], "files": plan["files"], "revision": req.revision})
+        params = {"repo_id": plan["repo_id"], "files": plan["files"], "revision": req.revision}
+        if plan.get("ignore_patterns"):
+            params["ignore_patterns"] = plan["ignore_patterns"]
+        return {**_cache_job("fetch", params), "snapshot": plan["snapshot"]}
+
+    @app.put("/cache/token")
+    def cache_token(req: CacheTokenRequest, _auth: None = Depends(require_token)) -> dict:
+        """M2.17 step e — store (or clear, with null) the Hugging Face token loom hands its
+        workers for gated repos. Refused with the reason while HF_TOKEN comes from the
+        environment or .env.local (D1). The response and the log carry only the masked form."""
+        try:
+            info = weights.set_token(req.token)
+        except weights.CacheError as e:
+            raise HTTPException(e.status, str(e))
+        LOG.info("cache token: %s (%s)", f"set {info['masked']}" if info["set"] else "cleared", info["source"] or "none")
+        return info
+
+    @app.post("/cache/token/check")
+    def cache_token_check(req: CacheTokenRequest, _auth: None = Depends(require_token)) -> dict:
+        """Ask the hub who a token belongs to: the candidate in the body, else the token in force."""
+        return weights.check_token(req.token)
 
     @app.post("/cache/{repo_id:path}/verify")
     def cache_verify(repo_id: str, _auth: None = Depends(require_token)) -> dict:

@@ -25,7 +25,7 @@ from .base import CompletionRecord, JobSpec
 PIPELINE = "hf_cache"
 SUPPORTED_MODES = ("fetch", "verify", "move")
 WIRED_MODES = SUPPORTED_MODES
-WIRED_PARAMS = ("repo_id", "files", "revision", "cache_home", "to")
+WIRED_PARAMS = ("repo_id", "files", "revision", "cache_home", "to", "ignore_patterns")
 
 _PROGRESS = re.compile(r"^\[cache\] progress (\d+(?:\.\d+)?)")
 _NOTE = re.compile(r"^\[cache\] note (.+)$")

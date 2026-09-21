@@ -342,6 +342,16 @@ def multi_preset_weights(preset: str) -> list[dict]:
     return [e for e in (presets.get(preset) or []) if isinstance(e, dict)]
 
 
+def _hf_token() -> str | None:
+    """The Hugging Face token in force: a real env var, `.env.local`, else the loom setting
+    (M2.17 step e, `weights.hf_token`)."""
+    try:
+        from . import weights
+    except ImportError:
+        import weights  # type: ignore
+    return weights.hf_token()
+
+
 @functools.lru_cache(maxsize=1)
 def _needs_fp8_workaround() -> bool:
     """Faithful mirror of flux2/stage1_load_models._needs_fp8_workaround: FP8 Qwen3 text
@@ -422,7 +432,7 @@ def fetch_multi_preset(preset: str) -> dict:
     entries = multi_preset_weights(preset)
     if not entries:
         return {"preset": preset, "results": [], "error": f"unknown preset {preset!r}"}
-    token = CONFIG.hf_token
+    token = _hf_token()
     results: list[dict] = []
     for e in entries:
         repo_id = _entry_resolve_repo(e)   # the exact repo this platform loads
@@ -494,7 +504,7 @@ def fetch_postproc(tool: str, variant_id: str | None = None) -> dict:
     if not entries:
         which = f"{tool!r} variant {variant_id!r}" if variant_id else repr(tool)
         return {"tool": tool, "results": [], "error": f"unknown postproc tool {which}"}
-    token = CONFIG.hf_token
+    token = _hf_token()
     results: list[dict] = []
     for e in entries:
         repo_id = _entry_resolve_repo(e)

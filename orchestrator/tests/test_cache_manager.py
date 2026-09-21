@@ -99,7 +99,7 @@ def test_components_probe_and_variant_gate_pass_under_drift(hub):
 
 def test_inventory_health_and_detail(hub):
     _drifted(hub)
-    _repo(hub, "Tongyi-MAI/Z-Image-Turbo", {"f332072aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": ["model_index.json", "vae/config.json"]}, main="f332072aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    _repo(hub, "Tongyi-MAI/Z-Image-Turbo", {"f332072aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": ["model_index.json", "vae/config.json", "vae/diffusion_pytorch_model.safetensors"]}, main="f332072aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     _repo(hub, "other/tool-model", {"aaaa": ["config.json"]}, main="aaaa")
     _repo(hub, "other/empty", {}, main=None)
     _repo(hub, "stabilityai/stable-diffusion-3.5-medium", {"bbbb": ["vae/config.json"]}, main="bbbb")   # needed, but no model_index
@@ -169,7 +169,8 @@ def test_worker_reads_the_pin_without_torch(monkeypatch):
 
 def test_runner_spawns_carry_the_pins():
     src = (Path(__file__).resolve().parents[1] / "runner.py").read_text(encoding="utf-8")
-    assert src.count("env.update(weights.worker_env())") == 2                    # the cold spawn and the warm worker
+    assert src.count("env.update(weights.worker_env())") == 1                    # the warm worker
+    assert src.count('env.update(weights.worker_env(online=(pipeline == "hf_cache")))') == 1   # the cold spawn; the cache worker online (step e)
 
 
 @pytest.fixture()

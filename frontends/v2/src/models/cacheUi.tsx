@@ -1,6 +1,7 @@
-// Small cache-aware pieces the composers use (M2.17 step d): the weight status of the picked
-// variant under the model picker, and the Fetch / Repair / Open Models buttons on a refusal
-// that names a repo ("not in cache", a gated repo).
+// Small cache-aware pieces the composers use (M2.17 step d/e): the weight status of the picked
+// variant under the model picker — every repo the variant loads (model, text encoder, vae),
+// the bad ones named — and the Fetch / Repair / Open Models buttons on a refusal that names a
+// repo ("not in cache", a gated repo).
 import { fetchCache, repairCacheRef } from "@loom/shared/api/orchestrator";
 
 import { reasonOf } from "../lib/project";
@@ -10,19 +11,20 @@ const STATUS: Record<string, string> = {
   ok: "cached", stale_extra: "cached", ref_drift: "cached, ref drift (repair)", partial: "partly cached", missing: "not cached",
 };
 
-/** The health of the repo behind a catalog variant, from the inventory's `used_by` tags. */
+/** The health of every repo behind a catalog variant, from the inventory's by-model view. */
 export function VariantWeights({ pipeline, model }: { pipeline: string; model?: string }) {
   const cache = useApp((s) => s.cache);
   const openModels = useApp((s) => s.openModels);
   if (!cache || !model) return null;
   const tag = `catalog:${pipeline}/${model}`;
-  const repo = cache.repos.find((r) => r.used_by.includes(tag));
-  if (!repo) return null;
-  const text = STATUS[repo.health] ?? repo.health;
-  const bad = repo.health === "missing" || repo.health === "partial" || repo.health === "ref_drift";
+  const m = cache.models?.find((x) => x.tag === tag);
+  if (!m) return null;
+  const bad = m.repos.filter((r) => r.health === "missing" || r.health === "partial" || r.health === "ref_drift");
+  const text = bad.length ? bad.map((r) => `${STATUS[r.health] ?? r.health}: ${r.repo_id} (${r.role})`).join("; ") : "cached";
+  const gated = m.repos.some((r) => r.gated);
   return (
-    <p className={`faint variant-weights${bad ? " warn" : ""}`}>
-      Weights: {text}{repo.gated ? ", gated" : ""}. <button className="link" onClick={openModels}>Models</button>
+    <p className={`faint variant-weights${bad.length ? " warn" : ""}`}>
+      Weights: {text}{gated ? ", gated" : ""}. <button className="link" onClick={openModels}>Models</button>
     </p>
   );
 }

@@ -186,7 +186,8 @@ loom-loreweave-studio/
 │                      #   `POST /cache/fetch` · `/cache/<repo>/verify` · `PUT /cache/<repo>/pin` · `DELETE /cache/<repo>[/revisions/<c>]` · `POST /cache/prune` (dry run by default)
 │                      #   location: `PUT /cache/location` (a loom setting; `LOOM_MODELS_DIR` in .env still wins) · `POST /cache/move` (a resumable job; switches on completion) · `DELETE /cache/previous`
 │                      #   in v2: File ▸ Models… (or the models item in the status cluster) = the page over all of the above; the banner offers Repair on a drifted ref
-│                      #   step e: the inventory lists the roster BY MODEL (label · role · where used) and `models[]`; `PUT /cache/token` · `POST /cache/token/check` (the HF token as a loom setting; `HF_TOKEN` in .env.local still wins)
+│                      #   step e: the inventory lists the roster BY MODEL (label · role · where used) and `models[]`; `PUT /cache/token` · `POST /cache/token/check` (the HF token as a loom setting; `HF_TOKEN` in .env.local still wins);
+│                      #   a fetch / verify job reports bytes of total · rate · ETA (the hub library's own counters) — the bar sits on the Models row, in the composer's refusal line and in the dock
 │   ├── src/           #   React UI (three-pane shell + job-queue dock + batch grid + project bar)
 │   └── src-tauri/     #   Rust: single-instance, orchestrator sidecar spawn + kill, READY handshake
 └── orchestrator/      # Python FastAPI service (127.0.0.1)

@@ -270,10 +270,12 @@ def test_worker_snapshot_fetch_passes_the_ignore_patterns(monkeypatch, tmp_path,
         monkeypatch.delenv(k, raising=False)
     mod = _worker()
     monkeypatch.setattr(mod, "go_online", lambda: None)                        # keep the stub in sys.modules
+    monkeypatch.setattr(mod, "_plan_bytes", lambda *a, **k: (None, None))
+    monkeypatch.setattr(mod, "_meter_class", lambda: "meter")
     monkeypatch.setitem(sys.modules, "huggingface_hub", Stub)
     out = mod.task_fetch({"repo_id": "a/b", "files": [], "ignore_patterns": ["*.h5"], "cache_home": str(tmp_path)})
     assert out["ok"] is True and out["snapshot"] == str(tmp_path / "snap") and out["ignore_patterns"] == ["*.h5"]
-    assert calls == {"repo_id": "a/b", "revision": None, "cache_dir": str(tmp_path / "hub"), "token": None, "ignore_patterns": ["*.h5"]}
+    assert calls == {"repo_id": "a/b", "revision": None, "cache_dir": str(tmp_path / "hub"), "token": None, "ignore_patterns": ["*.h5"], "tqdm_class": "meter"}
     assert "[cache] note snapshot of a/b" in capsys.readouterr().out
 
 
@@ -317,3 +319,89 @@ def test_fetch_endpoint_snapshots_a_whole_repo_and_gates_on_the_token(client, hu
     r = client.post("/cache/fetch", json={"repo_id": KLEIN4})
     assert r.status_code == 200 and RUNNER.jobs[r.json()["job_id"]]["params"]["files"] == ["flux-2-klein-4b.safetensors"]
     assert r.json()["snapshot"] is False
+
+
+# --- the fetch meter -----------------------------------------------------------------------------
+
+def _lines(out: str, kind: str) -> list[str]:
+    return [l[len(f"[cache] {kind} "):] for l in out.splitlines() if l.startswith(f"[cache] {kind} ")]
+
+
+def test_meter_turns_the_hub_counters_into_bytes_progress_and_a_note(capsys):
+    mod = _worker()
+    mod.REPORT.min_interval = 0.0
+    Meter = mod._meter_class()                                                  # a real hub-tqdm subclass, no terminal
+    mod.REPORT.reset(300_000_000, 2)                                            # sized up front: 300 MB in 2 files
+    a = Meter(total=100_000_000, initial=0, unit="B", unit_scale=True, desc="a.safetensors")
+    a.update(100_000_000)
+    a.close()
+    b = Meter(total=200_000_000, initial=0, unit="B", unit_scale=True, desc="b.safetensors")
+    b.update(50_000_000)
+    b.refresh()
+    out = capsys.readouterr().out
+    prog = _lines(out, "progress")
+    assert prog and abs(float(prog[-1]) - 0.5) < 1e-3                          # 150 of 300 MB
+    note = _lines(out, "note")[-1]
+    assert note.startswith("2 of 2 files · 150 of 300 MB") and "b.safetensors" in note
+    b.update(150_000_000)
+    b.close()
+    out = capsys.readouterr().out
+    assert abs(float(_lines(out, "progress")[-1]) - 0.999) < 1e-3              # never 1 before the task says so
+    # unknown up front: the bars' own totals are the denominator, and GB reads with decimals
+    mod.REPORT.reset(None, None)
+    c = Meter(total=4_000_000_000, initial=1_000_000_000, unit="B", unit_scale=True, desc="big.safetensors")   # resume found 1 GB
+    c.refresh()
+    out = capsys.readouterr().out
+    assert abs(float(_lines(out, "progress")[-1]) - 0.25) < 1e-3
+    assert _lines(out, "note")[-1].startswith("file 1 · 1.00 of 4.00 GB")
+    c.close()
+    assert mod._eta(600e6, 10e6) == "~1 min left" and mod._eta(7200e6, 1e6) == "~2 h 00 min left" and mod._eta(1, 0) == ""
+    assert mod._rate(2.5e6) == "2.5 MB/s" and mod._rate(45e6) == "45 MB/s"
+
+
+def test_plan_bytes_sizes_the_fetch_from_the_hub_minus_the_cached(monkeypatch):
+    mod = _worker()
+
+    class Sib:
+        def __init__(self, name, size):
+            self.rfilename, self.size = name, size
+
+    class Info:
+        sha = "abc"
+        siblings = [Sib("model_index.json", 500), Sib("transformer/model.safetensors", 4_000_000_000),
+                    Sib("vae/model.safetensors", 300_000_000), Sib("flax.msgpack", 4_000_000_000)]
+
+    class Api:
+        def __init__(self, token=None):
+            self.token = token
+
+        def model_info(self, repo, revision=None, files_metadata=False):
+            assert files_metadata is True and repo == "a/b"
+            return Info()
+
+    import huggingface_hub
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache",
+                        lambda repo, f, cache_dir=None, revision=None: "/cached" if f == "vae/model.safetensors" else None)
+    total, n = mod._plan_bytes("a/b", [], None, "/hub", None, ["*.msgpack"])
+    assert (total, n) == (4_000_000_500, 2)                                    # the vae is cached, the flax file ignored
+    total, n = mod._plan_bytes("a/b", ["vae/model.safetensors", "model_index.json"], None, "/hub", None, None)
+    assert (total, n) == (500, 1)
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda token=None: (_ for _ in ()).throw(RuntimeError("offline")))
+    assert mod._plan_bytes("a/b", [], None, "/hub", None, None) == (None, None)
+
+
+def test_verify_reports_progress_by_bytes_hashed(tmp_path, capsys):
+    mod = _worker()
+    hub = tmp_path / "home" / "hub"
+    snap = hub / "models--a--b" / "snapshots" / "c1"
+    snap.mkdir(parents=True)
+    import hashlib
+    for data in (b"a" * 3_000_000, b"b" * 1_000_000):                           # blobs are named by their sha256: hashed
+        (snap / hashlib.sha256(data).hexdigest()).write_bytes(data)
+    r = mod.task_verify({"repo_id": "a/b", "cache_home": str(tmp_path / "home")})
+    assert r["ok"] is True and r["checked"] == 2
+    out = capsys.readouterr().out
+    prog = [float(x) for x in _lines(out, "progress")]
+    assert prog[0] == 0.0 and abs(prog[-2] - 0.75) < 1e-3 and prog[-1] == 1.0   # the second file starts at 3 of 4 MB
+    assert "3 of 4 MB" in _lines(out, "note")[-1]

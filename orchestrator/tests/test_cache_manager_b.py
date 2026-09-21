@@ -212,7 +212,7 @@ def test_worker_fetch_uses_the_hub_library_per_file(tmp_path, monkeypatch, capsy
     w = _worker()
     calls = []
 
-    def fake_download(repo_id, filename, revision=None, cache_dir=None, token=None):
+    def fake_download(repo_id, filename, revision=None, cache_dir=None, token=None, tqdm_class=None):
         calls.append((repo_id, filename, revision, cache_dir))
         p = tmp_path / "dl" / filename
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -220,6 +220,7 @@ def test_worker_fetch_uses_the_hub_library_per_file(tmp_path, monkeypatch, capsy
         return str(p)
     import huggingface_hub
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    monkeypatch.setattr(w, "_plan_bytes", lambda *a, **k: (None, None))       # no hub API in tests
     r = w.task_fetch({"repo_id": DEV, "files": [TE, VAE], "revision": JUNE, "cache_home": str(tmp_path / "home")})
     assert r["ok"] is True and r["bytes"] == 128 and [c[1] for c in calls] == [TE, VAE]
     assert calls[0][2] == JUNE and calls[0][3].endswith("hub")

@@ -58,6 +58,11 @@ def test_models_page_is_mounted_and_complete():
     assert "cache.models" in page and "{r.role}" in page and 'm.where.join(" · ")' in page
     assert 'type="password"' in page and "tok.masked" in page
     assert "u.label" in page and "u.role" in page                                # the repo rows say who uses them, readably
+    # the fetch meter: a live hf_cache job for the repo shows as a bar with the worker's note, cancel on a second click
+    assert 'j.pipeline === "hf_cache"' in page and 'className="meter"' in page and "cancelJob(" in page
+    assert '"Cancel", "Cancel?"' in page
+    css = _read(V2 / "styles.css")
+    assert ".meter-fill" in css
     assert 'className={confirm === key ? "danger" : ""}' in page           # every destructive action a second click
     assert 'r.needed ? "Delete? loom needs it" : "Delete?"' in page
     assert "loc.managed" in page and "remove LOOM_MODELS_DIR from .env" in page.lower() or "Remove it there" in page
@@ -84,6 +89,7 @@ def test_banner_and_composers_act_on_the_cache():
     assert "export function VariantWeights" in ui and "export function Problem" in ui
     assert '`catalog:${pipeline}/${model}`' in ui                              # the roster's used-by tag
     assert "cache.models" in ui and "r.role" in ui                              # every repo of the variant, the bad ones named
+    assert 'j.pipeline === "hf_cache"' in ui and "fetching" in ui               # the refusal line shows the live fetch's meter
     assert '/"repo_id"\\s*:\\s*"([^"]+)"/' in ui                                # the 412 detail names the repo
     for f in ("compose/Composer.tsx", "compose/Expand.tsx"):
         src = _read(V2 / f)

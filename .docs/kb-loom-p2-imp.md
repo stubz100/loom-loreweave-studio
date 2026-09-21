@@ -5170,3 +5170,42 @@ normalised back.
 
 
 **Pushed:** step e = `2831af7` (the backend + the worker + the manifest + the v2 page + the tests + the plan rows e / D8 / D9 + README + spec §12 + this entry). Ledger of M2.17: a `9171e30` · b `5d98509` · c `36dbbdd` · d `6111367` · e `2831af7`. The whole backend suite under the torch guard before the commit: **528 passed, 2 skipped, 36 torch-bound left out** (13 new). The v2 build (`tsc` + `vite`) clean. Next: restart `loom-dev` so the running orchestrator serves this code, then the click-through (Models: the by-model list, Fetch on `Qwen/Qwen3-8B`, the token row).
+
+
+## 🧰 M2.17 step e, addendum — the fetch meter (2026-09-21, 12:52–13:03 CEDT)
+
+**Why:** the author, after the step-e hand-over: *a progress bar/meter for the fetch would have
+been a nice gesture.* Fair — the fetch job's progress was one step per file (useless for a
+16 GB text encoder in three shards) and the snapshot branch said nothing until it was done.
+
+**Built:**
+- `pipelines/hf_cache/run_pipeline.py` — the worker hands the hub library a `tqdm_class`
+  (`_meter_class()`, a subclass of the library's own tqdm, built after `go_online()`) whose
+  bars report into one thread-safe tally (`_Report`) instead of a terminal: bytes done of bytes
+  planned, file *k of m*, a 10-second rate window, an ETA and the current file, emitted as
+  `[cache] progress <0..1>` + `[cache] note …` at most once a second (the adapter already
+  parses both). The plan is sized up front (`_plan_bytes`: `HfApi.model_info(files_metadata=
+  True)` for the sizes, the ignore patterns applied for a snapshot, minus what
+  `try_to_load_from_cache` already holds at that commit); when the hub cannot be asked the
+  meter grows its denominator as files start. Resume counts: a bar's `initial` is what the
+  library found on disk. A snapshot's aggregate bar (the library's `_AggregatedTqdm` feeds it
+  from every thread) and its file-count bar are both read. Verify now reports by bytes hashed
+  (`verify_file(path, on_bytes)`), once a second.
+- v2 — `Models.tsx`: a live `hf_cache` job for a repo replaces the row's actions with the meter
+  (a bar, *fetching 38% · 3 of 12 files · 6.2 of 16.4 GB · 41 MB/s · ~4 min left ·
+  transformer/…safetensors*, and **Cancel** on a second click; a cancelled fetch resumes) on
+  both the by-model line and the repo row; `cacheUi.tsx`: the composer's refusal line shows the
+  same bar and text while the fetch runs, and `VariantWeights` says *fetching 38%* beside the
+  bad repo; the dock's strip and headline already carried the job's progress and note.
+
+**Verified:** four more tests in `test_cache_manager_d.py` — the meter through a real
+hub-tqdm subclass (two files sized up front → 0.5 with the note *2 of 2 files · 150 of
+300 MB · b.safetensors*; never 1 before the task says so; unknown up front → the bars' totals,
+resume bytes counted, GB with decimals; the rate and ETA formats), `_plan_bytes` against a
+stubbed hub (the cached file and the ignored one left out; the hub unreachable → no plan),
+verify's byte progress on sha256-named blobs, the snapshot branch handing the meter class to
+the library; the step-b per-file fetch test learns the new kwarg and stubs the sizing;
+`test_v2_models.py` pins the meter, the Cancel and the composer line. v2 `tsc` + `vite` clean.
+The whole backend suite under the torch guard: **531 passed, 2 skipped, 36 torch-bound left
+out** (a first run hit a Windows teardown race on the hardening file's queue.json rename —
+the test itself passed; the rerun of the file and of the suite were clean).

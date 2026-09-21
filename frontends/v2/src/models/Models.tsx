@@ -9,8 +9,8 @@
 import { useEffect, useState } from "react";
 
 import {
-  checkCacheToken, deleteCacheRepo, deleteCacheRevision, deletePreviousCache, fetchCache, moveCache, pinCache, pruneCache,
-  repairCacheRef, setCacheLocation, setCacheToken, verifyCache, type CacheModel, type CacheRepo, type PrunePlan,
+  cancelJob, checkCacheToken, deleteCacheRepo, deleteCacheRevision, deletePreviousCache, fetchCache, moveCache, pinCache, pruneCache,
+  repairCacheRef, setCacheLocation, setCacheToken, verifyCache, type CacheModel, type CacheRepo, type Job, type PrunePlan,
 } from "@loom/shared/api/orchestrator";
 
 import { reasonOf } from "../lib/project";
@@ -36,6 +36,7 @@ export function Models() {
   const project = useApp((s) => s.project);
   const notify = useApp((s) => s.notify);
   const openDock = useApp((s) => s.openDock);
+  const jobs = useApp((s) => s.jobs);
   const [busy, setBusy] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<string | null>(null);
   const [path, setPath] = useState<string | null>(null);      // the Change… field (null = closed)
@@ -63,7 +64,22 @@ export function Models() {
   );
   const jobNote = (what: string) => (r: unknown) => {
     const j = r as { job_id?: string | null; note?: string; snapshot?: boolean };
-    return j.job_id ? `${what} queued as ${j.job_id}${j.snapshot ? " (the whole repo)" : ""}; the dock shows its progress.` : (j.note ?? `${what}: nothing to do.`);
+    return j.job_id ? `${what} queued as ${j.job_id}${j.snapshot ? " (the whole repo)" : ""}; the meter is on the row and in the dock.` : (j.note ?? `${what}: nothing to do.`);
+  };
+  /** The cache job (fetch / verify) live for a repo, if any: its meter replaces the row's actions. */
+  const liveJob = (repoId: string): Job | undefined =>
+    Object.values(jobs).find((j) => j.pipeline === "hf_cache" && (j.status === "running" || j.status === "queued")
+      && String((j.params as { repo_id?: unknown } | undefined)?.repo_id ?? "").toLowerCase() === repoId.toLowerCase());
+  const meter = (j: Job) => {
+    const p = Math.max(0, Math.min(1, j.progress || 0));
+    const verb = j.mode === "fetch" ? "fetching" : j.mode === "verify" ? "verifying" : j.mode;
+    return (
+      <span className="meter-wrap" title={j.note ?? ""}>
+        <span className="meter"><span className="meter-fill" style={{ width: `${Math.round(p * 100)}%` }} /></span>
+        <span className="muted">{j.status === "queued" ? `${verb}: queued` : `${verb} ${Math.round(p * 100)}%${j.note ? ` · ${j.note}` : ""}`}</span>
+        {twice(`cancel:${j.id}`, "Cancel", "Cancel?", () => cancelJob(j.id), j.mode === "fetch" ? "Canceled; a later fetch resumes where this one stopped." : "Canceled.")}
+      </span>
+    );
   };
   const checkTok = async (key: string, candidate?: string) => {
     setBusy(key);
@@ -105,16 +121,21 @@ export function Models() {
           {m.repos.map((r) => {
             const rh = HEALTH[r.health] ?? { label: r.health, cls: "" };
             const full = byRepo.get(r.repo_id);
+            const live = liveJob(r.repo_id);
             return (
               <div key={`${m.tag}:${r.repo_id}:${r.role}`} className="model-repo">
                 <span className="role">{r.role}</span>
                 <span className="mono">{r.repo_id}</span>
                 <span className={`pill ${rh.cls}`}>{rh.label}</span>
                 <span className="muted">{r.size_gb ? `${r.size_gb} GB` : ""}</span>
-                {full && r.health !== "ok" && r.health !== "stale_extra" && <span className="faint">{full.detail}</span>}
+                {!live && full && r.health !== "ok" && r.health !== "stale_extra" && <span className="faint">{full.detail}</span>}
                 <span className="spacer" />
-                {r.health === "ref_drift" && repairButton(r.repo_id)}
-                {(r.health === "missing" || r.health === "partial") && fetchButton(r.repo_id, r.gated)}
+                {live ? meter(live) : (
+                  <>
+                    {r.health === "ref_drift" && repairButton(r.repo_id)}
+                    {(r.health === "missing" || r.health === "partial") && fetchButton(r.repo_id, r.gated)}
+                  </>
+                )}
               </div>
             );
           })}
@@ -127,6 +148,7 @@ export function Models() {
     const h = HEALTH[r.health] ?? { label: r.health, cls: "" };
     const isOpen = open.has(r.repo_id);
     const usedBy = r.uses.map((u) => `${u.label} (${u.role})`).join(", ");
+    const live = liveJob(r.repo_id);
     return (
       <div key={r.repo_id} className={`repo-row s-${r.health}`}>
         <div className="repo-head">
@@ -134,13 +156,15 @@ export function Models() {
           <span className={`pill ${h.cls}`}>{h.label}</span>
           <span className="muted">{r.size_gb} GB</span>
           <span className="spacer" />
-          <span className="repo-acts">
-            {r.health === "ref_drift" && repairButton(r.repo_id)}
-            {r.needed && (r.health === "missing" || r.health === "partial") && fetchButton(r.repo_id, r.gated)}
-            {r.revisions.length > 0 && <button onClick={() => void act(`verify:${r.repo_id}`, () => verifyCache(r.repo_id), jobNote("Verify"))} disabled={busy !== null || offline || !project} title="hash every cached file against the name the hub gave it (a job)">Verify</button>}
-            {twice(`del:${r.repo_id}`, "Delete", r.needed ? "Delete? loom needs it" : "Delete?", () => deleteCacheRepo(r.repo_id), (x) => `Deleted, ${(x as { freed_gb: number }).freed_gb} GB freed.`, false,
-                   r.needed ? "loom needs this repo; the next generation will ask for it again" : "not used by loom")}
-          </span>
+          {live ? meter(live) : (
+            <span className="repo-acts">
+              {r.health === "ref_drift" && repairButton(r.repo_id)}
+              {r.needed && (r.health === "missing" || r.health === "partial") && fetchButton(r.repo_id, r.gated)}
+              {r.revisions.length > 0 && <button onClick={() => void act(`verify:${r.repo_id}`, () => verifyCache(r.repo_id), jobNote("Verify"))} disabled={busy !== null || offline || !project} title="hash every cached file against the name the hub gave it (a job)">Verify</button>}
+              {twice(`del:${r.repo_id}`, "Delete", r.needed ? "Delete? loom needs it" : "Delete?", () => deleteCacheRepo(r.repo_id), (x) => `Deleted, ${(x as { freed_gb: number }).freed_gb} GB freed.`, false,
+                     r.needed ? "loom needs this repo; the next generation will ask for it again" : "not used by loom")}
+            </span>
+          )}
         </div>
         <div className="repo-detail faint">{r.detail}{usedBy ? ` · used by ${usedBy}` : ""}</div>
         {isOpen && (

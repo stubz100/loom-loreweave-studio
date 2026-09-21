@@ -383,6 +383,10 @@ button.on { color: var(--amber); }
 .pill.err { color: var(--err); }
 .pill.faint { color: var(--faint); }
 .prune-list { font-size: 12px; color: var(--muted); margin: 6px 0 0; padding-left: 18px; }
+.meter-wrap { display: inline-flex; align-items: center; gap: 8px; flex: 1 1 220px; min-width: 200px; }
+.meter { flex: 1 1 120px; min-width: 100px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; display: inline-block; }
+.meter-fill { display: block; height: 100%; background: var(--amber); transition: width .5s linear; }
+.meter-wrap button { font-size: 11px; padding: 2px 8px; }
 .model-group { font-size: 11px; color: var(--muted); margin: 8px 0 2px; }
 .model-row { border-top: 1px solid var(--line); padding: 6px 0; font-size: 12px; }
 .model-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

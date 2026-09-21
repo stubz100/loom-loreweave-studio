@@ -4935,3 +4935,6 @@ same atomic writer and verified: the hub library now resolves the transformer th
 **Next:** step b (fetch as an io job with resume and dock progress · delete · prune with a dry
 run that never removes a complete-for-loom revision · verify · pin; the diffusers loaders'
 `revision=`), after the author's v2 click-through.
+
+
+**Pushed:** M2.17 step a = `9171e30` (code + tests + spec §12 3k + plan + README + this entry). **Real-cache repair applied through `weights.repair_ref`:** `refs/main` 06029c96 → 03d6521e; the hub library now resolves the transformer through the ref. **Real inventory (0.1 s):** 35 repos listed (29 cached + 6 roster repos absent), 750 GB; health = 15 ok · 10 unused · 6 missing · 2 empty · 1 stale_extra (flux2-dev, after the repair) · 1 partial. Two findings for step b: (1) `ZhengPeng7/BiRefNet` reads *partial* — the roster merged more than one probe file for it and one is absent; check which consumer declares it before trusting the verdict; (2) the catalog names `black-forest-labs/FLUX.2-klein-9B-kv` (capital B) while the cache folder is `…klein-9b-kv` — the hub is case-insensitive, the cache folder is not, so that variant would 412; fix the catalog id or teach the resolver case-insensitive folder matching.

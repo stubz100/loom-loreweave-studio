@@ -1481,6 +1481,18 @@ author's visual sign-off.
    fetch worker online (the offline flag was read at import). Decisions D1–D9 accepted as
    recommended; the click-through is the acceptance.
 
+3l. **FLUX.2-dev weights spike (2026-09-21, author's ask; GPU on RMA).** *Get `flux.2-dev` off
+   the `Comfy-Org/flux2-dev` repackaging (scaled-FP8 + Comfy key layouts + a community Turbo
+   LoRA, with loom-side plumbing for each) onto a standard format of the official weights.*
+   `.docs/kb-loom-flux2-weights.md`: the provenance table (BFL's gated bf16 repo — the author's
+   token opens it; `unsloth/FLUX.2-dev-GGUF` Q2_K…Q8_0 of the BFL transformer under **BFL's own
+   tensor names** (header read with `tools/gguf/inspect_gguf.py`, no download); Mistral-Small-3.2
+   official and **ungated**, plus unsloth's GGUF of it; BFL's `ae.safetensors`), two paths (**G**:
+   the ggml backend = M2.16's `sdcpp` adapter with the stack sd.cpp itself documents; **T**: a
+   GGUF-backed Linear in the vendored torch `Flux2`, the Mistral encoder still Comfy FP8 on ROCm),
+   Q1–Q4 measured on the CPU today (`bench-cpu.ps1 flux2dev-gguf`), Q5–Q7 rig-owed, decisions
+   D1–D6 (recommendation: G first, as M2.16's first deliverable; unsloth; BFL VAE; Q4_K_M both).
+
 ### Phase B — Thicken (all VLM-free)
 
 4. **M3 — caption review/edit (the override layer).** *Re-scoped 2026-07-12: deterministic

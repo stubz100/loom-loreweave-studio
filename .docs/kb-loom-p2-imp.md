@@ -5212,3 +5212,48 @@ the test itself passed; the rerun of the file and of the suite were clean).
 
 
 **Pushed:** the fetch meter = `206edb7`. Ledger of M2.17: a `9171e30` · b `5d98509` · c `36dbbdd` · d `6111367` · e `2831af7` · e-meter `206edb7`.
+
+
+## 🧪 FLUX.2-dev weights spike — off the Comfy repackaging (2026-09-21, 13:05 CEDT → open)
+
+**The ask (the author, after the fetch meter):** *"Comfy-Org/flux2-dev is a comfy-ui compatible
+quantized model, should be replaced with something official (like the one from unsloth at
+huggingface.co/unsloth/FLUX.2-dev-GGUF). Can we create a spike for this?"* The spike doc is
+`.docs/kb-loom-flux2-weights.md`; spec §12 entry 3l.
+
+**Settled without the card (all read from the hub API and file headers, no torch):**
+- What "official" is: `black-forest-labs/FLUX.2-dev` (gated, bf16, 178 GB) — and **the author's
+  token opens it** (`ae.safetensors` fetched at 14:23). Every quantized form is third-party;
+  unsloth's GGUF is a standard format of those weights with the provenance tag on it.
+  `mistralai/Mistral-Small-3.2-24B-Instruct-2506` is **ungated** (the catalog's note is stale);
+  unsloth's GGUF of it (Q4_K_M 14.3 GB) is what sd.cpp's own docs pass to `--llm`.
+- **The unsloth Q4_K_M header** (one 6 MB range request with the new `tools/gguf/inspect_gguf.py`):
+  `general.architecture = flux`, 299 tensors under **the BFL names loom's vendored `Flux2` already
+  uses** — no remap needed on either path; 124 × Q4_K + 36 × Q5_K (the double-block attention /
+  MLP) + 11 × BF16 (in/out/modulation) + 128 × F32 norms; 19.96 GB.
+- **The link is 15 MB/s today** (the 2026-09-20 spike stopped its GGUF download at 2.6 GB on a
+  1 MB/s evening) — so the CPU half of the spike runs today: `ae.safetensors` (BFL), the
+  small-decoder VAE, the Mistral Q4_K_M GGUF and the dev Q4_K_M GGUF are fetching into
+  `F:\HF_HOME` (34.9 GB) while this is written; they land as *other repos* on the Models page
+  until M2.16 puts them in the roster.
+- **sd.cpp `master-881-17860c0`** (staged for the CPU and Vulkan) already documents this exact
+  stack (`--diffusion-model` GGUF · `--vae` BFL ae · `--llm` Mistral GGUF) and has `--offload-to-cpu`
+  + `--backend diffusion=vulkan0,clip=cpu,vae=cpu` for the 16 GB card. `bench-cpu.ps1` gained a
+  `flux2dev-gguf` model (`-Quant`, `-LlmQuant`; the VAE = BFL ae → small-decoder → Comfy copy;
+  no `--type`, the file's quant is kept).
+- **diffusers 0.39.0.dev0** has `Flux2Transformer2DModel`, a BFL single-file converter and a GGUF
+  quantizer (pure-torch dequant, CUDA kernels optional) — the parts of a torch path (T) exist;
+  `gguf` is not installed in the venv.
+
+**Two paths, one recommendation:** **G** — the ggml backend (M2.16) with the standard stack:
+removes Comfy from dev entirely, measurable on the CPU today, on the card through the staged
+Vulkan build; **T** — a GGUF-backed Linear inside the vendored torch `Flux2` (names match), but the
+Mistral encoder would stay Comfy FP8 on ROCm (transformers dequantizes a GGUF to bf16 at load;
+its FP8 wants CUDA) — the fallback if G disappoints on the card. Recommend **G first as M2.16's
+first deliverable** (D1); unsloth (D2); BFL's `ae` through the token (D3); Q4_K_M for both the
+encoder and the transformer to start, Q3_K_M if the card must hold the transformer whole (D4/D5);
+the Comfy Turbo LoRA kept optional until Q6 on the rig (D6).
+
+**Open until the downloads land (this session):** Q1–Q4 — the CPU run against the M2.15
+baseline (1 651 s / 50.6 GB), the two images side by side, the JSON prompt through the
+Mistral GGUF. Q5–Q7 are the rig's.

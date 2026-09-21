@@ -14,7 +14,9 @@
         python tools\sdcpp\merge_safetensors.py F:\HF_HOME\hub\models--Qwen--Qwen3-4B\snapshots\<rev> .tmp\sdcpp\models\qwen_3_4b.safetensors
     * zimage: the Comfy/original single file or a GGUF (e.g. leejet/Z-Image-Turbo-GGUF Q8_0) + Comfy-Org/z_image_turbo split_files/vae/ae.safetensors
 
-.PARAMETER Model   sd35 | klein4b | flux2dev | zimage
+.PARAMETER Model   sd35 | klein4b | flux2dev | flux2dev-gguf | zimage
+.PARAMETER Quant   flux2dev-gguf: the unsloth transformer quant (default Q4_K_M)
+.PARAMETER LlmQuant flux2dev-gguf: the unsloth Mistral quant (default Q4_K_M)
 .PARAMETER Steps   default per model (sd35 28 · klein4b 4 · flux2dev 20 · zimage 8)
 .PARAMETER Size    square size in px (default 512)
 .PARAMETER Type    weight type at load: q8_0 (default) | bf16 (as stored) | q4_k …
@@ -29,7 +31,9 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet("sd35", "klein4b", "flux2dev", "zimage")] [string]$Model,
+    [Parameter(Mandatory)][ValidateSet("sd35", "klein4b", "flux2dev", "flux2dev-gguf", "zimage")] [string]$Model,
+    [string]$Quant = "Q4_K_M",
+    [string]$LlmQuant = "Q4_K_M",
     [int]$Steps = 0,
     [int]$Size = 512,
     [string]$Type = "q8_0",
@@ -80,6 +84,25 @@ switch ($Model) {
                    "--vae", (Need "$s\split_files\vae\flux2-vae.safetensors"),
                    "--llm", (Need "$s\split_files\text_encoders\mistral_3_small_flux2_bf16.safetensors"))
         $gen = @("--cfg-scale", "1.0", "--guidance", "3.0"); if ($Steps -eq 0) { $Steps = 20 }
+    }
+    "flux2dev-gguf" {
+        # The standard-format stack (FLUX.2-dev weights spike, 2026-09-21, kb-loom-flux2-weights.md): unsloth's
+        # GGUF of the BFL transformer, unsloth's GGUF of Mistral-Small-3.2 as the text encoder (what sd.cpp's own
+        # docs pass to --llm), and BFL's own VAE (the gated ae.safetensors, else the ungated small-decoder file,
+        # else the Comfy copy, which is byte-identical). No --type: the file's own quant is kept.
+        $dm = Get-ChildItem -LiteralPath (Join-Path $hf "hub\models--unsloth--FLUX.2-dev-GGUF\snapshots") -Recurse -Filter "flux2-dev-$Quant.gguf" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $dm) { throw "not cached: unsloth/FLUX.2-dev-GGUF flux2-dev-$Quant.gguf" }
+        $llm = Get-ChildItem -LiteralPath (Join-Path $hf "hub\models--unsloth--Mistral-Small-3.2-24B-Instruct-2506-GGUF\snapshots") -Recurse -Filter "Mistral-Small-3.2-24B-Instruct-2506-$LlmQuant.gguf" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $llm) { throw "not cached: unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF $LlmQuant" }
+        $vae = $null
+        foreach ($cand in @(@("black-forest-labs/FLUX.2-dev", "ae.safetensors"), @("black-forest-labs/FLUX.2-small-decoder", "full_encoder_small_decoder.safetensors"), @("Comfy-Org/flux2-dev", "split_files\vae\flux2-vae.safetensors"))) {
+            try { $c = (Snap $cand[0]) + "\" + $cand[1]; if (Test-Path -LiteralPath $c) { $vae = $c; break } } catch { }
+        }
+        if (-not $vae) { throw "no FLUX.2 VAE cached" }
+        Write-Host "[bench-cpu] transformer $($dm.Name) · llm $($llm.Name) · vae $vae" -ForegroundColor DarkGray
+        $files = @("--diffusion-model", $dm.FullName, "--vae", $vae, "--llm", $llm.FullName)
+        $gen = @("--cfg-scale", "1.0", "--guidance", "3.0"); if ($Steps -eq 0) { $Steps = 20 }
+        if (-not $PSBoundParameters.ContainsKey("Type")) { $Type = "" }
     }
     "zimage" {
         $gguf = Get-ChildItem -LiteralPath (Join-Path $hf "hub\models--leejet--Z-Image-Turbo-GGUF\snapshots") -Recurse -Filter "*Q8_0*.gguf" -ErrorAction SilentlyContinue | Select-Object -First 1

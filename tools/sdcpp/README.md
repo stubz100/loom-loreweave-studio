@@ -30,5 +30,6 @@ scaled-fp8 FLUX.2-dev transformer + bf16 Mistral, the flux2 VAE) is read straigh
 .\tools\sdcpp\bench-cpu.ps1 sd35                         # 512², 28 steps CFG → ~2 min
 .\tools\sdcpp\bench-cpu.ps1 sd35 -Init base.png -Strength 0.5   # a "Clean" pass → ~1.2 min
 .\tools\sdcpp\bench-cpu.ps1 flux2dev -Steps 20           # 512² → ~27 min, 50 GB RAM
+.\tools\sdcpp\bench-cpu.ps1 flux2dev-gguf -Steps 20      # the standard-format stack (unsloth GGUF dev + Mistral GGUF + BFL VAE) — kb-loom-flux2-weights.md
 .\tools\sdcpp\bench-cpu.ps1 zimage                       # once the GGUF is in
 ```

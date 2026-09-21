@@ -4792,3 +4792,6 @@ the `Paint a mask` flow for a curated ref (a durable copy has no job → not edi
 **Next:** step 8 — World (L1): the Panel's World list, the style editor / world text / story
 spine / pose-set editors on the canvas, plus the placeholders' final sweep; then the plan's
 close-out (v1 deletion criteria, docs, memory).
+
+
+**Pushed:** step 7 = `3113f30` (backend + frontend + tests + plan §6 row 7 + this entry).
